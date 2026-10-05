@@ -668,6 +668,8 @@ impl QuarryWindow {
             self.toggle_sidebar(&ToggleSidebar, window, cx);
         } else if action_id == "action:export" {
             self.open_export(cx);
+        } else if action_id == "action:dump" {
+            self.dump_database(window, cx);
         } else if action_id == "action:theme" {
             self.toggle_theme(&ToggleTheme, window, cx);
         } else if action_id == "action:demo" {
@@ -1206,11 +1208,8 @@ fn main() {
 
         gpui::open_window(options, cx, |window, cx| {
             cx.new(|cx| {
-                let mut app_window = QuarryWindow::new(window, cx);
-                // Pre-populate data for initial users table tab
-                app_window.refresh_active_tab(window, cx);
-                window.focus(&app_window.focus_handle, cx);
-                app_window
+                // Starts with the onboarding input focused, so a pasted URL just works
+                QuarryWindow::new(window, cx)
             })
         })
         .unwrap();

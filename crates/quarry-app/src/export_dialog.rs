@@ -155,6 +155,43 @@ impl QuarryWindow {
         .detach();
     }
 
+    /// Whole database as a SQL script (X3): pg_dump for Postgres, a built-in dump for SQLite
+    pub fn dump_database(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(session), Some(profile)) = self.current_connection(cx) else {
+            self.toast("Connect to a database first", true, cx);
+            return;
+        };
+        let dir = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_default();
+        let stem = profile.name.replace(['/', ':', ' '], "_");
+        let path_rx = cx.prompt_for_new_path(&dir, Some(&format!("{stem}.sql")));
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = path_rx.await else { return };
+            let out = path.clone();
+            let job = crate::runtime::DB_RUNTIME.spawn(async move {
+                if profile.kind == crate::state::ConnectionTargetKind::Postgres {
+                    pg_dump(&crate::connections::with_secret(&profile), &out)
+                } else {
+                    let file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+                    let mut w = std::io::BufWriter::new(file);
+                    let rows = quarry_core::dump::sqlite_dump(session.as_ref(), &mut w).await?;
+                    std::io::Write::flush(&mut w).map_err(|e| e.to_string())?;
+                    Ok(format!("{rows} rows"))
+                }
+            });
+            let outcome = job.await.unwrap_or_else(|e| Err(e.to_string()));
+            this.update(cx, |this, cx| match outcome {
+                Ok(what) => {
+                    let name = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                    this.toast(format!("Dumped {what} to {name}"), false, cx);
+                    this.toast_reveal = Some(path);
+                }
+                Err(e) => this.toast(format!("Dump failed: {e}"), true, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub fn render_export_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         if !self.export.open {
             return None;
@@ -326,4 +363,29 @@ async fn write_export(
         },
     }
     ex.finish().map(Some).map_err(|e| e.to_string())
+}
+
+/// Runs pg_dump. The password goes through PGPASSWORD so it never shows in the process list.
+fn pg_dump(url: &str, out: &std::path::Path) -> Result<String, String> {
+    let (bare, password) = crate::connections::split_password(url);
+    let mut cmd = std::process::Command::new("pg_dump");
+    cmd.args(["--no-owner", "--dbname", &bare, "--file"]).arg(out);
+    if let Some(pw) = password {
+        cmd.env("PGPASSWORD", pw);
+    }
+    match cmd.output() {
+        Ok(o) if o.status.success() => Ok("the database".into()),
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(if err.contains("server version mismatch") {
+                format!("{err}. Install a pg_dump at least as new as the server (e.g. `brew install postgresql@16`).")
+            } else {
+                err
+            })
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err("pg_dump isn't installed. Install the PostgreSQL client tools (e.g. `brew install libpq`) and try again.".into())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }

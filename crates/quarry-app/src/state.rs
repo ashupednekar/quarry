@@ -339,8 +339,9 @@ impl AppState {
     pub fn apply_connection(&mut self, profile: ConnectionProfile, session: Arc<dyn DatabaseSession>, catalog: SchemaCatalog) {
         let mut profile = profile;
         let bare = |p: &ConnectionProfile| crate::connections::split_password(&p.path_or_url).0;
+        // Same address as a saved connection: reuse it (name, environment, read-only) instead of duplicating
         if let Some(existing) = self.saved_connections.iter().find(|c| c.kind == profile.kind && bare(c) == bare(&profile)) {
-            profile.id = existing.id.clone();
+            profile = ConnectionProfile { path_or_url: profile.path_or_url, ..existing.clone() };
         }
         self.open_sessions.insert(profile.id.clone(), (session.clone(), catalog.clone()));
         self.session = Some(session);
