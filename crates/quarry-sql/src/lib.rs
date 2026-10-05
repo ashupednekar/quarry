@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+
+pub mod completer;
+pub mod splitter;
+
+pub use completer::{CompletionCandidate, CompletionKind, SchemaCompleter};
+pub use splitter::{find_statement_at_offset, split_statements, StatementSpan};
