@@ -64,6 +64,8 @@ actions!(
         ExplainAnalyze,
         FormatSql,
         ReopenClosedTab,
+        ToggleSplit,
+        OpenInSplit,
         SaveFile,
         SaveFileAs,
         OpenFile,
@@ -94,6 +96,9 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-shift-s", SaveFileAs, None),
         KeyBinding::new("secondary-o", OpenFile, None),
         KeyBinding::new("secondary-shift-t", ReopenClosedTab, None),
+        KeyBinding::new("secondary-\\", ToggleSplit, None),
+        // ⌘↵ on a command-bar result opens it in the split (U3); registered after the Input binding so it wins
+        KeyBinding::new("secondary-enter", OpenInSplit, Some("CommandBar > Input")),
         KeyBinding::new("secondary-alt-shift-e", ExplainAnalyze, None),
         KeyBinding::new("up", MenuUp, Some("CommandBar > Input")),
         KeyBinding::new("down", MenuDown, Some("CommandBar > Input")),
@@ -127,6 +132,8 @@ struct QuarryWindow {
     session_save_task: Option<Task<()>>,
     /// Recently closed tabs, newest last, for ⇧⌘T
     closed_tabs: Vec<(Tab, Vec<(String, Subscription)>)>,
+    /// Tab shown in the right pane of the split view, by id
+    split_id: Option<String>,
     /// File the last toast can reveal in the file manager
     toast_reveal: Option<std::path::PathBuf>,
     export: export_dialog::ExportState,
@@ -206,6 +213,7 @@ impl QuarryWindow {
             toast_task: None,
             session_save_task: None,
             closed_tabs: Vec::new(),
+            split_id: None,
             toast_reveal: None,
             export,
             import,
@@ -256,6 +264,62 @@ impl QuarryWindow {
         self.theme_override = Some(!self.theme.is_dark);
         self.sync_theme(window, cx);
         cx.notify();
+    }
+
+    /// One tab's content: editor over results for queries, filter bar over the grid for tables
+    fn render_tab_view(&mut self, tab: &Tab, cx: &mut Context<Self>) -> AnyElement {
+        let t = self.theme.clone();
+        let grid = div().size_full().child(DataGrid::render(
+            tab.grid(),
+            &self.theme,
+            cx,
+            |this, window, cx| this.refresh_active_tab(window, cx),
+            |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
+            |this, window, cx| this.commit_pending_changes(window, cx),
+            |this, _, cx| this.open_export(cx),
+            |this, target, window, cx| this.follow_foreign_key(target, window, cx),
+        ));
+        match tab {
+            // Editor over results, with a draggable divider
+            Tab::Query { editor, is_running, error_message, .. } => v_resizable("query-split")
+                .child(resizable_panel().size(px(220.0)).size_range(px(80.0)..px(1200.0)).child(QueryEditor::render(
+                    editor,
+                    *is_running,
+                    error_message.as_deref(),
+                    &self.theme,
+                    cx,
+                    |this, window, cx| this.refresh_active_tab(window, cx),
+                )))
+                .child(resizable_panel().child(grid))
+                .into_any_element(),
+            Tab::Table { filter, .. } => v_flex()
+                .size_full()
+                .child(
+                    h_flex()
+                        .h(px(34.0))
+                        .w_full()
+                        .px_3()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(t.border)
+                        .items_center()
+                        // Single-line inputs propagate Enter: apply the filter
+                        .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
+                            this.refresh_active_tab(window, cx);
+                        }))
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("WHERE"))
+                        .child(div().flex_1().child(Input::new(filter).appearance(false)))
+                        .child(
+                            Button::new("filter-clear-btn")
+                                .label("Clear")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, window, cx| this.clear_filter(window, cx))),
+                        ),
+                )
+                .child(div().flex_1().min_h_0().child(grid))
+                .into_any_element(),
+        }
     }
 
     /// First run (U11): one input, nothing else
@@ -757,6 +821,52 @@ impl QuarryWindow {
         cx.notify();
     }
 
+    /// The split pane's tab, if it's set and isn't the active one
+    fn split_tab(&self) -> Option<Tab> {
+        let id = self.split_id.as_deref()?;
+        let active = self.state.active_tab()?.id();
+        (id != active).then(|| self.state.tabs.iter().find(|t| t.id() == id).cloned()).flatten()
+    }
+
+    /// ⌘\: put the current tab in the right pane next to the previous one, or close the split
+    fn toggle_split(&mut self, cx: &mut Context<Self>) {
+        if self.split_tab().is_some() {
+            self.split_id = None;
+        } else if self.state.tabs.len() > 1 {
+            let ix = self.state.active_tab_index;
+            self.split_id = Some(self.state.tabs[ix].id().to_string());
+            self.state.active_tab_index = if ix == 0 { 1 } else { ix - 1 };
+        } else {
+            self.toast("Open another tab to split the view", false, cx);
+        }
+        cx.notify();
+    }
+
+    /// Clicking into the right pane makes it the active tab; the old one moves right
+    fn swap_split(&mut self, cx: &mut Context<Self>) {
+        let (Some(split), Some(active)) = (self.split_id.clone(), self.state.active_tab().map(|t| t.id().to_string())) else { return };
+        if let Some(ix) = self.state.tabs.iter().position(|t| t.id() == split) {
+            self.state.active_tab_index = ix;
+            self.split_id = Some(active);
+            cx.notify();
+        }
+    }
+
+    fn confirm_command_bar_in_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.state.active_tab().map(|t| t.id().to_string());
+        self.confirm_command_bar(window, cx);
+        let opened = self.state.active_tab().map(|t| t.id().to_string());
+        if let (Some(prev), Some(new)) = (previous, opened) {
+            if prev != new {
+                self.split_id = Some(new);
+                if let Some(ix) = self.state.tabs.iter().position(|t| t.id() == prev) {
+                    self.state.active_tab_index = ix;
+                }
+            }
+        }
+        cx.notify();
+    }
+
     fn reopen_closed_tab(&mut self, _: &ReopenClosedTab, _: &mut Window, cx: &mut Context<Self>) {
         let Some((tab, subs)) = self.closed_tabs.pop() else { return };
         self.tab_subscriptions.extend(subs);
@@ -849,6 +959,8 @@ impl QuarryWindow {
             self.start_run(RunMode::Explain, window, cx);
         } else if action_id == "action:explain_analyze" {
             self.start_run(RunMode::ExplainAnalyze, window, cx);
+        } else if action_id == "action:split" {
+            self.toggle_split(cx);
         } else if action_id == "action:reopen_tab" {
             self.reopen_closed_tab(&ReopenClosedTab, window, cx);
         } else if action_id == "action:format" {
@@ -1175,59 +1287,26 @@ impl Render for QuarryWindow {
                 .child(div().text_sm().text_color(t.text_secondary).child("Pick a table from the sidebar"))
                 .child(div().text_xs().text_color(t.text_muted).child("or press ⌘K to search, ⌘N for a new query"))
                 .into_any_element(),
-            Some(tab) => {
-                let grid = div().size_full().child(DataGrid::render(
-                    tab.grid(),
-                    &self.theme,
-                    cx,
-                    |this, window, cx| this.refresh_active_tab(window, cx),
-                    |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
-                    |this, window, cx| this.commit_pending_changes(window, cx),
-                    |this, _, cx| this.open_export(cx),
-                    |this, target, window, cx| this.follow_foreign_key(target, window, cx),
-                ));
-                match tab {
-                    // Editor over results, with a draggable divider
-                    Tab::Query { editor, is_running, error_message, .. } => v_resizable("query-split")
-                        .child(resizable_panel().size(px(220.0)).size_range(px(80.0)..px(1200.0)).child(QueryEditor::render(
-                            editor,
-                            *is_running,
-                            error_message.as_deref(),
-                            &self.theme,
-                            cx,
-                            |this, window, cx| this.refresh_active_tab(window, cx),
-                        )))
-                        .child(resizable_panel().child(grid))
-                        .into_any_element(),
-                    Tab::Table { filter, .. } => v_flex()
-                        .size_full()
-                        .child(
-                            h_flex()
-                                .h(px(34.0))
-                                .w_full()
-                                .px_3()
-                                .gap_2()
-                                .border_b_1()
+            Some(tab) => match self.split_tab().filter(|_| self.state.tabs.len() > 1) {
+                // Split view (U8): the active tab on the left, the split tab on the right
+                Some(split) => {
+                    let left = self.render_tab_view(tab, cx);
+                    let right = self.render_tab_view(&split, cx);
+                    h_resizable("split-view")
+                        .child(resizable_panel().child(left))
+                        .child(resizable_panel().child(
+                            div()
+                                .size_full()
+                                .border_l_1()
                                 .border_color(t.border)
-                                .items_center()
-                                // Single-line inputs propagate Enter: apply the filter
-                                .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
-                                    this.refresh_active_tab(window, cx);
-                                }))
-                                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("WHERE"))
-                                .child(div().flex_1().child(Input::new(filter).appearance(false)))
-                                .child(
-                                    Button::new("filter-clear-btn")
-                                        .label("Clear")
-                                        .ghost()
-                                        .xsmall()
-                                        .on_click(cx.listener(|this, _, window, cx| this.clear_filter(window, cx))),
-                                ),
-                        )
-                        .child(div().flex_1().min_h_0().child(grid))
-                        .into_any_element(),
+                                // Working in the right pane makes it the active one
+                                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| this.swap_split(cx)))
+                                .child(right),
+                        ))
+                        .into_any_element()
                 }
-            }
+                None => self.render_tab_view(tab, cx),
+            },
         };
 
         let sidebar = Sidebar::render(
@@ -1265,6 +1344,8 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::rollback_tx))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::reopen_closed_tab))
+            .on_action(cx.listener(|this, _: &ToggleSplit, _, cx| this.toggle_split(cx)))
+            .on_action(cx.listener(|this, _: &OpenInSplit, window, cx| this.confirm_command_bar_in_split(window, cx)))
             .on_action(cx.listener(|this, _: &ExportResults, _, cx| this.open_export(cx)))
             .on_action(cx.listener(|this, _: &Explain, window, cx| this.start_run(RunMode::Explain, window, cx)))
             .on_action(cx.listener(|this, _: &FormatSql, window, cx| this.format_query(window, cx)))

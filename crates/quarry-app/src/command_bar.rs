@@ -52,6 +52,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:open_file", "Open SQL File…", "⌘O"),
     ("action:save_file", "Save Query", "⌘S"),
     ("action:reopen_tab", "Reopen Closed Tab", "⇧⌘T"),
+    ("action:split", "Toggle Split View", "⌘\\"),
     ("action:format", "Format SQL", "⇧⌥F"),
     ("action:explain", "Explain Query Plan", "⌥⌘E"),
     ("action:explain_analyze", "Explain Analyze", "⇧⌥⌘E"),
@@ -327,7 +328,7 @@ impl CommandBar {
                             .border_color(theme.border)
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child("↑↓ to move · ↵ to open")
+                            .child("↑↓ to move · ↵ to open · ⌘↵ in split")
                             .child("> commands")
                             .child("/ tables")
                             .child("or type SQL"),
