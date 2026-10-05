@@ -4,7 +4,9 @@
 use gpui::*;
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct Theme {
+    pub is_dark: bool,
     pub bg_app: Rgba,
     pub bg_sidebar: Rgba,
     pub bg_panel: Rgba,
@@ -26,7 +28,18 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl Theme {
+    pub fn for_mode(dark: bool) -> Self {
+        if dark { Self::dark() } else { Self::light() }
+    }
+
+    pub fn dark() -> Self {
         Self {
+            is_dark: true,
             bg_app: rgb(0x0f0f11),
             bg_sidebar: rgb(0x141417),
             bg_panel: rgb(0x18181c),
@@ -44,6 +57,29 @@ impl Default for Theme {
             danger: rgb(0xef4444),
             null_token: rgb(0x71717a),
             pending_cell_bg: rgba(0xf59e0b25),
+        }
+    }
+
+    pub fn light() -> Self {
+        Self {
+            is_dark: false,
+            bg_app: rgb(0xffffff),
+            bg_sidebar: rgb(0xf7f7f8),
+            bg_panel: rgb(0xf3f3f5),
+            bg_surface: rgb(0xebebee),
+            bg_hover: rgb(0xe4e4e8),
+            bg_selected: rgb(0xdde3ee),
+            border: rgb(0xe2e2e6),
+            text_primary: rgb(0x18181b),
+            text_secondary: rgb(0x52525b),
+            text_muted: rgb(0x8a8a93),
+            accent: rgb(0x2563eb),
+            accent_hover: rgb(0x1d4ed8),
+            success: rgb(0x059669),
+            warning: rgb(0xb45309),
+            danger: rgb(0xdc2626),
+            null_token: rgb(0x8a8a93),
+            pending_cell_bg: rgba(0xf59e0b33),
         }
     }
 }
