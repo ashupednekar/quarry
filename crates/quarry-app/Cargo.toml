@@ -24,3 +24,4 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 keyring = { workspace = true }
+lsp-types = { workspace = true }

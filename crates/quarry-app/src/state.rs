@@ -130,6 +130,8 @@ pub struct AppState {
     /// Open SSH tunnels by connection id; dropping one stops its ssh process
     pub tunnels: HashMap<String, crate::ssh::Tunnel>,
     pub catalog: SchemaCatalog,
+    /// The same catalog, shared with the editors' autocomplete
+    pub completion_catalog: crate::completion::SharedCatalog,
     pub expanded_schemas: HashSet<String>,
     pub sidebar_visible: bool,
 
@@ -180,6 +182,7 @@ impl AppState {
             activity_log: ActivityLog::default(),
             tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
+            completion_catalog: Default::default(),
             expanded_schemas: HashSet::new(),
             sidebar_visible: true,
 
@@ -280,7 +283,7 @@ impl AppState {
                 }
             }
             if let Ok(cat) = session.introspect().await {
-                self.catalog = cat;
+                self.set_catalog(cat);
             }
 
             self.open_sessions.insert(profile.id.clone(), (session.clone(), self.catalog.clone()));
@@ -300,7 +303,7 @@ impl AppState {
         let Some((session, catalog)) = self.open_sessions.get(id).cloned() else { return false };
         let Some(profile) = self.saved_connections.iter().find(|c| c.id == id).cloned() else { return false };
         self.session = Some(session);
-        self.catalog = catalog;
+        self.set_catalog(catalog);
         self.active_connection = Some(profile);
         true
     }
@@ -318,6 +321,11 @@ impl AppState {
         };
         crate::history::append(&item);
         self.history.push(item);
+    }
+
+    pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
+        *self.completion_catalog.borrow_mut() = catalog.clone();
+        self.catalog = catalog;
     }
 
     pub fn find_tab(&self, table_name: &str) -> Option<usize> {
@@ -363,7 +371,7 @@ impl AppState {
             self.tunnels.insert(profile.id.clone(), t);
         }
         self.session = Some(session);
-        self.catalog = catalog;
+        self.set_catalog(catalog);
         if !self.saved_connections.iter().any(|c| c.id == profile.id) {
             self.saved_connections.push(profile.clone());
             if let Err(e) = crate::connections::save(&self.saved_connections) {

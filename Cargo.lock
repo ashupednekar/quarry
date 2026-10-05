@@ -5341,6 +5341,7 @@ dependencies = [
  "crossbeam-channel",
  "gpui-kit",
  "keyring",
+ "lsp-types",
  "quarry-core",
  "quarry-sql",
  "serde",

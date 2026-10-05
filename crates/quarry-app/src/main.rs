@@ -4,6 +4,7 @@
 mod add_conn_modal;
 mod bottom_panel;
 mod command_bar;
+mod completion;
 mod connections;
 mod editor;
 mod export_dialog;
@@ -293,7 +294,11 @@ impl QuarryWindow {
                 .line_number(true)
                 .default_value(sql.to_string())
         });
-        editor.update(cx, |e, cx| e.focus(window, cx));
+        let completions = std::rc::Rc::new(completion::SchemaCompletions(self.state.completion_catalog.clone()));
+        editor.update(cx, |e, cx| {
+            e.lsp_mut().completion_provider = Some(completions);
+            e.focus(window, cx);
+        });
         let id = format!("q-{}", uuid::Uuid::new_v4());
         let grid = self.new_grid(&id, None, window, cx);
         self.state.tabs.push(Tab::Query {
@@ -487,7 +492,7 @@ impl QuarryWindow {
     fn refresh_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.state.session.clone() else { return };
         run_db(window, cx, async move { session.introspect().await }, |this, res, _, _| match res {
-            Ok(catalog) => this.state.catalog = catalog,
+            Ok(catalog) => this.state.set_catalog(catalog),
             Err(e) => this.state.messages.push(format!("Schema refresh failed: {}", e)),
         });
     }
