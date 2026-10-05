@@ -9,7 +9,7 @@ use gpui::component::button::{Button, ButtonVariants};
 use gpui::component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 use gpui::component::menu::PopupMenu;
 use gpui::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
-use gpui::component::{Disableable, Sizable};
+use gpui::component::{ActiveTheme, Disableable, Sizable};
 use gpui::*;
 use quarry_core::edits::{quote_ident, PendingChanges, PendingRowInsert, RowKey};
 use quarry_core::schema::{ColumnSchema, ColumnType};
@@ -129,7 +129,26 @@ struct CellColors {
     deleted_bg: Rgba,
 }
 
+impl From<&Theme> for CellColors {
+    fn from(theme: &Theme) -> Self {
+        Self {
+            text: theme.text_primary,
+            muted: theme.text_muted,
+            token_bg: theme.bg_surface,
+            success: theme.success,
+            danger: theme.danger,
+            pending_bg: theme.pending_cell_bg,
+            inserted_bg: rgba(0x10b98126),
+            deleted_bg: rgba(0xef444426),
+        }
+    }
+}
+
 impl ResultSet {
+    pub fn set_theme(&mut self, theme: &Theme) {
+        self.colors = CellColors::from(theme);
+    }
+
     pub fn new(theme: &Theme, source: Option<TableSource>) -> Self {
         Self {
             results: Vec::new(),
@@ -139,16 +158,7 @@ impl ResultSet {
             notice: None,
             editing: None,
             inspector: None,
-            colors: CellColors {
-                text: theme.text_primary,
-                muted: theme.text_muted,
-                token_bg: theme.bg_surface,
-                success: theme.success,
-                danger: theme.danger,
-                pending_bg: theme.pending_cell_bg,
-                inserted_bg: rgba(0x10b98120),
-                deleted_bg: rgba(0xef444420),
-            },
+            colors: CellColors::from(theme),
         }
     }
 
@@ -529,7 +539,19 @@ impl TableDelegate for ResultSet {
             .and_then(|row| row.get(col_ix))
             .is_some_and(|v| matches!(v, DbValue::Int(_) | DbValue::Float(_) | DbValue::Decimal(_)));
         let name = &r.columns[col_ix];
-        let width = if matches!(name.as_str(), "statement" | "query") { 640.0 } else { 160.0 };
+        // Fit the header and a sample of values; long text columns get more room
+        let chars = r
+            .rows
+            .iter()
+            .take(50)
+            .filter_map(|row| row.get(col_ix))
+            .map(|v| v.to_display_string().chars().count())
+            .chain([name.chars().count() + 4])
+            .max()
+            .unwrap_or(8);
+        let max = if matches!(name.as_str(), "statement" | "query") { 720.0 } else { 420.0 };
+        // ~8.4px per monospace character at the grid's text size, plus cell padding
+        let width = (chars as f32 * 8.4 + 32.0).clamp(64.0, max);
         let col = Column::new(col_ix.to_string(), name.clone()).width(px(width)).sortable();
         if numeric { col.text_right() } else { col }
     }
@@ -580,8 +602,9 @@ impl TableDelegate for ResultSet {
             .menu("Delete Row", Box::new(DeleteRow))
     }
 
-    fn render_td(&mut self, row_ix: usize, col_ix: usize, _: &mut Window, _: &mut Context<TableState<Self>>) -> impl IntoElement {
+    fn render_td(&mut self, row_ix: usize, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         let c = self.colors;
+        let mono = cx.theme().mono_font_family.clone();
         if let Some(ed) = self.editing.as_ref().filter(|e| e.row == row_ix && e.col == col_ix) {
             return div().size_full().child(Input::new(&ed.input).xsmall()).into_any_element();
         }
@@ -608,6 +631,7 @@ impl TableDelegate for ResultSet {
             .size_full()
             .flex()
             .items_center()
+            .font_family(mono)
             .when(numeric, |d| d.justify_end())
             .when(state == RowState::Inserted, |d| d.bg(c.inserted_bg))
             .when(state == RowState::Deleted, |d| d.bg(c.deleted_bg))
