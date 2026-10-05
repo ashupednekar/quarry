@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 pub mod edits;
+pub mod export;
 pub mod logged;
 pub mod postgres;
 pub mod schema;

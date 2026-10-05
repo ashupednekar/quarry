@@ -67,7 +67,8 @@ impl TableSource {
         quarry_core::edits::qualified_name(&self.schema, &self.table)
     }
 
-    fn page_sql(&self, offset: usize, limit: usize) -> String {
+    /// The tab's query (filter + sort), without paging
+    pub fn select_sql(&self) -> String {
         let mut sql = format!("SELECT * FROM {}", self.qualified_name());
         if !self.filter.trim().is_empty() {
             sql += &format!(" WHERE {}", self.filter);
@@ -75,8 +76,12 @@ impl TableSource {
         if let Some((col, desc)) = &self.order_by {
             sql += &format!(" ORDER BY {}{}", quote_ident(col), if *desc { " DESC" } else { "" });
         }
+        sql
+    }
+
+    fn page_sql(&self, offset: usize, limit: usize) -> String {
         // One extra row tells us whether another page exists
-        sql + &format!(" LIMIT {} OFFSET {}", limit + 1, offset)
+        format!("{} LIMIT {} OFFSET {}", self.select_sql(), limit + 1, offset)
     }
 }
 
@@ -697,6 +702,7 @@ impl DataGrid {
         on_refresh: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_review: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_submit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_export: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         let rs = grid.read(cx).delegate();
         let pending_count = rs.pending.total_count();
@@ -751,6 +757,14 @@ impl DataGrid {
                     .tooltip("Value editor (⇧↵)")
                     .on_click(move |_, window, cx| apply_row_action(&grid, &ToggleValueEditor, window, cx))
             })
+            .child(
+                Button::new("grid-export")
+                    .icon(IconName::Download)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Export (⇧⌘E)")
+                    .on_click(cx.listener(move |this, _, window, cx| on_export(this, window, cx))),
+            )
             .child(div().flex_1())
             .when_some(notice.clone(), |this, n| {
                 this.child(div().px_2().text_xs().text_color(theme.danger).truncate().child(n))

@@ -6,6 +6,7 @@ mod bottom_panel;
 mod command_bar;
 mod connections;
 mod editor;
+mod export_dialog;
 mod grid;
 mod history;
 mod review_modal;
@@ -53,6 +54,7 @@ actions!(
         CommitTx,
         RollbackTx,
         ToggleTheme,
+        ExportResults,
         MenuUp,
         MenuDown,
     ]
@@ -73,6 +75,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-n", NewQuery, None),
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("escape", Dismiss, None),
+        KeyBinding::new("secondary-shift-e", ExportResults, None),
         KeyBinding::new("up", MenuUp, Some("CommandBar > Input")),
         KeyBinding::new("down", MenuDown, Some("CommandBar > Input")),
     ]);
@@ -92,6 +95,9 @@ struct QuarryWindow {
     /// `Some(dark)` once the user picks a theme; otherwise follow the OS
     theme_override: Option<bool>,
     toast_task: Option<Task<()>>,
+    /// File the last toast can reveal in the file manager
+    toast_reveal: Option<std::path::PathBuf>,
+    export: export_dialog::ExportState,
     /// Per-tab subscriptions (grid events), dropped with the tab
     tab_subscriptions: std::collections::HashMap<String, Subscription>,
     panel: bottom_panel::PanelState,
@@ -138,6 +144,7 @@ impl QuarryWindow {
         ];
 
         let theme = Theme::for_mode(os_is_dark(window));
+        let export = export_dialog::ExportState::new(window, cx);
         let panel = bottom_panel::PanelState::new(&theme, window, cx);
         let mut this = Self {
             state,
@@ -152,6 +159,8 @@ impl QuarryWindow {
             onboard_input,
             theme_override: None,
             toast_task: None,
+            toast_reveal: None,
+            export,
         };
         this.apply_theme(cx);
         this
@@ -241,6 +250,7 @@ impl QuarryWindow {
         let msg = msg.into();
         self.state.messages.push(if error { format!("Error: {msg}") } else { msg.clone() });
         self.state.toast_message = Some((msg, error));
+        self.toast_reveal = None;
         self.toast_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
             this.update(cx, |this, cx| {
@@ -591,6 +601,11 @@ impl QuarryWindow {
 
     /// Escape: close the topmost overlay
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        if self.export.open {
+            self.export.open = false;
+            cx.notify();
+            return;
+        }
         let s = &mut self.state;
         let Some(open) = [
             &mut s.command_bar_open,
@@ -651,6 +666,8 @@ impl QuarryWindow {
             self.open_add_conn(window, cx);
         } else if action_id == "action:toggle_sidebar" {
             self.toggle_sidebar(&ToggleSidebar, window, cx);
+        } else if action_id == "action:export" {
+            self.open_export(cx);
         } else if action_id == "action:theme" {
             self.toggle_theme(&ToggleTheme, window, cx);
         } else if action_id == "action:demo" {
@@ -803,6 +820,7 @@ impl Render for QuarryWindow {
         self.sync_theme(window, cx);
         let bottom_panel = self.render_bottom_panel(window, cx);
         let kill_confirm = self.render_kill_confirm(cx);
+        let export_dialog = self.render_export_dialog(cx);
         let active_tab = self.state.active_tab().cloned();
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
@@ -977,6 +995,7 @@ impl Render for QuarryWindow {
                     |this, window, cx| this.refresh_active_tab(window, cx),
                     |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
                     |this, window, cx| this.commit_pending_changes(window, cx),
+                    |this, _, cx| this.open_export(cx),
                 )))
                 .into_any_element(),
         };
@@ -1015,6 +1034,7 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::commit_tx))
             .on_action(cx.listener(Self::rollback_tx))
             .on_action(cx.listener(Self::toggle_theme))
+            .on_action(cx.listener(|this, _: &ExportResults, _, cx| this.open_export(cx)))
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
             // Drop a SQLite file anywhere to open it (C3, U11)
@@ -1072,6 +1092,7 @@ impl Render for QuarryWindow {
             ))
             // Modals & Overlays (only rendered when active)
             .children(kill_confirm)
+            .children(export_dialog)
             .when_some(self.state.toast_message.clone(), |this, (msg, error)| {
                 this.child(
                     div()
@@ -1088,7 +1109,19 @@ impl Render for QuarryWindow {
                         .shadow_lg()
                         .text_xs()
                         .text_color(if error { t.danger } else { t.text_primary })
-                        .child(msg),
+                        .flex()
+                        .gap_3()
+                        .child(msg)
+                        .when_some(self.toast_reveal.clone(), |this, path| {
+                            this.child(
+                                div()
+                                    .id("toast-reveal")
+                                    .text_color(t.accent)
+                                    .cursor_pointer()
+                                    .on_click(move |_, _, _| export_dialog::reveal(&path))
+                                    .child(if cfg!(target_os = "macos") { "Reveal in Finder" } else { "Show in folder" }),
+                            )
+                        }),
                 )
             })
             .when(self.state.command_bar_open, |this| {

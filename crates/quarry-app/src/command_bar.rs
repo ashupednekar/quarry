@@ -56,6 +56,7 @@ impl CommandBar {
             ("action:add_conn", "Add Database Connection", "ACTION", "ACT", "+"),
             ("action:toggle_sidebar", "Toggle Sidebar", "VIEW", "UI", "⌘B"),
             ("action:toggle_bottom", "Toggle Bottom Panel", "VIEW", "UI", "⌘J"),
+            ("action:export", "Export Results…", "ACTION", "DATA", "⇧⌘E"),
             ("action:theme", "Toggle Light/Dark Theme", "VIEW", "UI", ""),
             ("action:demo", "Open Demo Database", "ACTION", "DB", ""),
             ("action:toggle_tx", "Toggle Manual Commit Mode", "ACTION", "TX", ""),
