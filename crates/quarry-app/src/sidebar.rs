@@ -49,6 +49,9 @@ impl Sidebar {
         let muted = |text: String| div().text_xs().text_color(theme.text_muted).child(text);
 
         let mut tree = v_flex().py_1p5().px_1p5().gap_px();
+        if state.saved_connections.is_empty() {
+            tree = tree.child(div().px_2().py_1().text_xs().text_color(theme.text_muted).child("No connections yet. Add one with +."));
+        }
 
         for (conn_ix, conn) in state.saved_connections.iter().enumerate() {
             let is_active = active_id.as_deref() == Some(conn.id.as_str());
@@ -105,8 +108,7 @@ impl Sidebar {
         }
 
         v_flex()
-            .w(px(240.0))
-            .h_full()
+            .size_full()
             .bg(theme.bg_sidebar)
             .border_r_1()
             .border_color(theme.border)

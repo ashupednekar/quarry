@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-use crate::state::{AppState, Environment};
+use crate::state::{AppState, ConnectionProfile, Environment};
+use quarry_core::DatabaseSession;
+use std::sync::Arc;
 use crate::theme::Theme;
 use crate::ui::*;
 use gpui::*;
@@ -11,6 +13,8 @@ pub struct StatusBar;
 impl StatusBar {
     pub fn render<T: 'static>(
         state: &AppState,
+        session: Option<&Arc<dyn DatabaseSession>>,
+        connection: Option<&ConnectionProfile>,
         theme: &Theme,
         cx: &Context<T>,
         on_toggle_bottom: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -19,7 +23,7 @@ impl StatusBar {
         on_commit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_rollback: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
-        let (manual, in_tx) = state.session.as_ref().map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
+        let (manual, in_tx) = session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
         let link = |id: &'static str, label: &'static str, color: Rgba| {
             div()
                 .id(id)
@@ -31,7 +35,8 @@ impl StatusBar {
                 .hover(|s| s.bg(theme.bg_hover))
                 .child(label)
         };
-        let (row_count_str, timing_str) = state
+        // Only shown once there's a result to describe
+        let stats = state
             .active_tab()
             .and_then(|t| {
                 let rs = t.grid().read(cx).delegate();
@@ -44,19 +49,15 @@ impl StatusBar {
                     format!("{:.2} ms", res.execution_time.as_secs_f64() * 1000.0),
                 )
             })
-            .unwrap_or_else(|| ("0 rows".to_string(), "0.00 ms".to_string()));
+            .map(|(rows, time)| format!("{} · {}", rows, time));
 
-        let conn_name = state
-            .active_connection
-            .as_ref()
-            .map(|c| c.name.clone())
-            .unwrap_or_else(|| "offline".to_string());
-
-        let env_tag = state
-            .active_connection
-            .as_ref()
-            .map(|c| c.env)
-            .unwrap_or(Environment::Local);
+        let conn_name = connection.map(|c| c.name.clone()).unwrap_or_else(|| "Not connected".to_string());
+        let env_tag = connection.map(|c| c.env).unwrap_or(Environment::Local);
+        // Flow C: "PROD · READ-ONLY" is impossible to miss
+        let env_label = match (env_tag, session.is_some_and(|s| s.is_read_only())) {
+            (env, true) => format!("{} · READ-ONLY", env.label()),
+            (env, false) => env.label().to_string(),
+        };
 
         let env_color = match env_tag {
             Environment::Local => theme.success,
@@ -79,10 +80,10 @@ impl StatusBar {
                     .gap_3()
                     .items_center()
                     // Transaction mode (E9): click to switch; an open transaction shows Commit / Rollback
-                    .child(
+                    .when(session.is_some(), |this| this.child(
                         link("tx-mode", if manual { "Manual commit" } else { "Auto-commit" }, theme.text_muted)
                             .on_click(cx.listener(move |this, _, window, cx| on_toggle_tx(this, window, cx))),
-                    )
+                    ))
                     .when(in_tx, |this| {
                         this.child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.warning).child("● Transaction open"))
                             .child(
@@ -113,7 +114,7 @@ impl StatusBar {
                                     .child(conn_name),
                             ),
                     )
-                    .child(
+                    .when(connection.is_some(), |this| this.child(
                         // Environment Pill
                         div()
                             .px_1p5()
@@ -123,57 +124,28 @@ impl StatusBar {
                             .text_xs()
                             .font_weight(FontWeight::BOLD)
                             .text_color(env_color)
-                            .child(env_tag.label()),
-                    ),
+                            .child(env_label),
+                    )),
             )
             .child(
                 // Center items: Row count & execution time
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme.text_secondary)
-                            .child(format!("{} · {}", row_count_str, timing_str)),
-                    ),
+                    .children(stats.map(|s| div().text_xs().text_color(theme.text_secondary).child(s))),
             )
             .child(
-                // Right items: Panel & Sidebar toggles
+                // Right items: quiet toggles (also on ⌘B / ⌘J and in ⌘K)
                 h_flex()
-                    .gap_3()
+                    .gap_1()
                     .items_center()
                     .child(
-                        div()
-                            .id("statusbar-toggle-sidebar")
-                            .px_1p5()
-                            .py(px(0.5))
-                            .rounded(px(2.0))
-                            .bg(if state.sidebar_visible { theme.bg_surface } else { theme.bg_panel })
-                            .text_xs()
-                            .text_color(if state.sidebar_visible { theme.text_primary } else { theme.text_muted })
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(theme.text_primary))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                on_toggle_sidebar(this, window, cx);
-                            }))
-                            .child("Sidebar (⌘B)"),
+                        link("statusbar-toggle-sidebar", "Sidebar ⌘B", if state.sidebar_visible { theme.text_secondary } else { theme.text_muted })
+                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_sidebar(this, window, cx))),
                     )
                     .child(
-                        div()
-                            .id("statusbar-toggle-bottom")
-                            .px_1p5()
-                            .py(px(0.5))
-                            .rounded(px(2.0))
-                            .bg(if state.bottom_panel_open { theme.bg_surface } else { theme.bg_panel })
-                            .text_xs()
-                            .text_color(if state.bottom_panel_open { theme.text_primary } else { theme.text_muted })
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(theme.text_primary))
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                on_toggle_bottom(this, window, cx);
-                            }))
-                            .child("Panel (⌘J)"),
+                        link("statusbar-toggle-bottom", "Panel ⌘J", if state.bottom_panel_open { theme.text_secondary } else { theme.text_muted })
+                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_bottom(this, window, cx))),
                     ),
             )
     }

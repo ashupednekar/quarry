@@ -20,12 +20,18 @@ use add_conn_modal::AddConnModal;
 use command_bar::CommandBar;
 use editor::QueryEditor;
 use gpui::component::input::{EditorState, Input, InputEvent, InputState};
+use gpui::assets::IconName;
+use gpui::component::button::{Button, ButtonVariants};
+use gpui::component::resizable::{h_resizable, resizable_panel, v_resizable};
+use gpui::component::{Icon, Sizable};
 use gpui::*;
 use gpui::component::table::{TableEvent, TableState};
 use grid::{DataGrid, Fetch, ResultSet, TableSource};
 use review_modal::ReviewModal;
 use runtime::{run_db, DB_RUNTIME};
 use sidebar::Sidebar;
+use quarry_core::DatabaseSession;
+use std::sync::Arc;
 use state::{open_session, AppState, ConnectionProfile, ConnectionTargetKind, Environment, Tab};
 use status_bar::StatusBar;
 use theme::Theme;
@@ -46,6 +52,7 @@ actions!(
         ToggleTxMode,
         CommitTx,
         RollbackTx,
+        ToggleTheme,
         MenuUp,
         MenuDown,
     ]
@@ -81,6 +88,10 @@ struct QuarryWindow {
     conn_name_input: Entity<InputState>,
     conn_path_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
+    onboard_input: Entity<InputState>,
+    /// `Some(dark)` once the user picks a theme; otherwise follow the OS
+    theme_override: Option<bool>,
+    toast_task: Option<Task<()>>,
     /// Per-tab subscriptions (grid events), dropped with the tab
     tab_subscriptions: std::collections::HashMap<String, Subscription>,
     panel: bottom_panel::PanelState,
@@ -88,13 +99,15 @@ struct QuarryWindow {
 
 impl QuarryWindow {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut state = AppState::new();
-        // In-memory SQLite seeding is sub-millisecond; fine to block once at startup.
-        DB_RUNTIME.block_on(state.init_demo_playground());
+        let state = AppState::new();
 
         let command_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables, actions, or type SQL…"));
         let conn_name_input = cx.new(|cx| InputState::new(window, cx).default_value("Local SQLite"));
         let conn_path_input = cx.new(|cx| InputState::new(window, cx).default_value(":memory:"));
+        let onboard_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Paste a connection URL or a SQLite file path")
+        });
+        onboard_input.update(cx, |i, cx| i.focus(window, cx));
 
         let subscriptions = vec![
             cx.subscribe_in(&command_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
@@ -105,14 +118,26 @@ impl QuarryWindow {
                 InputEvent::PressEnter { .. } => this.confirm_command_bar(window, cx),
                 _ => {}
             }),
-            cx.subscribe_in(&conn_path_input, window, |this, _, ev: &InputEvent, window, cx| {
+            cx.subscribe_in(&conn_path_input, window, |this, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } => this.connect_add_conn_modal(window, cx),
+                // Pasting a URL picks the database type (C1)
+                InputEvent::Change => {
+                    this.state.add_conn_kind = guess_profile(&input.read(cx).value()).kind;
+                    cx.notify();
+                }
+                _ => {}
+            }),
+            cx.subscribe_in(&onboard_input, window, |this, input, ev: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { .. } = ev {
-                    this.connect_add_conn_modal(window, cx);
+                    let text = input.read(cx).value().trim().to_string();
+                    if !text.is_empty() {
+                        this.connect_profile(guess_profile(&text), window, cx);
+                    }
                 }
             }),
         ];
 
-        let theme = Theme::default();
+        let theme = Theme::for_mode(os_is_dark(window));
         let panel = bottom_panel::PanelState::new(&theme, window, cx);
         let mut this = Self {
             state,
@@ -124,14 +149,117 @@ impl QuarryWindow {
             conn_path_input,
             _subscriptions: subscriptions,
             tab_subscriptions: Default::default(),
+            onboard_input,
+            theme_override: None,
+            toast_task: None,
         };
-
-        if this.state.session.is_some() {
-            this.open_table_tab("users", "main", window, cx);
-            this.open_query_tab("SELECT * FROM users WHERE active = 1;", window, cx);
-            this.state.active_tab_index = 0;
-        }
+        this.apply_theme(cx);
         this
+    }
+
+    /// Loads the in-memory demo database (users, products, orders) and opens it
+    fn open_demo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // In-memory SQLite seeding is sub-millisecond; fine to block here.
+        DB_RUNTIME.block_on(self.state.init_demo_playground());
+        self.open_table_tab("users", "main", window, cx);
+        self.refresh_active_tab(window, cx);
+        cx.notify();
+    }
+
+    /// Theme follows the OS appearance unless the user picked one
+    fn sync_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let dark = self.theme_override.unwrap_or_else(|| os_is_dark(window));
+        if dark != self.theme.is_dark {
+            self.theme = Theme::for_mode(dark);
+            self.apply_theme(cx);
+        }
+    }
+
+    fn apply_theme(&mut self, cx: &mut Context<Self>) {
+        use gpui::component::theme::{Theme as KitTheme, ThemeMode};
+        KitTheme::change(if self.theme.is_dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
+        let grids: Vec<_> = self.state.tabs.iter().map(|t| t.grid().clone()).chain(self.panel.grids()).collect();
+        for grid in grids {
+            grid.update(cx, |t, cx| {
+                t.delegate_mut().set_theme(&self.theme);
+                cx.notify();
+            });
+        }
+    }
+
+    fn toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
+        self.theme_override = Some(!self.theme.is_dark);
+        self.sync_theme(window, cx);
+        cx.notify();
+    }
+
+    /// First run (U11): one input, nothing else
+    fn render_onboarding(&self, cx: &mut Context<Self>) -> AnyElement {
+        let t = &self.theme;
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                v_flex()
+                    .w(px(520.0))
+                    .gap_3()
+                    .child(Icon::new(IconName::Database).text_color(t.text_muted))
+                    .child(div().text_lg().text_color(t.text_primary).child("Connect a database"))
+                    .child(Input::new(&self.onboard_input))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t.text_muted)
+                            .child("postgres://user@host:5432/db  ·  ~/data/app.sqlite  ·  :memory:  ·  or drop a SQLite file here"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("onboard-demo")
+                                    .label("Open the demo database")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_demo(window, cx))),
+                            )
+                            .child(
+                                Button::new("onboard-form")
+                                    .label("More options")
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, window, cx| this.open_add_conn(window, cx))),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Short-lived confirmation in the corner; also kept in Output
+    fn toast(&mut self, msg: impl Into<String>, error: bool, cx: &mut Context<Self>) {
+        let msg = msg.into();
+        self.state.messages.push(if error { format!("Error: {msg}") } else { msg.clone() });
+        self.state.toast_message = Some((msg, error));
+        self.toast_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(std::time::Duration::from_secs(4)).await;
+            this.update(cx, |this, cx| {
+                this.state.toast_message = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
+    /// The connection the active tab uses: a table tab's own, otherwise the active one
+    fn current_connection(&self, cx: &App) -> (Option<Arc<dyn DatabaseSession>>, Option<ConnectionProfile>) {
+        match self.state.active_tab() {
+            Some(Tab::Table { grid, connection, .. }) => {
+                (grid.read(cx).delegate().source.as_ref().map(|s| s.session.clone()), connection.clone())
+            }
+            _ => (self.state.session.clone(), self.state.active_connection.clone()),
+        }
     }
 
     fn open_query_tab(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -203,6 +331,7 @@ impl QuarryWindow {
             schema_name: schema_name.to_string(),
             filter,
             grid,
+            connection: self.state.active_connection.clone(),
         });
         self.state.active_tab_index = self.state.tabs.len() - 1;
     }
@@ -397,7 +526,7 @@ impl QuarryWindow {
 
     /// Auto-commit ⇄ manual commit for the active connection (E9)
     fn toggle_tx_mode(&mut self, _: &ToggleTxMode, _: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.state.session.clone() else { return };
+        let Some(session) = self.current_connection(cx).0 else { return };
         if session.in_transaction() {
             self.state.messages.push("Commit or roll back the open transaction before switching modes.".into());
         } else {
@@ -417,12 +546,12 @@ impl QuarryWindow {
     }
 
     fn end_tx(&mut self, commit: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.state.session.clone().filter(|s| s.in_transaction()) else { return };
+        let Some(session) = self.current_connection(cx).0.filter(|s| s.in_transaction()) else { return };
         let fut = async move { if commit { session.commit().await } else { session.rollback().await } };
         run_db(window, cx, fut, move |this, res, window, cx| {
             match res {
-                Ok(()) => this.state.messages.push(if commit { "Transaction committed." } else { "Transaction rolled back." }.into()),
-                Err(e) => this.state.messages.push(format!("Error: {}", e)),
+                Ok(()) => this.toast(if commit { "Transaction committed" } else { "Transaction rolled back" }, false, cx),
+                Err(e) => this.toast(e.to_string(), true, cx),
             }
             // What the grid shows may have just been undone
             if let Some(tab) = this.state.active_tab() {
@@ -522,6 +651,10 @@ impl QuarryWindow {
             self.open_add_conn(window, cx);
         } else if action_id == "action:toggle_sidebar" {
             self.toggle_sidebar(&ToggleSidebar, window, cx);
+        } else if action_id == "action:theme" {
+            self.toggle_theme(&ToggleTheme, window, cx);
+        } else if action_id == "action:demo" {
+            self.open_demo(window, cx);
         } else if action_id == "action:toggle_tx" {
             self.toggle_tx_mode(&ToggleTxMode, window, cx);
         } else if action_id == "action:commit_tx" {
@@ -589,13 +722,14 @@ impl QuarryWindow {
         run_db(window, cx, async move { open_session(&profile, log).await.map(|(s, c)| (profile, s, c)) }, move |this, res, window, cx| {
             match res {
                 Ok((profile, session, catalog)) => {
+                    this.toast(format!("Connected to {}", profile.name), false, cx);
                     this.state.apply_connection(profile, session, catalog);
                     this.state.add_conn_modal_open = false;
                     this.state.add_conn_feedback = None;
                     this.refocus_root(window, cx);
                 }
                 Err(e) => {
-                    this.state.messages.push(format!("Could not connect to {}: {}", name, e));
+                    this.toast(format!("Could not connect to {}: {}", name, e), true, cx);
                     this.state.add_conn_feedback = Some((e, true));
                 }
             }
@@ -640,41 +774,229 @@ impl QuarryWindow {
         };
 
         run_db(window, cx, async move { session.apply_edits(&table, &changes).await.map(|n| (n, table)) }, move |this, res, window, cx| {
-            grid.update(cx, |t, cx| {
+            let toast = grid.update(cx, |t, cx| {
                 let rs = t.delegate_mut();
-                match res {
+                let toast = match res {
                     Ok((n, table)) => {
                         rs.pending.clear();
                         rs.notice = None;
-                        this.state.messages.push(format!("Applied {} {} to {}.", n, if n == 1 { "change" } else { "changes" }, table));
                         // Re-read what's loaded without jumping to the top
                         rs.fetch(Fetch::Reload, window, cx);
+                        (format!("Applied {} {} to {}", n, if n == 1 { "change" } else { "changes" }, table.replace('"', "")), false)
                     }
                     // Pending changes stay intact on failure (E8)
                     Err(e) => {
-                        this.state.messages.push(format!("Submit failed: {}", e));
                         rs.notice = Some(e.to_string());
+                        (format!("Submit failed: {}", e), true)
                     }
-                }
+                };
                 cx.notify();
+                toast
             });
+            this.toast(toast.0, toast.1, cx);
         });
     }
 }
 
 impl Render for QuarryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_theme(window, cx);
         let bottom_panel = self.render_bottom_panel(window, cx);
         let kill_confirm = self.render_kill_confirm(cx);
         let active_tab = self.state.active_tab().cloned();
+        let (current_session, current_conn) = self.current_connection(cx);
+        let t = self.theme.clone();
 
-        // Cross-platform Window Titlebar Padding:
-        // macOS: 78px to cleanly clear native window traffic light buttons.
-        // Linux/Windows: 12px standard padding.
+        // macOS: clear the traffic lights; elsewhere a normal gutter
         #[cfg(target_os = "macos")]
         let titlebar_left_pad = px(78.0);
         #[cfg(not(target_os = "macos"))]
         let titlebar_left_pad = px(12.0);
+
+        let env_color = |env: Environment| match env {
+            Environment::Local => t.success,
+            Environment::Staging => t.warning,
+            Environment::Prod => t.danger,
+        };
+
+        // Title bar: where you are, and the one box that does everything (⌘K)
+        let titlebar = h_flex()
+            .h(px(38.0))
+            .w_full()
+            .pl(titlebar_left_pad)
+            .pr_3()
+            .bg(t.bg_sidebar)
+            .border_b_1()
+            .border_color(t.border)
+            .items_center()
+            .child(
+                h_flex()
+                    .flex_1()
+                    .gap_1p5()
+                    .items_center()
+                    .when_some(current_conn.clone(), |this, c| {
+                        this.child(div().size(px(6.0)).rounded_full().bg(env_color(c.env)))
+                            .child(div().text_xs().text_color(t.text_secondary).child(c.name.clone()))
+                            .when(c.env != Environment::Local, |this| {
+                                this.child(div().text_xs().font_weight(FontWeight::BOLD).text_color(env_color(c.env)).child(c.env.label()))
+                            })
+                    }),
+            )
+            .child(
+                h_flex()
+                    .id("omnibox-trigger-btn")
+                    .w(px(360.0))
+                    .h(px(26.0))
+                    .px_2p5()
+                    .gap_2()
+                    .rounded(px(6.0))
+                    .bg(t.bg_panel)
+                    .border_1()
+                    .border_color(t.border)
+                    .items_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.bg_hover))
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_command_bar(&ToggleCommandBar, window, cx)))
+                    .child(Icon::new(IconName::Search).xsmall().text_color(t.text_muted))
+                    .child(div().flex_1().text_xs().text_color(t.text_muted).child("Search tables, run SQL, or type > for commands"))
+                    .child(div().text_xs().text_color(t.text_muted).child("⌘K")),
+            )
+            .child(div().flex_1());
+
+        // Tabs: icon + title + close; hidden when nothing is open
+        let tab_strip = (!self.state.tabs.is_empty()).then(|| {
+            h_flex()
+                .h(px(32.0))
+                .w_full()
+                .px_1()
+                .gap_px()
+                .bg(t.bg_panel)
+                .border_b_1()
+                .border_color(t.border)
+                .items_end()
+                .children(self.state.tabs.iter().enumerate().map(|(idx, tab)| {
+                    let is_active = idx == self.state.active_tab_index;
+                    let icon = match tab {
+                        Tab::Query { .. } => IconName::SquareTerminal,
+                        Tab::Table { .. } => IconName::Table,
+                    };
+                    h_flex()
+                        .id(("tab-select", idx))
+                        .h(px(28.0))
+                        .pl_2p5()
+                        .pr_1()
+                        .gap_1p5()
+                        .items_center()
+                        .rounded_t(px(5.0))
+                        .cursor_pointer()
+                        .when(is_active, |d| d.bg(t.bg_app))
+                        .when(!is_active, |d| d.hover(|s| s.bg(t.bg_hover)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.state.active_tab_index = idx;
+                            cx.notify();
+                        }))
+                        .child(Icon::new(icon).xsmall().text_color(if is_active { t.accent } else { t.text_muted }))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(if is_active { t.text_primary } else { t.text_secondary })
+                                .child(tab.title().to_string()),
+                        )
+                        .child(
+                            Button::new(("tab-close", idx))
+                                .icon(IconName::X)
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.close_tab_at(idx, cx);
+                                    cx.notify();
+                                })),
+                        )
+                }))
+                .child(
+                    Button::new("tab-add-btn")
+                        .icon(IconName::Plus)
+                        .ghost()
+                        .xsmall()
+                        .tooltip("New query (⌘N)")
+                        .on_click(cx.listener(|this, _, window, cx| this.new_query(&NewQuery, window, cx))),
+                )
+        });
+
+        let center: AnyElement = match active_tab.as_ref() {
+            None if self.state.session.is_none() => self.render_onboarding(cx),
+            None => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .child(div().text_sm().text_color(t.text_secondary).child("Pick a table from the sidebar"))
+                .child(div().text_xs().text_color(t.text_muted).child("or press ⌘K to search, ⌘N for a new query"))
+                .into_any_element(),
+            Some(tab) => v_flex()
+                .size_full()
+                .child(match tab {
+                    Tab::Query { editor, is_running, error_message, .. } => QueryEditor::render(
+                        editor,
+                        *is_running,
+                        error_message.as_deref(),
+                        &self.theme,
+                        cx,
+                        |this, window, cx| this.refresh_active_tab(window, cx),
+                    )
+                    .into_any_element(),
+                    Tab::Table { filter, .. } => h_flex()
+                        .h(px(34.0))
+                        .w_full()
+                        .px_3()
+                        .gap_2()
+                        .border_b_1()
+                        .border_color(t.border)
+                        .items_center()
+                        // Single-line inputs propagate Enter: apply the filter
+                        .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
+                            this.refresh_active_tab(window, cx);
+                        }))
+                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("WHERE"))
+                        .child(div().flex_1().child(Input::new(filter).appearance(false)))
+                        .child(
+                            Button::new("filter-clear-btn")
+                                .label("Clear")
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, window, cx| this.clear_filter(window, cx))),
+                        )
+                        .into_any_element(),
+                })
+                .child(div().flex_1().min_h_0().child(DataGrid::render(
+                    tab.grid(),
+                    &self.theme,
+                    cx,
+                    |this, window, cx| this.refresh_active_tab(window, cx),
+                    |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
+                    |this, window, cx| this.commit_pending_changes(window, cx),
+                )))
+                .into_any_element(),
+        };
+
+        let sidebar = Sidebar::render(
+            &self.state,
+            &self.theme,
+            cx,
+            |this, table_name, schema_name, window, cx| {
+                this.open_table_tab(&table_name, &schema_name, window, cx);
+                this.refresh_active_tab(window, cx);
+                cx.notify();
+            },
+            |this, window, cx| this.open_add_conn(window, cx),
+            |this, schema_name, _window, cx| {
+                this.state.toggle_schema(&schema_name);
+                cx.notify();
+            },
+            |this, id, window, cx| this.connect_saved(id, window, cx),
+        );
 
         div()
             .id("quarry-root")
@@ -692,464 +1014,48 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::toggle_tx_mode))
             .on_action(cx.listener(Self::commit_tx))
             .on_action(cx.listener(Self::rollback_tx))
+            .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
+            // Drop a SQLite file anywhere to open it (C3, U11)
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.connect_profile(guess_profile(&path.to_string_lossy()), window, cx);
+                }
+            }))
             .flex()
             .flex_col()
             .size_full()
-            .bg(self.theme.bg_app)
-            .text_color(self.theme.text_primary)
-            .child(
-                // Unified Window Titlebar (Clean Zed styling, no emojis)
-                h_flex()
-                    .h(px(38.0))
-                    .w_full()
-                    .bg(self.theme.bg_sidebar)
-                    .border_b_1()
-                    .border_color(self.theme.border)
-                    .justify_between()
-                    .items_center()
-                    .pl(titlebar_left_pad)
-                    .pr_3()
+            .bg(t.bg_app)
+            .text_color(t.text_primary)
+            .child(titlebar)
+            .child(div().flex_1().min_h_0().child(
+                h_resizable("main-split")
                     .child(
-                        // Left items: Breadcrumbs (Workspace, Connection, Branch)
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                h_flex()
-                                    .id("titlebar-workspace-btn")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .gap_1p5()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(self.theme.bg_hover))
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(self.theme.text_primary)
-                                            .child(self.state.workspace_name.clone()),
-                                    )
-                                    .child(div().text_xs().text_color(self.theme.text_muted).child("v")),
-                            )
-                            .child(
-                                h_flex()
-                                    .id("titlebar-conn-btn")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .gap_1p5()
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(self.theme.bg_hover))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_add_conn(window, cx);
-                                    }))
-                                    .child(
-                                        div()
-                                            .w(px(5.0))
-                                            .h(px(5.0))
-                                            .rounded(px(2.5))
-                                            .bg(self.theme.success),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(self.theme.text_secondary)
-                                            .child(
-                                                self.state
-                                                    .active_connection
-                                                    .as_ref()
-                                                    .map(|c| c.name.clone())
-                                                    .unwrap_or_else(|| "offline".to_string()),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                h_flex()
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .gap_1p5()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(self.theme.text_muted)
-                                            .child("main"),
-                                    ),
-                            ),
+                        resizable_panel()
+                            .size(px(240.0))
+                            .size_range(px(160.0)..px(480.0))
+                            .visible(self.state.sidebar_visible)
+                            .child(sidebar),
                     )
                     .child(
-                        // Center Omnibox Search Trigger
-                        h_flex()
-                            .id("omnibox-trigger-btn")
-                            .w(px(320.0))
-                            .h(px(26.0))
-                            .px_2p5()
-                            .rounded(px(5.0))
-                            .bg(self.theme.bg_panel)
-                            .border_1()
-                            .border_color(self.theme.border)
-                            .justify_between()
-                            .items_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(self.theme.bg_hover))
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_command_bar(&ToggleCommandBar, window, cx);
-                            }))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(self.theme.text_muted)
-                                    .child("Search tables, SQL..."),
-                            )
-                            .child(
-                                div()
-                                    .px_1p5()
-                                    .py(px(0.5))
-                                    .rounded(px(3.0))
-                                    .bg(self.theme.bg_surface)
-                                    .text_xs()
-                                    .text_color(self.theme.text_secondary)
-                                    .font_weight(FontWeight::BOLD)
-                                    .child("⌘K"),
-                            ),
-                    )
-                    .child(
-                        // Right Action Controls
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .id("top-new-query-btn")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .bg(self.theme.bg_surface)
-                                    .text_xs()
-                                    .text_color(self.theme.text_secondary)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(self.theme.bg_hover).text_color(self.theme.text_primary))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.new_query(&NewQuery, window, cx);
-                                    }))
-                                    .child("+ Query"),
-                            )
-                            .child(
-                                div()
-                                    .id("top-add-conn-btn")
-                                    .px_2()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .bg(self.theme.bg_surface)
-                                    .text_xs()
-                                    .text_color(self.theme.text_secondary)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(self.theme.bg_hover).text_color(self.theme.text_primary))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.open_add_conn(window, cx);
-                                    }))
-                                    .child("+ Conn"),
-                            )
-                            .child(
-                                div()
-                                    .id("top-toggle-sidebar-btn")
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded(px(3.0))
-                                    .bg(if self.state.sidebar_visible { self.theme.bg_surface } else { self.theme.bg_sidebar })
-                                    .text_xs()
-                                    .text_color(if self.state.sidebar_visible { self.theme.text_primary } else { self.theme.text_muted })
-                                    .cursor_pointer()
-                                    .hover(|s| s.text_color(self.theme.text_primary))
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.state.sidebar_visible = !this.state.sidebar_visible;
-                                        cx.notify();
-                                    }))
-                                    .child("Sidebar"),
-                            )
-                            .child(
-                                div()
-                                    .id("top-toggle-panel-btn")
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded(px(3.0))
-                                    .bg(if self.state.bottom_panel_open { self.theme.bg_surface } else { self.theme.bg_sidebar })
-                                    .text_xs()
-                                    .text_color(if self.state.bottom_panel_open { self.theme.text_primary } else { self.theme.text_muted })
-                                    .cursor_pointer()
-                                    .hover(|s| s.text_color(self.theme.text_primary))
-                                    .on_click(cx.listener(|this, _, _window, cx| {
-                                        this.state.bottom_panel_open = !this.state.bottom_panel_open;
-                                        cx.notify();
-                                    }))
-                                    .child("Panel"),
-                            ),
+                        resizable_panel().child(
+                            v_resizable("content-split")
+                                .child(resizable_panel().child(v_flex().size_full().children(tab_strip).child(center)))
+                                .child(
+                                    resizable_panel()
+                                        .size(px(280.0))
+                                        .size_range(px(120.0)..px(900.0))
+                                        .visible(self.state.bottom_panel_open)
+                                        .child(bottom_panel),
+                                ),
+                        ),
                     ),
-            )
-            .child(
-                // Tab Strip (Zed tabs with clean micro-badges)
-                h_flex()
-                    .h(px(32.0))
-                    .w_full()
-                    .bg(self.theme.bg_panel)
-                    .border_b_1()
-                    .border_color(self.theme.border)
-                    .justify_between()
-                    .items_center()
-                    .px_2()
-                    .child(
-                        h_flex()
-                            .gap_1()
-                            .items_center()
-                            .child(
-                                // History arrows (functional tab navigation)
-                                h_flex()
-                                    .gap_1()
-                                    .pr_2()
-                                    .items_center()
-                                    .child(
-                                        div()
-                                            .id("tab-nav-prev")
-                                            .px_1()
-                                            .text_xs()
-                                            .text_color(self.theme.text_muted)
-                                            .cursor_pointer()
-                                            .hover(|s| s.text_color(self.theme.text_primary))
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                this.state.active_tab_index = this.state.active_tab_index.saturating_sub(1);
-                                                cx.notify();
-                                            }))
-                                            .child("<"),
-                                    )
-                                    .child(
-                                        div()
-                                            .id("tab-nav-next")
-                                            .px_1()
-                                            .text_xs()
-                                            .text_color(self.theme.text_muted)
-                                            .cursor_pointer()
-                                            .hover(|s| s.text_color(self.theme.text_primary))
-                                            .on_click(cx.listener(|this, _, _window, cx| {
-                                                if this.state.active_tab_index + 1 < this.state.tabs.len() {
-                                                    this.state.active_tab_index += 1;
-                                                    cx.notify();
-                                                }
-                                            }))
-                                            .child(">"),
-                                    ),
-                            )
-                            .children(self.state.tabs.iter().enumerate().map(|(idx, tab)| {
-                                let is_active = idx == self.state.active_tab_index;
-                                let bg = if is_active { self.theme.bg_app } else { self.theme.bg_panel };
-                                let text_color = if is_active { self.theme.text_primary } else { self.theme.text_secondary };
-                                let tag = match tab {
-                                    Tab::Query { .. } => "SQL",
-                                    Tab::Table { .. } => "TBL",
-                                };
-
-                                h_flex()
-                                    .id(("tab-select", idx))
-                                    .h(px(26.0))
-                                    .px_2p5()
-                                    .rounded_t(px(4.0))
-                                    .bg(bg)
-                                    .border_t_1()
-                                    .border_l_1()
-                                    .border_r_1()
-                                    .border_color(if is_active { self.theme.border } else { rgb(0x00000000) })
-                                    .items_center()
-                                    .gap_1p5()
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, _window, cx| {
-                                        this.state.active_tab_index = idx;
-                                        cx.notify();
-                                    }))
-                                    .child(
-                                        div()
-                                            .px_1()
-                                            .rounded(px(2.0))
-                                            .bg(self.theme.bg_surface)
-                                            .text_xs()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(if is_active { self.theme.accent } else { self.theme.text_muted })
-                                            .child(tag),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .font_weight(if is_active { FontWeight::SEMIBOLD } else { FontWeight::NORMAL })
-                                            .text_color(text_color)
-                                            .child(tab.title().to_string()),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(("tab-close", idx))
-                                            .px_1()
-                                            .text_xs()
-                                            .text_color(self.theme.text_muted)
-                                            .hover(|s| s.text_color(self.theme.text_primary))
-                                            .on_click(cx.listener(move |this, _, _window, cx| {
-                                                this.close_tab_at(idx, cx);
-                                                cx.notify();
-                                            }))
-                                            .child("x"),
-                                    )
-                            }))
-                            .child(
-                                div()
-                                    .id("tab-add-btn")
-                                    .px_2()
-                                    .py_0p5()
-                                    .text_xs()
-                                    .text_color(self.theme.text_muted)
-                                    .cursor_pointer()
-                                    .hover(|s| s.text_color(self.theme.text_primary))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.new_query(&NewQuery, window, cx);
-                                    }))
-                                    .child("+"),
-                            ),
-                    )
-                    .child(
-                        // Quick run action
-                        h_flex()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .id("tab-run-btn")
-                                    .px_3()
-                                    .py_1()
-                                    .rounded(px(4.0))
-                                    .bg(self.theme.accent)
-                                    .text_color(rgb(0xffffff))
-                                    .text_xs()
-                                    .font_weight(FontWeight::BOLD)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(self.theme.accent_hover))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh_active_tab(window, cx);
-                                    }))
-                                    .child("Run ⌘↵"),
-                            ),
-                    ),
-            )
-            .child(
-                // Main Split Pane: Sidebar (Left) + Center Content (Right)
-                h_flex()
-                    .flex_1()
-                    .w_full()
-                    .overflow_hidden()
-                    .child(Sidebar::render(
-                        &self.state,
-                        &self.theme,
-                        cx,
-                        |this, table_name, schema_name, window, cx| {
-                            this.open_table_tab(&table_name, &schema_name, window, cx);
-                            this.refresh_active_tab(window, cx);
-                            cx.notify();
-                        },
-                        |this, window, cx| {
-                            this.open_add_conn(window, cx);
-                        },
-                        |this, schema_name, _window, cx| {
-                            this.state.toggle_schema(&schema_name);
-                            cx.notify();
-                        },
-                        |this, id, window, cx| this.connect_saved(id, window, cx),
-                    ))
-                    .child(
-                        // Center pane: Editor or Filter + Results Grid
-                        v_flex()
-                            .flex_1()
-                            .h_full()
-                            .overflow_hidden()
-                            .child(match active_tab.as_ref() {
-                                Some(Tab::Query { editor, is_running, error_message, .. }) => {
-                                    QueryEditor::render(
-                                        editor,
-                                        *is_running,
-                                        error_message.as_deref(),
-                                        &self.theme,
-                                        cx,
-                                        |this, window, cx| {
-                                            this.refresh_active_tab(window, cx);
-                                        },
-                                    ).into_any_element()
-                                }
-                                Some(Tab::Table { table_name, filter, .. }) => {
-                                    h_flex()
-                                        .h(px(34.0))
-                                        .w_full()
-                                        .px_3()
-                                        .gap_2()
-                                        .bg(self.theme.bg_panel)
-                                        .border_b_1()
-                                        .border_color(self.theme.border)
-                                        .items_center()
-                                        // Single-line inputs propagate Enter: apply the filter
-                                        .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
-                                            this.refresh_active_tab(window, cx);
-                                        }))
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .font_weight(FontWeight::BOLD)
-                                                .text_color(self.theme.text_muted)
-                                                .child("WHERE"),
-                                        )
-                                        .child(div().flex_1().child(Input::new(filter).appearance(false)))
-                                        .child(
-                                            div()
-                                                .id("filter-clear-btn")
-                                                .px_2()
-                                                .py_0p5()
-                                                .rounded(px(3.0))
-                                                .text_color(self.theme.text_secondary)
-                                                .text_xs()
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(self.theme.bg_hover))
-                                                .on_click(cx.listener(|this, _, window, cx| this.clear_filter(window, cx)))
-                                                .child("Clear"),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(self.theme.text_muted)
-                                                .child(table_name.clone()),
-                                        )
-                                        .into_any_element()
-                                }
-                                None => div().into_any_element(),
-                            })
-                            .child(
-                                // Results Grid
-                                div()
-                                    .flex_1()
-                                    .w_full()
-                                    .overflow_hidden()
-                                    .when_some(active_tab.as_ref(), |this, tab| {
-                                        this.child(DataGrid::render(
-                                            tab.grid(),
-                                            &self.theme,
-                                            cx,
-                                            |this, window, cx| this.refresh_active_tab(window, cx),
-                                            |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
-                                            |this, window, cx| this.commit_pending_changes(window, cx),
-                                        ))
-                                    }),
-                            )
-                            .child(bottom_panel),
-                    ),
-            )
+            ))
             .child(StatusBar::render(
                 &self.state,
+                current_session.as_ref(),
+                current_conn.as_ref(),
                 &self.theme,
                 cx,
                 |this, _window, cx| {
@@ -1166,6 +1072,25 @@ impl Render for QuarryWindow {
             ))
             // Modals & Overlays (only rendered when active)
             .children(kill_confirm)
+            .when_some(self.state.toast_message.clone(), |this, (msg, error)| {
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom(px(36.0))
+                        .right(px(16.0))
+                        .max_w(px(480.0))
+                        .px_3()
+                        .py_2()
+                        .rounded(px(6.0))
+                        .bg(t.bg_panel)
+                        .border_1()
+                        .border_color(if error { t.danger } else { t.border })
+                        .shadow_lg()
+                        .text_xs()
+                        .text_color(if error { t.danger } else { t.text_primary })
+                        .child(msg),
+                )
+            })
             .when(self.state.command_bar_open, |this| {
                 this.child(CommandBar::render(
                     &self.state,
@@ -1215,22 +1140,6 @@ impl Render for QuarryWindow {
                         this.state.add_conn_env = env;
                         cx.notify();
                     },
-                    |this, preset, window, cx| {
-                        let (name, kind, path) = match preset {
-                            "sqlite_memory" => ("In-Memory SQLite", ConnectionTargetKind::SqliteMemory, ":memory:"),
-                            "sqlite_file" => ("Local File SQLite", ConnectionTargetKind::SqliteFile, "sample.db"),
-                            "postgres_local" => (
-                                "Local Postgres",
-                                ConnectionTargetKind::Postgres,
-                                "postgres://postgres:postgres@localhost:5432/postgres",
-                            ),
-                            _ => return,
-                        };
-                        this.state.add_conn_kind = kind;
-                        this.state.add_conn_env = Environment::Local;
-                        this.set_conn_inputs(Some(name), path, window, cx);
-                        cx.notify();
-                    },
                     |this, window, cx| {
                         this.connect_add_conn_modal(window, cx);
                     },
@@ -1273,4 +1182,37 @@ fn main() {
         })
         .unwrap();
     });
+}
+
+/// Turns pasted text into a connection: Postgres URLs / key=value strings, `:memory:`, or a SQLite file path
+fn guess_profile(text: &str) -> ConnectionProfile {
+    let text = text.trim();
+    let (kind, name) = if text.starts_with("postgres://") || text.starts_with("postgresql://") || text.contains("host=") {
+        let (bare, _) = connections::split_password(text);
+        let host_db = bare.split_once('@').map(|(_, rest)| rest).unwrap_or(&bare);
+        (ConnectionTargetKind::Postgres, host_db.split('?').next().unwrap_or(host_db).to_string())
+    } else if text == ":memory:" {
+        (ConnectionTargetKind::SqliteMemory, "In-memory SQLite".to_string())
+    } else {
+        let name = std::path::Path::new(text).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| text.to_string());
+        (ConnectionTargetKind::SqliteFile, name)
+    };
+    let path = match text.strip_prefix("~/") {
+        Some(rest) if kind == ConnectionTargetKind::SqliteFile => {
+            std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_else(|_| text.to_string())
+        }
+        _ => text.to_string(),
+    };
+    ConnectionProfile {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        kind,
+        path_or_url: path,
+        env: Environment::Local,
+        read_only: false,
+    }
+}
+
+fn os_is_dark(window: &Window) -> bool {
+    matches!(window.appearance(), WindowAppearance::Dark | WindowAppearance::VibrantDark)
 }

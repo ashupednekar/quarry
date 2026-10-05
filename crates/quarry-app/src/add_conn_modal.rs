@@ -18,7 +18,6 @@ impl AddConnModal {
         path_input: &Entity<InputState>,
         on_toggle_kind: impl Fn(&mut T, ConnectionTargetKind, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_env: impl Fn(&mut T, Environment, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_apply_preset: impl Fn(&mut T, &'static str, &mut Window, &mut Context<T>) + Copy + 'static,
         on_connect: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_test: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_close: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -148,70 +147,6 @@ impl AddConnModal {
                                                         on_toggle_kind(this, ConnectionTargetKind::Postgres, window, cx);
                                                     }))
                                                     .child("PostgreSQL (Remote / URL)"),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                // Quick Presets
-                                v_flex()
-                                    .gap_1()
-                                    .child(div().text_xs().text_color(theme.text_muted).child("QUICK TEMPLATES"))
-                                    .child(
-                                        h_flex()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .id("preset-mem-sqlite")
-                                                    .px_2()
-                                                    .py_1()
-                                                    .rounded(px(3.0))
-                                                    .bg(theme.bg_surface)
-                                                    .border_1()
-                                                    .border_color(theme.border)
-                                                    .text_xs()
-                                                    .text_color(theme.text_secondary)
-                                                    .cursor_pointer()
-                                                    .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary))
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        on_apply_preset(this, "sqlite_memory", window, cx);
-                                                    }))
-                                                    .child("In-Memory SQLite"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .id("preset-file-sqlite")
-                                                    .px_2()
-                                                    .py_1()
-                                                    .rounded(px(3.0))
-                                                    .bg(theme.bg_surface)
-                                                    .border_1()
-                                                    .border_color(theme.border)
-                                                    .text_xs()
-                                                    .text_color(theme.text_secondary)
-                                                    .cursor_pointer()
-                                                    .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary))
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        on_apply_preset(this, "sqlite_file", window, cx);
-                                                    }))
-                                                    .child("Local File (test.db)"),
-                                            )
-                                            .child(
-                                                div()
-                                                    .id("preset-local-pg")
-                                                    .px_2()
-                                                    .py_1()
-                                                    .rounded(px(3.0))
-                                                    .bg(theme.bg_surface)
-                                                    .border_1()
-                                                    .border_color(theme.border)
-                                                    .text_xs()
-                                                    .text_color(theme.text_secondary)
-                                                    .cursor_pointer()
-                                                    .hover(|s| s.bg(theme.bg_hover).text_color(theme.text_primary))
-                                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                                        on_apply_preset(this, "postgres_local", window, cx);
-                                                    }))
-                                                    .child("Local Postgres:5432"),
                                             ),
                                     ),
                             )

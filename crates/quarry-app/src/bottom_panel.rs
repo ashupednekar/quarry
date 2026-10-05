@@ -190,6 +190,12 @@ fn set_grid(grid: &Entity<TableState<ResultSet>>, res: QueryResult, cx: &mut App
     });
 }
 
+impl PanelState {
+    pub fn grids(&self) -> [Entity<TableState<ResultSet>>; 3] {
+        [self.history_grid.clone(), self.log_grid.clone(), self.server_grid.clone()]
+    }
+}
+
 impl QuarryWindow {
     /// Rebuilds the history and log grids when their inputs changed
     fn sync_panel_grids(&mut self, cx: &mut Context<Self>) {
@@ -594,8 +600,7 @@ impl QuarryWindow {
         };
 
         v_flex()
-            .h(px(280.0))
-            .w_full()
+            .size_full()
             .bg(theme.bg_panel)
             .border_t_1()
             .border_color(theme.border)

@@ -78,6 +78,8 @@ pub enum Tab {
         schema_name: String,
         filter: Entity<InputState>,
         grid: Entity<TableState<ResultSet>>,
+        /// The connection this tab was opened on (tabs keep their own connection)
+        connection: Option<ConnectionProfile>,
     },
 }
 
@@ -335,7 +337,11 @@ impl AppState {
 
     /// Installs an opened session as the active connection
     pub fn apply_connection(&mut self, profile: ConnectionProfile, session: Arc<dyn DatabaseSession>, catalog: SchemaCatalog) {
-        self.messages.push(format!("Connected to {}.", profile.name));
+        let mut profile = profile;
+        let bare = |p: &ConnectionProfile| crate::connections::split_password(&p.path_or_url).0;
+        if let Some(existing) = self.saved_connections.iter().find(|c| c.kind == profile.kind && bare(c) == bare(&profile)) {
+            profile.id = existing.id.clone();
+        }
         self.open_sessions.insert(profile.id.clone(), (session.clone(), catalog.clone()));
         self.session = Some(session);
         self.catalog = catalog;
