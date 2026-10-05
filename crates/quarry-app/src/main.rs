@@ -9,6 +9,7 @@ mod editor;
 mod export_dialog;
 mod grid;
 mod history;
+mod import_wizard;
 mod review_modal;
 mod runtime;
 mod sidebar;
@@ -98,6 +99,7 @@ struct QuarryWindow {
     /// File the last toast can reveal in the file manager
     toast_reveal: Option<std::path::PathBuf>,
     export: export_dialog::ExportState,
+    import: import_wizard::ImportState,
     /// Per-tab subscriptions (grid events), dropped with the tab
     tab_subscriptions: std::collections::HashMap<String, Subscription>,
     panel: bottom_panel::PanelState,
@@ -145,6 +147,7 @@ impl QuarryWindow {
 
         let theme = Theme::for_mode(os_is_dark(window));
         let export = export_dialog::ExportState::new(window, cx);
+        let import = import_wizard::ImportState::new(&theme, window, cx);
         let panel = bottom_panel::PanelState::new(&theme, window, cx);
         let mut this = Self {
             state,
@@ -161,6 +164,7 @@ impl QuarryWindow {
             toast_task: None,
             toast_reveal: None,
             export,
+            import,
         };
         this.apply_theme(cx);
         this
@@ -606,6 +610,12 @@ impl QuarryWindow {
             cx.notify();
             return;
         }
+        if self.import.open {
+            // A running import is cancelled from its own button, not Esc
+            self.import.open = self.import_busy();
+            cx.notify();
+            return;
+        }
         let s = &mut self.state;
         let Some(open) = [
             &mut s.command_bar_open,
@@ -668,6 +678,8 @@ impl QuarryWindow {
             self.toggle_sidebar(&ToggleSidebar, window, cx);
         } else if action_id == "action:export" {
             self.open_export(cx);
+        } else if action_id == "action:import" {
+            self.open_import(window, cx);
         } else if action_id == "action:dump" {
             self.dump_database(window, cx);
         } else if action_id == "action:theme" {
@@ -823,6 +835,7 @@ impl Render for QuarryWindow {
         let bottom_panel = self.render_bottom_panel(window, cx);
         let kill_confirm = self.render_kill_confirm(cx);
         let export_dialog = self.render_export_dialog(cx);
+        let import_wizard = self.render_import_wizard(cx);
         let active_tab = self.state.active_tab().cloned();
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
@@ -1095,6 +1108,7 @@ impl Render for QuarryWindow {
             // Modals & Overlays (only rendered when active)
             .children(kill_confirm)
             .children(export_dialog)
+            .children(import_wizard)
             .when_some(self.state.toast_message.clone(), |this, (msg, error)| {
                 this.child(
                     div()

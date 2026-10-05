@@ -4,6 +4,7 @@
 pub mod dump;
 pub mod edits;
 pub mod export;
+pub mod import;
 pub mod logged;
 pub mod postgres;
 pub mod schema;
