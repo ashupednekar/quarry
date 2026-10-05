@@ -369,6 +369,7 @@ impl QuarryWindow {
     }
 
     fn open_table_tab(&mut self, table_name: &str, schema_name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.note_recent_table(schema_name, table_name);
         if let Some(idx) = self.state.find_tab(table_name) {
             self.state.active_tab_index = idx;
             return;
@@ -803,14 +804,15 @@ impl QuarryWindow {
         self.state.command_bar_open = false;
         self.refocus_root(window, cx);
 
-        if let Some(table_name) = action_id.strip_prefix("table:") {
-            let schema = self
-                .state
-                .find_table_schema(table_name)
-                .map(|t| t.schema_name.clone())
-                .unwrap_or_default();
-            self.open_table_tab(table_name, &schema, window, cx);
+        if let Some((schema, table)) = action_id.strip_prefix("table:").and_then(|t| t.split_once('\u{1f}')) {
+            self.open_table_tab(table, schema, window, cx);
             self.refresh_active_tab(window, cx);
+        } else if let Some(id) = action_id.strip_prefix("connection:") {
+            self.connect_saved(id.to_string(), window, cx);
+        } else if let Some(ix) = action_id.strip_prefix("history:").and_then(|i| i.parse::<usize>().ok()) {
+            if let Some(sql) = self.state.history.get(ix).map(|h| h.sql.clone()) {
+                self.open_query_tab(&sql, window, cx);
+            }
         } else if let Some(query) = action_id.strip_prefix("run:") {
             self.open_query_tab(query, window, cx);
             self.refresh_active_tab(window, cx);

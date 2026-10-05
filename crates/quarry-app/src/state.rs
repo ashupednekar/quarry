@@ -141,6 +141,8 @@ pub struct AppState {
 
     // Tabs
     pub tabs: Vec<Tab>,
+    /// Recently opened tables (schema, table), newest first; shown when the command bar is empty
+    pub recent_tables: Vec<(String, String)>,
     pub active_tab_index: usize,
 
     // Bottom Panel
@@ -191,6 +193,7 @@ impl AppState {
             sidebar_visible: true,
 
             tabs: Vec::new(),
+            recent_tables: Vec::new(),
             active_tab_index: 0,
 
             bottom_panel_open: false,
@@ -330,6 +333,12 @@ impl AppState {
     pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
         *self.completion_catalog.borrow_mut() = catalog.clone();
         self.catalog = catalog;
+    }
+
+    pub fn note_recent_table(&mut self, schema: &str, table: &str) {
+        self.recent_tables.retain(|(s, t)| !(s == schema && t == table));
+        self.recent_tables.insert(0, (schema.to_string(), table.to_string()));
+        self.recent_tables.truncate(8);
     }
 
     pub fn find_tab(&self, table_name: &str) -> Option<usize> {
