@@ -10,6 +10,7 @@ mod editor;
 mod export_dialog;
 mod files;
 mod params_dialog;
+mod peek;
 mod grid;
 mod history;
 mod import_wizard;
@@ -134,6 +135,8 @@ struct QuarryWindow {
     closed_tabs: Vec<(Tab, Vec<(String, Subscription)>)>,
     /// Tab shown in the right pane of the split view, by id
     split_id: Option<String>,
+    peek: Option<peek::Peek>,
+    peek_task: Option<Task<()>>,
     /// File the last toast can reveal in the file manager
     toast_reveal: Option<std::path::PathBuf>,
     export: export_dialog::ExportState,
@@ -214,6 +217,8 @@ impl QuarryWindow {
             session_save_task: None,
             closed_tabs: Vec::new(),
             split_id: None,
+            peek: None,
+            peek_task: None,
             toast_reveal: None,
             export,
             import,
@@ -1151,6 +1156,7 @@ impl Render for QuarryWindow {
         let export_dialog = self.render_export_dialog(cx);
         let import_wizard = self.render_import_wizard(cx);
         let params_dialog = self.render_params_dialog(cx);
+        let peek = self.render_peek(cx);
         let active_tab = self.state.active_tab().cloned();
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
@@ -1314,6 +1320,8 @@ impl Render for QuarryWindow {
             &self.theme,
             cx,
             |this, table_name, schema_name, window, cx| {
+                this.peek = None;
+                this.peek_task = None;
                 this.open_table_tab(&table_name, &schema_name, window, cx);
                 this.refresh_active_tab(window, cx);
                 cx.notify();
@@ -1324,6 +1332,7 @@ impl Render for QuarryWindow {
                 cx.notify();
             },
             |this, id, window, cx| this.connect_saved(id, window, cx),
+            |this, schema, table, hovered, window, cx| this.peek_hover(schema, table, hovered, window, cx),
         );
 
         div()
@@ -1412,6 +1421,7 @@ impl Render for QuarryWindow {
             .children(export_dialog)
             .children(import_wizard)
             .children(params_dialog)
+            .children(peek)
             .when_some(self.grid_menu.as_ref().map(|(p, m, _)| (*p, m.clone())), |this, (pos, menu)| {
                 this.child(deferred(anchored().position(pos).snap_to_window().child(menu)).with_priority(1))
             })

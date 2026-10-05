@@ -21,6 +21,7 @@ impl Sidebar {
         on_add_conn: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_schema: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
         on_conn_click: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_table_hover: impl Fn(&mut T, String, String, bool, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         if !state.sidebar_visible {
             return div().into_any_element();
@@ -90,11 +91,16 @@ impl Sidebar {
                 for (tbl_ix, tbl) in tables.into_iter().enumerate() {
                     let selected = active_table == Some((tbl.schema_name.as_str(), tbl.table_name.as_str()));
                     let (t_name, s_name) = (tbl.table_name.clone(), tbl.schema_name.clone());
+                    let (h_name, h_schema) = (t_name.clone(), s_name.clone());
                     tree = tree.child(
                         row(("table", schema_ix * 100_000 + tbl_ix).into(), 2.0)
                             .when(selected, |r| r.bg(theme.bg_selected))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 on_table_click(this, t_name.clone(), s_name.clone(), window, cx)
+                            }))
+                            // Peek (U7): hovering previews the table without opening it
+                            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
+                                on_table_hover(this, h_schema.clone(), h_name.clone(), *hovered, window, cx)
                             }))
                             .child(icon(
                                 if tbl.is_view { IconName::Eye } else { IconName::Table },
