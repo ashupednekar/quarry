@@ -33,3 +33,4 @@ uuid = { version = "1.11", features = ["v4"] }
 crossbeam-channel = "0.5"
 keyring = "4.2"
 lsp-types = { version = "0.97", features = ["proposed"] }
+sqlformat = "0.5"

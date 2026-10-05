@@ -8,6 +8,7 @@ mod completion;
 mod connections;
 mod editor;
 mod export_dialog;
+mod files;
 mod params_dialog;
 mod grid;
 mod history;
@@ -61,6 +62,10 @@ actions!(
         ExportResults,
         Explain,
         ExplainAnalyze,
+        FormatSql,
+        SaveFile,
+        SaveFileAs,
+        OpenFile,
         MenuUp,
         MenuDown,
     ]
@@ -83,6 +88,10 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("escape", Dismiss, None),
         KeyBinding::new("secondary-shift-e", ExportResults, None),
         KeyBinding::new("secondary-alt-e", Explain, None),
+        KeyBinding::new("shift-alt-f", FormatSql, None),
+        KeyBinding::new("shift-alt-f", FormatSql, Some("Input")),
+        KeyBinding::new("secondary-shift-s", SaveFileAs, None),
+        KeyBinding::new("secondary-o", OpenFile, None),
         KeyBinding::new("secondary-alt-shift-e", ExplainAnalyze, None),
         KeyBinding::new("up", MenuUp, Some("CommandBar > Input")),
         KeyBinding::new("down", MenuDown, Some("CommandBar > Input")),
@@ -113,6 +122,7 @@ struct QuarryWindow {
     /// `Some(dark)` once the user picks a theme; otherwise follow the OS
     theme_override: Option<bool>,
     toast_task: Option<Task<()>>,
+    session_save_task: Option<Task<()>>,
     /// File the last toast can reveal in the file manager
     toast_reveal: Option<std::path::PathBuf>,
     export: export_dialog::ExportState,
@@ -188,6 +198,7 @@ impl QuarryWindow {
             ssh_inputs,
             theme_override: None,
             toast_task: None,
+            session_save_task: None,
             toast_reveal: None,
             export,
             import,
@@ -195,6 +206,11 @@ impl QuarryWindow {
             param_memory: Default::default(),
         };
         this.apply_theme(cx);
+        this.restore_session(window, cx);
+        this._subscriptions.push(cx.on_app_quit(|this, cx| {
+            this.save_session(cx);
+            async {}
+        }));
         this
     }
 
@@ -305,6 +321,10 @@ impl QuarryWindow {
     }
 
     fn open_query_tab(&mut self, sql: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_query_tab_with(sql, None, window, cx);
+    }
+
+    pub fn open_query_tab_with(&mut self, sql: &str, file: Option<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let n = self.state.tabs.iter().filter(|t| matches!(t, Tab::Query { .. })).count() + 1;
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
@@ -318,12 +338,27 @@ impl QuarryWindow {
             e.focus(window, cx);
         });
         let id = format!("q-{}", uuid::Uuid::new_v4());
+        // Every edit schedules a session save, so unsaved queries survive a restart (Q9)
+        let sub = cx.subscribe(&editor, |this, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                this.schedule_session_save(cx);
+                cx.notify();
+            }
+        });
+        self.tab_subscriptions.insert(format!("{id}:editor"), sub);
         let grid = self.new_grid(&id, None, window, cx);
+        let title = file
+            .as_ref()
+            .and_then(|f| f.file_name())
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| format!("query {}", n));
         self.state.tabs.push(Tab::Query {
             id,
-            title: format!("query {}", n),
+            title,
             editor,
             grid,
+            file,
+            saved_text: sql.to_string(),
             is_running: false,
             error_message: None,
         });
@@ -482,7 +517,9 @@ impl QuarryWindow {
 
     /// Runs statements in order on the active connection; stops at the first failure (UC3)
     pub fn execute_statements(&mut self, statements: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.state.session.clone() else { return };
+        let Some(session) = self.state.session.clone() else {
+            return self.toast("Connect to a database first", true, cx);
+        };
         let Some(Tab::Query { id, grid, is_running, error_message, .. }) = self.state.tabs.get_mut(self.state.active_tab_index) else {
             return;
         };
@@ -587,7 +624,10 @@ impl QuarryWindow {
         self.run_active_tab(true, window, cx);
     }
 
-    fn review_changes(&mut self, _: &ReviewChanges, _: &mut Window, cx: &mut Context<Self>) {
+    fn review_changes(&mut self, _: &ReviewChanges, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.state.active_tab(), Some(Tab::Query { .. })) {
+            return self.save_query(false, window, cx);
+        }
         let review_data = match self.state.active_tab() {
             Some(Tab::Table { table_name, grid, .. }) => {
                 let rs = grid.read(cx).delegate();
@@ -666,6 +706,7 @@ impl QuarryWindow {
             }
         }
         self.state.close_tab(idx);
+        self.save_session(cx);
         cx.notify();
     }
 
@@ -751,6 +792,12 @@ impl QuarryWindow {
             self.start_run(RunMode::Explain, window, cx);
         } else if action_id == "action:explain_analyze" {
             self.start_run(RunMode::ExplainAnalyze, window, cx);
+        } else if action_id == "action:format" {
+            self.format_query(window, cx);
+        } else if action_id == "action:open_file" {
+            self.open_sql_file(window, cx);
+        } else if action_id == "action:save_file" {
+            self.save_query(false, window, cx);
         } else if action_id == "action:export" {
             self.open_export(cx);
         } else if action_id == "action:import" {
@@ -1032,6 +1079,10 @@ impl Render for QuarryWindow {
                                 .text_color(if is_active { t.text_primary } else { t.text_secondary })
                                 .child(tab.title().to_string()),
                         )
+                        .when(
+                            matches!(tab, Tab::Query { file: Some(_), editor, saved_text, .. } if editor.read(cx).value().as_ref() != saved_text.as_str()),
+                            |d| d.child(div().size(px(6.0)).rounded_full().bg(t.text_secondary)),
+                        )
                         .child(
                             Button::new(("tab-close", idx))
                                 .icon(IconName::X)
@@ -1065,42 +1116,8 @@ impl Render for QuarryWindow {
                 .child(div().text_sm().text_color(t.text_secondary).child("Pick a table from the sidebar"))
                 .child(div().text_xs().text_color(t.text_muted).child("or press ⌘K to search, ⌘N for a new query"))
                 .into_any_element(),
-            Some(tab) => v_flex()
-                .size_full()
-                .child(match tab {
-                    Tab::Query { editor, is_running, error_message, .. } => QueryEditor::render(
-                        editor,
-                        *is_running,
-                        error_message.as_deref(),
-                        &self.theme,
-                        cx,
-                        |this, window, cx| this.refresh_active_tab(window, cx),
-                    )
-                    .into_any_element(),
-                    Tab::Table { filter, .. } => h_flex()
-                        .h(px(34.0))
-                        .w_full()
-                        .px_3()
-                        .gap_2()
-                        .border_b_1()
-                        .border_color(t.border)
-                        .items_center()
-                        // Single-line inputs propagate Enter: apply the filter
-                        .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
-                            this.refresh_active_tab(window, cx);
-                        }))
-                        .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("WHERE"))
-                        .child(div().flex_1().child(Input::new(filter).appearance(false)))
-                        .child(
-                            Button::new("filter-clear-btn")
-                                .label("Clear")
-                                .ghost()
-                                .xsmall()
-                                .on_click(cx.listener(|this, _, window, cx| this.clear_filter(window, cx))),
-                        )
-                        .into_any_element(),
-                })
-                .child(div().flex_1().min_h_0().child(DataGrid::render(
+            Some(tab) => {
+                let grid = div().size_full().child(DataGrid::render(
                     tab.grid(),
                     &self.theme,
                     cx,
@@ -1108,8 +1125,49 @@ impl Render for QuarryWindow {
                     |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
                     |this, window, cx| this.commit_pending_changes(window, cx),
                     |this, _, cx| this.open_export(cx),
-                )))
-                .into_any_element(),
+                ));
+                match tab {
+                    // Editor over results, with a draggable divider
+                    Tab::Query { editor, is_running, error_message, .. } => v_resizable("query-split")
+                        .child(resizable_panel().size(px(220.0)).size_range(px(80.0)..px(1200.0)).child(QueryEditor::render(
+                            editor,
+                            *is_running,
+                            error_message.as_deref(),
+                            &self.theme,
+                            cx,
+                            |this, window, cx| this.refresh_active_tab(window, cx),
+                        )))
+                        .child(resizable_panel().child(grid))
+                        .into_any_element(),
+                    Tab::Table { filter, .. } => v_flex()
+                        .size_full()
+                        .child(
+                            h_flex()
+                                .h(px(34.0))
+                                .w_full()
+                                .px_3()
+                                .gap_2()
+                                .border_b_1()
+                                .border_color(t.border)
+                                .items_center()
+                                // Single-line inputs propagate Enter: apply the filter
+                                .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
+                                    this.refresh_active_tab(window, cx);
+                                }))
+                                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("WHERE"))
+                                .child(div().flex_1().child(Input::new(filter).appearance(false)))
+                                .child(
+                                    Button::new("filter-clear-btn")
+                                        .label("Clear")
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, window, cx| this.clear_filter(window, cx))),
+                                ),
+                        )
+                        .child(div().flex_1().min_h_0().child(grid))
+                        .into_any_element(),
+                }
+            }
         };
 
         let sidebar = Sidebar::render(
@@ -1148,6 +1206,9 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(|this, _: &ExportResults, _, cx| this.open_export(cx)))
             .on_action(cx.listener(|this, _: &Explain, window, cx| this.start_run(RunMode::Explain, window, cx)))
+            .on_action(cx.listener(|this, _: &FormatSql, window, cx| this.format_query(window, cx)))
+            .on_action(cx.listener(|this, _: &SaveFileAs, window, cx| this.save_query(true, window, cx)))
+            .on_action(cx.listener(|this, _: &OpenFile, window, cx| this.open_sql_file(window, cx)))
             .on_action(cx.listener(|this, _: &ExplainAnalyze, window, cx| this.start_run(RunMode::ExplainAnalyze, window, cx)))
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))

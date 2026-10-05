@@ -72,6 +72,10 @@ pub enum Tab {
         title: String,
         editor: Entity<EditorState>,
         grid: Entity<TableState<ResultSet>>,
+        /// The .sql file this tab is saved to, if any
+        file: Option<std::path::PathBuf>,
+        /// Text as last saved, to show unsaved changes
+        saved_text: String,
         is_running: bool,
         error_message: Option<String>,
     },

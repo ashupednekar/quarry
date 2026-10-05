@@ -18,8 +18,7 @@ impl QueryEditor {
         on_run: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         v_flex()
-            .h(px(200.0))
-            .w_full()
+            .size_full()
             .bg(theme.bg_panel)
             .border_b_1()
             .border_color(theme.border)
