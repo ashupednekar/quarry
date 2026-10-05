@@ -47,6 +47,9 @@ pub struct ConnectionProfile {
     pub path_or_url: String,
     pub env: Environment,
     pub read_only: bool,
+    /// Reach the database through an SSH tunnel (Postgres)
+    #[serde(default)]
+    pub ssh: Option<crate::ssh::SshConfig>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -124,6 +127,8 @@ pub struct AppState {
     pub open_sessions: HashMap<String, (Arc<dyn DatabaseSession>, SchemaCatalog)>,
     /// Every statement the app ran, on every connection (L1)
     pub activity_log: ActivityLog,
+    /// Open SSH tunnels by connection id; dropping one stops its ssh process
+    pub tunnels: HashMap<String, crate::ssh::Tunnel>,
     pub catalog: SchemaCatalog,
     pub expanded_schemas: HashSet<String>,
     pub sidebar_visible: bool,
@@ -150,6 +155,7 @@ pub struct AppState {
     pub add_conn_kind: ConnectionTargetKind,
     pub add_conn_env: Environment,
     pub add_conn_read_only: bool,
+    pub add_conn_ssh: bool,
     pub add_conn_feedback: Option<(String, bool)>, // (msg, is_error)
 
 
@@ -172,6 +178,7 @@ impl AppState {
             session: None,
             open_sessions: HashMap::new(),
             activity_log: ActivityLog::default(),
+            tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
             expanded_schemas: HashSet::new(),
             sidebar_visible: true,
@@ -195,6 +202,7 @@ impl AppState {
             add_conn_kind: ConnectionTargetKind::SqliteMemory,
             add_conn_env: Environment::Local,
             add_conn_read_only: false,
+            add_conn_ssh: false,
             add_conn_feedback: None,
 
 
@@ -216,6 +224,7 @@ impl AppState {
             path_or_url: ":memory:".to_string(),
             env: Environment::Local,
             read_only: false,
+            ssh: None,
         };
 
         self.saved_connections.insert(0, profile.clone());
@@ -336,7 +345,13 @@ impl AppState {
     }
 
     /// Installs an opened session as the active connection
-    pub fn apply_connection(&mut self, profile: ConnectionProfile, session: Arc<dyn DatabaseSession>, catalog: SchemaCatalog) {
+    pub fn apply_connection(
+        &mut self,
+        profile: ConnectionProfile,
+        session: Arc<dyn DatabaseSession>,
+        catalog: SchemaCatalog,
+        tunnel: Option<crate::ssh::Tunnel>,
+    ) {
         let mut profile = profile;
         let bare = |p: &ConnectionProfile| crate::connections::split_password(&p.path_or_url).0;
         // Same address as a saved connection: reuse it (name, environment, read-only) instead of duplicating
@@ -344,6 +359,9 @@ impl AppState {
             profile = ConnectionProfile { path_or_url: profile.path_or_url, ..existing.clone() };
         }
         self.open_sessions.insert(profile.id.clone(), (session.clone(), catalog.clone()));
+        if let Some(t) = tunnel {
+            self.tunnels.insert(profile.id.clone(), t);
+        }
         self.session = Some(session);
         self.catalog = catalog;
         if !self.saved_connections.iter().any(|c| c.id == profile.id) {
@@ -362,19 +380,31 @@ impl AppState {
 }
 
 /// Opens a session for the profile and introspects it. Runs on the DB runtime.
-pub async fn open_session(profile: &ConnectionProfile, log: ActivityLog) -> Result<(Arc<dyn DatabaseSession>, SchemaCatalog), String> {
+pub async fn open_session(
+    profile: &ConnectionProfile,
+    log: ActivityLog,
+) -> Result<(Arc<dyn DatabaseSession>, SchemaCatalog, Option<crate::ssh::Tunnel>), String> {
+    let mut tunnel = None;
     let session: Arc<dyn DatabaseSession> = match profile.kind {
         ConnectionTargetKind::SqliteMemory => Arc::new(SqliteSession::open_in_memory().map_err(|e| e.to_string())?),
         ConnectionTargetKind::SqliteFile => {
             Arc::new(SqliteSession::open_file(&profile.path_or_url, profile.read_only).map_err(|e| e.to_string())?)
         }
-        ConnectionTargetKind::Postgres => Arc::new(
-            PostgresSession::connect(&crate::connections::with_secret(profile), profile.read_only)
-                .await
-                .map_err(|e| e.to_string())?,
-        ),
+        ConnectionTargetKind::Postgres => {
+            let mut url = crate::connections::with_secret(profile);
+            if let Some(ssh) = &profile.ssh {
+                let (host, port) = crate::ssh::target(&url);
+                let cfg = ssh.clone();
+                let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
+                    .await
+                    .map_err(|e| e.to_string())??;
+                url = crate::ssh::retarget(&url, t.local_port);
+                tunnel = Some(t);
+            }
+            Arc::new(PostgresSession::connect(&url, profile.read_only).await.map_err(|e| e.to_string())?)
+        }
     };
     let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(session, profile.name.clone(), log));
     let catalog = session.introspect().await.map_err(|e| format!("Introspection error: {}", e))?;
-    Ok((session, catalog))
+    Ok((session, catalog, tunnel))
 }

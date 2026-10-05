@@ -13,6 +13,7 @@ mod import_wizard;
 mod review_modal;
 mod runtime;
 mod sidebar;
+mod ssh;
 mod state;
 mod status_bar;
 mod theme;
@@ -93,6 +94,8 @@ struct QuarryWindow {
     conn_path_input: Entity<InputState>,
     _subscriptions: Vec<Subscription>,
     onboard_input: Entity<InputState>,
+    /// SSH tunnel fields in the connection form: host[:port], user, key file
+    ssh_inputs: [Entity<InputState>; 3],
     /// `Some(dark)` once the user picks a theme; otherwise follow the OS
     theme_override: Option<bool>,
     toast_task: Option<Task<()>>,
@@ -116,6 +119,11 @@ impl QuarryWindow {
             InputState::new(window, cx).placeholder("Paste a connection URL or a SQLite file path")
         });
         onboard_input.update(cx, |i, cx| i.focus(window, cx));
+        let ssh_inputs = [
+            cx.new(|cx| InputState::new(window, cx).placeholder("SSH host, e.g. bastion.example.com:22")),
+            cx.new(|cx| InputState::new(window, cx).placeholder("SSH user")),
+            cx.new(|cx| InputState::new(window, cx).placeholder("Private key file (optional; default: ssh-agent)")),
+        ];
 
         let subscriptions = vec![
             cx.subscribe_in(&command_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
@@ -160,6 +168,7 @@ impl QuarryWindow {
             _subscriptions: subscriptions,
             tab_subscriptions: Default::default(),
             onboard_input,
+            ssh_inputs,
             theme_override: None,
             toast_task: None,
             toast_reveal: None,
@@ -721,7 +730,28 @@ impl QuarryWindow {
             path_or_url: self.conn_path_input.read(cx).value().trim().to_string(),
             env: self.state.add_conn_env,
             read_only: self.state.add_conn_read_only,
+            ssh: self.ssh_from_modal(cx),
         }
+    }
+
+    fn ssh_from_modal(&self, cx: &App) -> Option<ssh::SshConfig> {
+        if !self.state.add_conn_ssh || self.state.add_conn_kind != ConnectionTargetKind::Postgres {
+            return None;
+        }
+        let [host, user, key] = &self.ssh_inputs;
+        let host = host.read(cx).value().trim().to_string();
+        let (host, port) = match host.rsplit_once(':') {
+            Some((h, p)) if p.parse::<u16>().is_ok() => (h.to_string(), p.parse().unwrap_or(22)),
+            _ => (host, 22),
+        };
+        let user = user.read(cx).value().trim().to_string();
+        let key = key.read(cx).value().trim().to_string();
+        (!host.is_empty()).then(|| ssh::SshConfig {
+            host,
+            port,
+            user: if user.is_empty() { std::env::var("USER").unwrap_or_default() } else { user },
+            key_path: (!key.is_empty()).then_some(key),
+        })
     }
 
     /// Connects to a new database using values in the Add Connection modal
@@ -750,11 +780,11 @@ impl QuarryWindow {
         self.state.messages.push(format!("Connecting to {}…", name));
         cx.notify();
         let log = self.state.activity_log.clone();
-        run_db(window, cx, async move { open_session(&profile, log).await.map(|(s, c)| (profile, s, c)) }, move |this, res, window, cx| {
+        run_db(window, cx, async move { open_session(&profile, log).await.map(|(s, c, t)| (profile, s, c, t)) }, move |this, res, window, cx| {
             match res {
-                Ok((profile, session, catalog)) => {
+                Ok((profile, session, catalog, tunnel)) => {
                     this.toast(format!("Connected to {}", profile.name), false, cx);
-                    this.state.apply_connection(profile, session, catalog);
+                    this.state.apply_connection(profile, session, catalog, tunnel);
                     this.state.add_conn_modal_open = false;
                     this.state.add_conn_feedback = None;
                     this.refocus_root(window, cx);
@@ -777,7 +807,7 @@ impl QuarryWindow {
             window,
             cx,
             async move {
-                let (session, _) = open_session(&profile, Default::default()).await?;
+                let (session, _, _tunnel) = open_session(&profile, Default::default()).await?;
                 session.ping().await.map_err(|e| e.to_string())
             },
             |this, res, _window, _cx| {
@@ -1175,6 +1205,11 @@ impl Render for QuarryWindow {
                     cx,
                     &self.conn_name_input,
                     &self.conn_path_input,
+                    [&self.ssh_inputs[0], &self.ssh_inputs[1], &self.ssh_inputs[2]],
+                    |this, _window, cx| {
+                        this.state.add_conn_ssh = !this.state.add_conn_ssh;
+                        cx.notify();
+                    },
                     |this, kind, window, cx| {
                         let path = if kind == ConnectionTargetKind::Postgres {
                             "postgres://postgres:postgres@localhost:5432/postgres"
@@ -1256,6 +1291,7 @@ fn guess_profile(text: &str) -> ConnectionProfile {
         path_or_url: path,
         env: Environment::Local,
         read_only: false,
+        ssh: None,
     }
 }
 

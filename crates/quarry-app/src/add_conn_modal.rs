@@ -16,6 +16,8 @@ impl AddConnModal {
         cx: &Context<T>,
         name_input: &Entity<InputState>,
         path_input: &Entity<InputState>,
+        ssh_inputs: [&Entity<InputState>; 3],
+        on_toggle_ssh: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_kind: impl Fn(&mut T, ConnectionTargetKind, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_env: impl Fn(&mut T, Environment, &mut Window, &mut Context<T>) + Copy + 'static,
         on_connect: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -164,6 +166,37 @@ impl AddConnModal {
                                     .child(div().text_xs().text_color(theme.text_muted).child(if is_sqlite { "DATABASE FILE PATH OR :memory:" } else { "POSTGRESQL CONNECTION STRING" }))
                                     .child(Input::new(path_input)),
                             )
+                            // SSH tunnel (C4): Postgres behind a bastion
+                            .when(!is_sqlite, |this| {
+                                this.child(
+                                    v_flex()
+                                        .gap_1()
+                                        .child(
+                                            h_flex()
+                                                .id("ssh-toggle")
+                                                .gap_1p5()
+                                                .items_center()
+                                                .cursor_pointer()
+                                                .on_click(cx.listener(move |this, _, window, cx| on_toggle_ssh(this, window, cx)))
+                                                .child(
+                                                    div()
+                                                        .size(px(12.0))
+                                                        .rounded(px(3.0))
+                                                        .border_1()
+                                                        .border_color(theme.border)
+                                                        .when(state.add_conn_ssh, |d| d.bg(theme.accent)),
+                                                )
+                                                .child(div().text_xs().text_color(theme.text_muted).child("CONNECT THROUGH SSH TUNNEL")),
+                                        )
+                                        .when(state.add_conn_ssh, |this| {
+                                            this.child(h_flex().gap_2().child(div().flex_1().child(Input::new(ssh_inputs[0]))).child(div().w(px(140.0)).child(Input::new(ssh_inputs[1]))))
+                                                .child(Input::new(ssh_inputs[2]))
+                                                .child(div().text_xs().text_color(theme.text_muted).child(
+                                                    "Uses the system ssh. Keys with a passphrase need to be in ssh-agent (ssh-add).",
+                                                ))
+                                        }),
+                                )
+                            })
                             .child(
                                 // Environment Tag
                                 v_flex()
