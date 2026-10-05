@@ -143,6 +143,8 @@ pub struct AppState {
     pub tabs: Vec<Tab>,
     /// Recently opened tables (schema, table), newest first; shown when the command bar is empty
     pub recent_tables: Vec<(String, String)>,
+    /// Pinned tables and queries per connection id (U6)
+    pub pins: crate::pins::Pins,
     pub active_tab_index: usize,
 
     // Bottom Panel
@@ -194,6 +196,7 @@ impl AppState {
 
             tabs: Vec::new(),
             recent_tables: Vec::new(),
+            pins: crate::pins::load(),
             active_tab_index: 0,
 
             bottom_panel_open: false,

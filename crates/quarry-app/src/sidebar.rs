@@ -22,6 +22,8 @@ impl Sidebar {
         on_toggle_schema: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
         on_conn_click: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
         on_table_hover: impl Fn(&mut T, String, String, bool, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_pin_click: impl Fn(&mut T, crate::pins::Pin, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_unpin: impl Fn(&mut T, crate::pins::Pin, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         if !state.sidebar_visible {
             return div().into_any_element();
@@ -71,6 +73,32 @@ impl Sidebar {
             );
             if !is_active {
                 continue;
+            }
+
+            // Pinned items first (U6): this connection's favourite tables and saved queries
+            let pinned = state.pins.get(&conn.id).cloned().unwrap_or_default();
+            for (pin_ix, pin) in pinned.into_iter().enumerate() {
+                let (open_pin, drop_pin) = (pin.clone(), pin.clone());
+                let is_table = matches!(pin, crate::pins::Pin::Table { .. });
+                tree = tree.child(
+                    row(("pin", pin_ix).into(), 1.0)
+                        .group("pin-row")
+                        .on_click(cx.listener(move |this, _, window, cx| on_pin_click(this, open_pin.clone(), window, cx)))
+                        .child(icon(IconName::Pin, theme.accent))
+                        .child(icon(if is_table { IconName::Table } else { IconName::SquareTerminal }, theme.text_muted))
+                        .child(label(pin.label().to_string(), theme.text_primary))
+                        .child(
+                            div()
+                                .id(("unpin", pin_ix))
+                                .invisible()
+                                .group_hover("pin-row", |s| s.visible())
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    on_unpin(this, drop_pin.clone(), window, cx)
+                                }))
+                                .child(icon(IconName::PinOff, theme.text_muted)),
+                        ),
+                );
             }
 
             for (schema_ix, schema) in state.catalog.schemas.iter().enumerate() {

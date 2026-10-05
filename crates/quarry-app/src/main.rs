@@ -11,6 +11,7 @@ mod export_dialog;
 mod files;
 mod params_dialog;
 mod peek;
+mod pins;
 mod grid;
 mod history;
 mod import_wizard;
@@ -66,6 +67,17 @@ actions!(
         FormatSql,
         ReopenClosedTab,
         ToggleSplit,
+        PinCurrentTab,
+        CommandPalette,
+        SwitchSpace1,
+        SwitchSpace2,
+        SwitchSpace3,
+        SwitchSpace4,
+        SwitchSpace5,
+        SwitchSpace6,
+        SwitchSpace7,
+        SwitchSpace8,
+        SwitchSpace9,
         OpenInSplit,
         SaveFile,
         SaveFileAs,
@@ -97,6 +109,17 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-shift-s", SaveFileAs, None),
         KeyBinding::new("secondary-o", OpenFile, None),
         KeyBinding::new("secondary-shift-t", ReopenClosedTab, None),
+        KeyBinding::new("secondary-shift-p", CommandPalette, None),
+        // Spaces (U5): one keystroke to switch connection
+        KeyBinding::new("ctrl-1", SwitchSpace1, None),
+        KeyBinding::new("ctrl-2", SwitchSpace2, None),
+        KeyBinding::new("ctrl-3", SwitchSpace3, None),
+        KeyBinding::new("ctrl-4", SwitchSpace4, None),
+        KeyBinding::new("ctrl-5", SwitchSpace5, None),
+        KeyBinding::new("ctrl-6", SwitchSpace6, None),
+        KeyBinding::new("ctrl-7", SwitchSpace7, None),
+        KeyBinding::new("ctrl-8", SwitchSpace8, None),
+        KeyBinding::new("ctrl-9", SwitchSpace9, None),
         KeyBinding::new("secondary-\\", ToggleSplit, None),
         // ⌘↵ on a command-bar result opens it in the split (U3); registered after the Input binding so it wins
         KeyBinding::new("secondary-enter", OpenInSplit, Some("CommandBar > Input")),
@@ -872,6 +895,60 @@ impl QuarryWindow {
         cx.notify();
     }
 
+    /// Pins the current table or query tab to its connection (or unpins it)
+    fn pin_current_tab(&mut self, cx: &mut Context<Self>) {
+        let pin = match self.state.active_tab() {
+            Some(Tab::Table { schema_name, table_name, .. }) => pins::Pin::Table { schema: schema_name.clone(), table: table_name.clone() },
+            Some(Tab::Query { title, editor, .. }) => pins::Pin::Query { title: title.clone(), sql: editor.read(cx).value().to_string() },
+            None => return,
+        };
+        self.toggle_pin(pin, cx);
+    }
+
+    fn toggle_pin(&mut self, pin: pins::Pin, cx: &mut Context<Self>) {
+        let Some(conn) = self.current_connection(cx).1.map(|c| c.id) else {
+            return self.toast("Connect to a database to pin things to it", true, cx);
+        };
+        let label = pin.label().to_string();
+        let pinned = pins::toggle(&mut self.state.pins, &conn, pin);
+        pins::save(&self.state.pins);
+        self.toast(format!("{} {}", if pinned { "Pinned" } else { "Unpinned" }, label), false, cx);
+    }
+
+    fn open_pin(&mut self, pin: pins::Pin, window: &mut Window, cx: &mut Context<Self>) {
+        match pin {
+            pins::Pin::Table { schema, table } => {
+                self.open_table_tab(&table, &schema, window, cx);
+                self.refresh_active_tab(window, cx);
+            }
+            pins::Pin::Query { sql, title } => {
+                self.open_query_tab(&sql, window, cx);
+                if let Some(Tab::Query { title: t, .. }) = self.state.tabs.last_mut() {
+                    *t = title;
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// ⌃1–⌃9 (U5): jump to the Nth saved connection; the sidebar swaps to its tree and pins
+    fn switch_space(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.state.saved_connections.get(n).map(|c| c.id.clone()) {
+            self.connect_saved(id, window, cx);
+        }
+    }
+
+    /// ⌘⇧P (P1): the command bar in command mode
+    fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.command_bar_open = true;
+        self.state.command_bar_selected_index = 0;
+        self.command_input.update(cx, |input, cx| {
+            input.set_value(">", window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
     fn reopen_closed_tab(&mut self, _: &ReopenClosedTab, _: &mut Window, cx: &mut Context<Self>) {
         let Some((tab, subs)) = self.closed_tabs.pop() else { return };
         self.tab_subscriptions.extend(subs);
@@ -964,6 +1041,8 @@ impl QuarryWindow {
             self.start_run(RunMode::Explain, window, cx);
         } else if action_id == "action:explain_analyze" {
             self.start_run(RunMode::ExplainAnalyze, window, cx);
+        } else if action_id == "action:pin" {
+            self.pin_current_tab(cx);
         } else if action_id == "action:split" {
             self.toggle_split(cx);
         } else if action_id == "action:reopen_tab" {
@@ -1333,6 +1412,8 @@ impl Render for QuarryWindow {
             },
             |this, id, window, cx| this.connect_saved(id, window, cx),
             |this, schema, table, hovered, window, cx| this.peek_hover(schema, table, hovered, window, cx),
+            |this, pin, window, cx| this.open_pin(pin, window, cx),
+            |this, pin, _, cx| this.toggle_pin(pin, cx),
         );
 
         div()
@@ -1353,6 +1434,17 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::rollback_tx))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(Self::reopen_closed_tab))
+            .on_action(cx.listener(|this, _: &PinCurrentTab, _, cx| this.pin_current_tab(cx)))
+            .on_action(cx.listener(|this, _: &CommandPalette, window, cx| this.open_command_palette(window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace1, window, cx| this.switch_space(0, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace2, window, cx| this.switch_space(1, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace3, window, cx| this.switch_space(2, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace4, window, cx| this.switch_space(3, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace5, window, cx| this.switch_space(4, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace6, window, cx| this.switch_space(5, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace7, window, cx| this.switch_space(6, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace8, window, cx| this.switch_space(7, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchSpace9, window, cx| this.switch_space(8, window, cx)))
             .on_action(cx.listener(|this, _: &ToggleSplit, _, cx| this.toggle_split(cx)))
             .on_action(cx.listener(|this, _: &OpenInSplit, window, cx| this.confirm_command_bar_in_split(window, cx)))
             .on_action(cx.listener(|this, _: &ExportResults, _, cx| this.open_export(cx)))
@@ -1374,6 +1466,9 @@ impl Render for QuarryWindow {
             .size_full()
             .bg(t.bg_app)
             .text_color(t.text_primary)
+            .when_some(current_conn.as_ref().filter(|c| c.env != Environment::Local), |this, c| {
+                this.child(div().h(px(2.0)).w_full().bg(env_color(c.env)))
+            })
             .child(titlebar)
             .child(div().flex_1().min_h_0().child(
                 h_resizable("main-split")

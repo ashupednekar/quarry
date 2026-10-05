@@ -53,6 +53,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:save_file", "Save Query", "⌘S"),
     ("action:reopen_tab", "Reopen Closed Tab", "⇧⌘T"),
     ("action:split", "Toggle Split View", "⌘\\"),
+    ("action:pin", "Pin / Unpin Current Tab", ""),
     ("action:format", "Format SQL", "⇧⌥F"),
     ("action:explain", "Explain Query Plan", "⌥⌘E"),
     ("action:explain_analyze", "Explain Analyze", "⇧⌥⌘E"),
