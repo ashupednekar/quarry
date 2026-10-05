@@ -69,6 +69,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:toggle_sidebar", "Toggle Sidebar", "⌘B"),
     ("action:toggle_bottom", "Toggle Bottom Panel", "⌘J"),
     ("action:theme", "Toggle Light/Dark Theme", ""),
+    ("action:settings", "Open Settings", ""),
+    ("action:keymap", "Open Keymap", ""),
 ];
 
 /// Commands shown when the box is empty

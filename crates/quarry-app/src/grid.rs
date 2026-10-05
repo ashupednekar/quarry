@@ -69,7 +69,6 @@ pub fn bind_keys(cx: &mut App) {
     ]);
 }
 
-pub const PAGE_SIZE: usize = 500;
 
 /// Where a table tab's rows come from; enables paging, server-side sort and editing.
 pub struct TableSource {
@@ -84,6 +83,8 @@ pub struct TableSource {
     pub default_keyword: bool,
     /// Columns that reference other tables (G5)
     pub foreign_keys: Vec<quarry_core::schema::ForeignKeyRef>,
+    /// Rows per page (settings: rows_per_page)
+    pub page_size: usize,
     pub filter: String,
     pub order_by: Option<(String, bool)>, // (column, descending)
     pub has_more: bool,
@@ -559,10 +560,11 @@ impl ResultSet {
     /// Loads the first page (`reset`), the next page, or re-reads what's loaded in place (`reload`).
     pub fn fetch(&mut self, mode: Fetch, window: &mut Window, cx: &mut Context<TableState<Self>>) {
         let loaded = self.loaded_len();
+        let page = self.source.as_ref().map_or(500, |s| s.page_size.max(1));
         let (offset, limit) = match mode {
-            Fetch::Reset => (0, PAGE_SIZE),
-            Fetch::More => (loaded, PAGE_SIZE),
-            Fetch::Reload => (0, loaded.max(PAGE_SIZE)),
+            Fetch::Reset => (0, page),
+            Fetch::More => (loaded, page),
+            Fetch::Reload => (0, loaded.max(page)),
         };
         let Some(src) = self.source.as_mut() else { return };
         if src.loading {

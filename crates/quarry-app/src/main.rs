@@ -17,6 +17,7 @@ mod history;
 mod import_wizard;
 mod review_modal;
 mod runtime;
+mod settings;
 mod sidebar;
 mod ssh;
 mod state;
@@ -31,7 +32,7 @@ use gpui::component::input::{EditorState, Input, InputEvent, InputState};
 use gpui::assets::IconName;
 use gpui::component::button::{Button, ButtonVariants};
 use gpui::component::resizable::{h_resizable, resizable_panel, v_resizable};
-use gpui::component::{Icon, Sizable};
+use gpui::component::{ActiveTheme, Icon, Sizable};
 use gpui::*;
 use gpui::component::table::{TableEvent, TableState};
 use grid::{DataGrid, Fetch, ResultSet, TableSource};
@@ -150,6 +151,8 @@ struct QuarryWindow {
     onboard_input: Entity<InputState>,
     /// SSH tunnel fields in the connection form: host[:port], user, key file
     ssh_inputs: [Entity<InputState>; 3],
+    /// Statement timeout (seconds) in the connection form
+    timeout_input: Entity<InputState>,
     /// `Some(dark)` once the user picks a theme; otherwise follow the OS
     theme_override: Option<bool>,
     toast_task: Option<Task<()>>,
@@ -159,6 +162,9 @@ struct QuarryWindow {
     /// Tab shown in the right pane of the split view, by id
     split_id: Option<String>,
     peek: Option<peek::Peek>,
+    settings: settings::Settings,
+    /// Data-changing statements waiting for a "yes" on a PROD connection
+    pending_prod_run: Option<Vec<String>>,
     peek_task: Option<Task<()>>,
     /// File the last toast can reveal in the file manager
     toast_reveal: Option<std::path::PathBuf>,
@@ -185,6 +191,7 @@ impl QuarryWindow {
             InputState::new(window, cx).placeholder("Paste a connection URL or a SQLite file path")
         });
         onboard_input.update(cx, |i, cx| i.focus(window, cx));
+        let timeout_input = cx.new(|cx| InputState::new(window, cx).placeholder("No timeout"));
         let ssh_inputs = [
             cx.new(|cx| InputState::new(window, cx).placeholder("SSH host, e.g. bastion.example.com:22")),
             cx.new(|cx| InputState::new(window, cx).placeholder("SSH user")),
@@ -235,12 +242,15 @@ impl QuarryWindow {
             tab_subscriptions: Default::default(),
             onboard_input,
             ssh_inputs,
+            timeout_input,
             theme_override: None,
             toast_task: None,
             session_save_task: None,
             closed_tabs: Vec::new(),
             split_id: None,
             peek: None,
+            settings: settings::Settings::default(),
+            pending_prod_run: None,
             peek_task: None,
             toast_reveal: None,
             export,
@@ -249,6 +259,11 @@ impl QuarryWindow {
             grid_menu: None,
             param_memory: Default::default(),
         };
+        this.reload_settings(cx);
+        let keymap_errors = settings::apply_keymap(cx);
+        if let Some(e) = keymap_errors.first() {
+            this.toast(e.clone(), true, cx);
+        }
         this.apply_theme(cx);
         this.restore_session(window, cx);
         this._subscriptions.push(cx.on_app_quit(|this, cx| {
@@ -268,6 +283,42 @@ impl QuarryWindow {
     }
 
     /// Theme follows the OS appearance unless the user picked one
+    /// Reads settings.json and applies theme, fonts and defaults (P3, P4)
+    fn reload_settings(&mut self, cx: &mut Context<Self>) {
+        let (s, error) = settings::load();
+        self.theme_override = match s.theme.as_str() {
+            "dark" => Some(true),
+            "light" => Some(false),
+            _ => None,
+        };
+        {
+            let kit = gpui::component::theme::Theme::global_mut(cx);
+            kit.font_size = px(s.font_size);
+            kit.mono_font_size = px(s.font_size - 1.0);
+            if !s.mono_font_family.trim().is_empty() {
+                kit.mono_font_family = s.mono_font_family.clone().into();
+            }
+        }
+        self.settings = s;
+        if let Some(e) = error {
+            self.toast(e, true, cx);
+        }
+        cx.refresh_windows();
+    }
+
+    fn open_config_file(&mut self, keymap: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (path, starter) = if keymap {
+            (settings::keymap_path(), settings::STARTER_KEYMAP.to_string())
+        } else {
+            (settings::settings_path(), settings::starter_settings())
+        };
+        let Some(path) = path else { return };
+        settings::ensure_file(&path, &starter);
+        let text = std::fs::read_to_string(&path).unwrap_or(starter);
+        self.open_query_tab_with(&text, Some(path), window, cx);
+        cx.notify();
+    }
+
     fn sync_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
         let dark = self.theme_override.unwrap_or_else(|| os_is_dark(window));
         if dark != self.theme.is_dark {
@@ -308,6 +359,11 @@ impl QuarryWindow {
             |this, target, window, cx| this.follow_foreign_key(target, window, cx),
         ));
         match tab {
+            // Config files (settings, keymap) are plain editors: nothing to run
+            Tab::Query { editor, file: Some(f), .. } if f.extension().is_some_and(|e| e == "json") => div()
+                .size_full()
+                .child(gpui::component::input::Editor::new(editor).h_full().bordered(false))
+                .into_any_element(),
             // Editor over results, with a draggable divider
             Tab::Query { editor, is_running, error_message, .. } => v_resizable("query-split")
                 .child(resizable_panel().size(px(220.0)).size_range(px(80.0)..px(1200.0)).child(QueryEditor::render(
@@ -348,6 +404,58 @@ impl QuarryWindow {
                 .child(div().flex_1().min_h_0().child(grid))
                 .into_any_element(),
         }
+    }
+
+    /// "Run on PROD?" for statements that change data
+    fn render_prod_confirm(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let statements = self.pending_prod_run.as_ref()?;
+        let t = &self.theme;
+        let name = self.state.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+        let count = statements.iter().filter(|s| quarry_core::session::is_mutation(s)).count();
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .bg(rgba(0x00000080))
+                .flex()
+                .justify_center()
+                .items_start()
+                .pt(px(140.0))
+                .child(
+                    v_flex()
+                        .id("prod-card")
+                        .w(px(460.0))
+                        .p_4()
+                        .gap_3()
+                        .rounded(px(8.0))
+                        .bg(t.bg_sidebar)
+                        .border_1()
+                        .border_color(t.danger)
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.danger).child(format!("Change data on {name} (PROD)?")))
+                        .child(div().text_xs().text_color(t.text_secondary).child(format!(
+                            "{count} of these statements change data or schema. Turn this check off with \"confirm_on_prod\" in settings."
+                        )))
+                        .children(statements.iter().take(5).map(|s| {
+                            div().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(t.text_muted).truncate().child(s.clone())
+                        }))
+                        .child(
+                            h_flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(Button::new("prod-no").label("Cancel").ghost().small().on_click(cx.listener(|this, _, _, cx| {
+                                    this.pending_prod_run = None;
+                                    cx.notify();
+                                })))
+                                .child(Button::new("prod-yes").label("Run on PROD").danger().small().on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some(statements) = this.pending_prod_run.take() {
+                                        this.execute_statements_now(statements, window, cx);
+                                    }
+                                }))),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     /// First run (U11): one input, nothing else
@@ -426,9 +534,10 @@ impl QuarryWindow {
 
     pub fn open_query_tab_with(&mut self, sql: &str, file: Option<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
         let n = self.state.tabs.iter().filter(|t| matches!(t, Tab::Query { .. })).count() + 1;
+        let language = if file.as_ref().is_some_and(|f| f.extension().is_some_and(|e| e == "json")) { "json" } else { "sql" };
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
-                .language("sql")
+                .language(language)
                 .line_number(true)
                 .default_value(sql.to_string())
         });
@@ -499,6 +608,7 @@ impl QuarryWindow {
                 primary_keys,
                 read_only_reason,
                 foreign_keys,
+                page_size: self.settings.rows_per_page,
                 default_keyword: self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres),
                 filter: String::new(),
                 order_by: None,
@@ -649,6 +759,16 @@ impl QuarryWindow {
 
     /// Runs statements in order on the active connection; stops at the first failure (UC3)
     pub fn execute_statements(&mut self, statements: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let is_prod = self.state.active_connection.as_ref().is_some_and(|c| c.env == Environment::Prod);
+        if is_prod && self.settings.confirm_on_prod && statements.iter().any(|s| quarry_core::session::is_mutation(s)) {
+            self.pending_prod_run = Some(statements);
+            cx.notify();
+            return;
+        }
+        self.execute_statements_now(statements, window, cx);
+    }
+
+    fn execute_statements_now(&mut self, statements: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.state.session.clone() else {
             return self.toast("Connect to a database first", true, cx);
         };
@@ -960,6 +1080,10 @@ impl QuarryWindow {
 
     /// Escape: close the topmost overlay
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_prod_run.take().is_some() {
+            cx.notify();
+            return;
+        }
         if self.params.take().is_some() {
             self.refocus_root(window, cx);
             cx.notify();
@@ -1041,6 +1165,10 @@ impl QuarryWindow {
             self.start_run(RunMode::Explain, window, cx);
         } else if action_id == "action:explain_analyze" {
             self.start_run(RunMode::ExplainAnalyze, window, cx);
+        } else if action_id == "action:settings" {
+            self.open_config_file(false, window, cx);
+        } else if action_id == "action:keymap" {
+            self.open_config_file(true, window, cx);
         } else if action_id == "action:pin" {
             self.pin_current_tab(cx);
         } else if action_id == "action:split" {
@@ -1099,6 +1227,7 @@ impl QuarryWindow {
             env: self.state.add_conn_env,
             read_only: self.state.add_conn_read_only,
             ssh: self.ssh_from_modal(cx),
+            statement_timeout_secs: self.timeout_input.read(cx).value().trim().parse().ok(),
         }
     }
 
@@ -1152,6 +1281,7 @@ impl QuarryWindow {
             match res {
                 Ok((profile, session, catalog, tunnel)) => {
                     this.toast(format!("Connected to {}", profile.name), false, cx);
+                    session.tx().set_manual(this.settings.default_transaction_mode == "manual");
                     this.state.apply_connection(profile, session, catalog, tunnel);
                     this.state.add_conn_modal_open = false;
                     this.state.add_conn_feedback = None;
@@ -1189,6 +1319,11 @@ impl QuarryWindow {
 
     /// Executes the pending changes against the database and refreshes the table
     pub fn commit_pending_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let is_prod = self.current_connection(cx).1.is_some_and(|c| c.env == Environment::Prod);
+        if is_prod && self.settings.confirm_on_prod && !self.state.review_modal_open {
+            // Stricter on PROD: show the exact SQL first
+            return self.review_changes(&ReviewChanges, window, cx);
+        }
         self.state.review_modal_open = false;
         let Some(Tab::Table { grid, .. }) = self.state.active_tab() else { return };
         let grid = grid.clone();
@@ -1236,6 +1371,7 @@ impl Render for QuarryWindow {
         let import_wizard = self.render_import_wizard(cx);
         let params_dialog = self.render_params_dialog(cx);
         let peek = self.render_peek(cx);
+        let prod_confirm = self.render_prod_confirm(cx);
         let active_tab = self.state.active_tab().cloned();
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
@@ -1517,6 +1653,7 @@ impl Render for QuarryWindow {
             .children(import_wizard)
             .children(params_dialog)
             .children(peek)
+            .children(prod_confirm)
             .when_some(self.grid_menu.as_ref().map(|(p, m, _)| (*p, m.clone())), |this, (pos, menu)| {
                 this.child(deferred(anchored().position(pos).snap_to_window().child(menu)).with_priority(1))
             })
@@ -1587,6 +1724,7 @@ impl Render for QuarryWindow {
                     &self.conn_name_input,
                     &self.conn_path_input,
                     [&self.ssh_inputs[0], &self.ssh_inputs[1], &self.ssh_inputs[2]],
+                    &self.timeout_input,
                     |this, _window, cx| {
                         this.state.add_conn_ssh = !this.state.add_conn_ssh;
                         cx.notify();
@@ -1673,6 +1811,7 @@ fn guess_profile(text: &str) -> ConnectionProfile {
         env: Environment::Local,
         read_only: false,
         ssh: None,
+        statement_timeout_secs: None,
     }
 }
 

@@ -50,6 +50,9 @@ pub struct ConnectionProfile {
     /// Reach the database through an SSH tunnel (Postgres)
     #[serde(default)]
     pub ssh: Option<crate::ssh::SshConfig>,
+    /// Cancel statements running longer than this (Q10). Postgres: statement_timeout; SQLite: lock wait.
+    #[serde(default)]
+    pub statement_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -238,6 +241,7 @@ impl AppState {
             env: Environment::Local,
             read_only: false,
             ssh: None,
+            statement_timeout_secs: None,
         };
 
         self.saved_connections.insert(0, profile.clone());
@@ -431,6 +435,14 @@ pub async fn open_session(
         }
     };
     let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(session, profile.name.clone(), log));
+    if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
+        let sql = match profile.kind {
+            ConnectionTargetKind::Postgres => format!("SET statement_timeout = {}", secs * 1000),
+            // SQLite can't time out a single statement; the closest is how long to wait on a lock
+            _ => format!("PRAGMA busy_timeout = {}", secs * 1000),
+        };
+        session.execute(&sql).await.map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
+    }
     let catalog = session.introspect().await.map_err(|e| format!("Introspection error: {}", e))?;
     Ok((session, catalog, tunnel))
 }

@@ -70,10 +70,20 @@ impl QuarryWindow {
         }
         if let Some(Tab::Query { file, title, saved_text, .. }) = self.state.tabs.get_mut(ix) {
             *title = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-            *file = Some(path);
+            *file = Some(path.clone());
             *saved_text = text;
         }
         self.save_session(cx);
+        // Saving a config file applies it right away
+        if crate::settings::settings_path().is_some_and(|p| p == path) {
+            self.reload_settings(cx);
+            self.toast("Settings applied", false, cx);
+        } else if crate::settings::keymap_path().is_some_and(|p| p == path) {
+            match crate::settings::apply_keymap(cx).first() {
+                Some(e) => self.toast(e.clone(), true, cx),
+                None => self.toast("Keymap applied", false, cx),
+            }
+        }
         cx.notify();
     }
 

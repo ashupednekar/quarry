@@ -17,6 +17,7 @@ impl AddConnModal {
         name_input: &Entity<InputState>,
         path_input: &Entity<InputState>,
         ssh_inputs: [&Entity<InputState>; 3],
+        timeout_input: &Entity<InputState>,
         on_toggle_ssh: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_kind: impl Fn(&mut T, ConnectionTargetKind, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_env: impl Fn(&mut T, Environment, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -165,6 +166,14 @@ impl AddConnModal {
                                     .gap_1()
                                     .child(div().text_xs().text_color(theme.text_muted).child(if is_sqlite { "DATABASE FILE PATH OR :memory:" } else { "POSTGRESQL CONNECTION STRING" }))
                                     .child(Input::new(path_input)),
+                            )
+                            // Statement timeout (Q10)
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_center()
+                                    .child(div().text_xs().text_color(theme.text_muted).child("STATEMENT TIMEOUT (SECONDS)"))
+                                    .child(div().w(px(120.0)).child(Input::new(timeout_input))),
                             )
                             // SSH tunnel (C4): Postgres behind a bastion
                             .when(!is_sqlite, |this| {
