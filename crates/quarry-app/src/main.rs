@@ -63,6 +63,7 @@ actions!(
         Explain,
         ExplainAnalyze,
         FormatSql,
+        ReopenClosedTab,
         SaveFile,
         SaveFileAs,
         OpenFile,
@@ -92,6 +93,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-alt-f", FormatSql, Some("Input")),
         KeyBinding::new("secondary-shift-s", SaveFileAs, None),
         KeyBinding::new("secondary-o", OpenFile, None),
+        KeyBinding::new("secondary-shift-t", ReopenClosedTab, None),
         KeyBinding::new("secondary-alt-shift-e", ExplainAnalyze, None),
         KeyBinding::new("up", MenuUp, Some("CommandBar > Input")),
         KeyBinding::new("down", MenuDown, Some("CommandBar > Input")),
@@ -123,6 +125,8 @@ struct QuarryWindow {
     theme_override: Option<bool>,
     toast_task: Option<Task<()>>,
     session_save_task: Option<Task<()>>,
+    /// Recently closed tabs, newest last, for ⇧⌘T
+    closed_tabs: Vec<(Tab, Vec<(String, Subscription)>)>,
     /// File the last toast can reveal in the file manager
     toast_reveal: Option<std::path::PathBuf>,
     export: export_dialog::ExportState,
@@ -201,6 +205,7 @@ impl QuarryWindow {
             theme_override: None,
             toast_task: None,
             session_save_task: None,
+            closed_tabs: Vec::new(),
             toast_reveal: None,
             export,
             import,
@@ -730,17 +735,33 @@ impl QuarryWindow {
         cx.notify();
     }
 
-    fn close_tab(&mut self, _: &CloseTab, _: &mut Window, cx: &mut Context<Self>) {
+    fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
         self.close_tab_at(self.state.active_tab_index, cx);
+        // The closed tab may have held focus; keep shortcuts (like ⇧⌘T) working
+        self.refocus_root(window, cx);
     }
 
     fn close_tab_at(&mut self, idx: usize, cx: &mut Context<Self>) {
-        if self.state.tabs.len() > 1 {
-            if let Some(tab) = self.state.tabs.get(idx) {
-                self.tab_subscriptions.remove(tab.id());
-            }
+        let Some(tab) = self.state.close_tab(idx) else { return };
+        // Kept (with its grid, editor and pending edits) so ⇧⌘T can bring it back (U9)
+        let id = tab.id().to_string();
+        let subs = [id.clone(), format!("{id}:editor")]
+            .into_iter()
+            .filter_map(|k| self.tab_subscriptions.remove(&k).map(|s| (k, s)))
+            .collect();
+        self.closed_tabs.push((tab, subs));
+        if self.closed_tabs.len() > 20 {
+            self.closed_tabs.remove(0);
         }
-        self.state.close_tab(idx);
+        self.save_session(cx);
+        cx.notify();
+    }
+
+    fn reopen_closed_tab(&mut self, _: &ReopenClosedTab, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((tab, subs)) = self.closed_tabs.pop() else { return };
+        self.tab_subscriptions.extend(subs);
+        self.state.tabs.push(tab);
+        self.state.active_tab_index = self.state.tabs.len() - 1;
         self.save_session(cx);
         cx.notify();
     }
@@ -828,6 +849,8 @@ impl QuarryWindow {
             self.start_run(RunMode::Explain, window, cx);
         } else if action_id == "action:explain_analyze" {
             self.start_run(RunMode::ExplainAnalyze, window, cx);
+        } else if action_id == "action:reopen_tab" {
+            self.reopen_closed_tab(&ReopenClosedTab, window, cx);
         } else if action_id == "action:format" {
             self.format_query(window, cx);
         } else if action_id == "action:open_file" {
@@ -1124,9 +1147,9 @@ impl Render for QuarryWindow {
                                 .icon(IconName::X)
                                 .ghost()
                                 .xsmall()
-                                .on_click(cx.listener(move |this, _, _, cx| {
+                                .on_click(cx.listener(move |this, _, window, cx| {
                                     this.close_tab_at(idx, cx);
-                                    cx.notify();
+                                    this.refocus_root(window, cx);
                                 })),
                         )
                 }))
@@ -1241,6 +1264,7 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::commit_tx))
             .on_action(cx.listener(Self::rollback_tx))
             .on_action(cx.listener(Self::toggle_theme))
+            .on_action(cx.listener(Self::reopen_closed_tab))
             .on_action(cx.listener(|this, _: &ExportResults, _, cx| this.open_export(cx)))
             .on_action(cx.listener(|this, _: &Explain, window, cx| this.start_run(RunMode::Explain, window, cx)))
             .on_action(cx.listener(|this, _: &FormatSql, window, cx| this.format_query(window, cx)))

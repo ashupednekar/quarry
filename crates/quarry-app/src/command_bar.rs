@@ -51,6 +51,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:new_query", "New Query", "⌘N"),
     ("action:open_file", "Open SQL File…", "⌘O"),
     ("action:save_file", "Save Query", "⌘S"),
+    ("action:reopen_tab", "Reopen Closed Tab", "⇧⌘T"),
     ("action:format", "Format SQL", "⇧⌥F"),
     ("action:explain", "Explain Query Plan", "⌥⌘E"),
     ("action:explain_analyze", "Explain Analyze", "⇧⌥⌘E"),

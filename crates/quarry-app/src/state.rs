@@ -345,16 +345,18 @@ impl AppState {
         self.tabs.iter().position(|t| matches!(t, Tab::Table { table_name: n, .. } if n == table_name))
     }
 
-    pub fn close_tab(&mut self, index: usize) {
-        if self.tabs.len() <= 1 {
-            return;
+    /// Removes a tab (the last one too, which leaves the empty state) and returns it
+    pub fn close_tab(&mut self, index: usize) -> Option<Tab> {
+        if index >= self.tabs.len() {
+            return None;
         }
-        if index < self.tabs.len() {
-            self.tabs.remove(index);
-            if self.active_tab_index >= self.tabs.len() {
-                self.active_tab_index = self.tabs.len().saturating_sub(1);
-            }
+        let tab = self.tabs.remove(index);
+        if self.active_tab_index >= self.tabs.len() {
+            self.active_tab_index = self.tabs.len().saturating_sub(1);
+        } else if self.active_tab_index > index {
+            self.active_tab_index -= 1;
         }
+        Some(tab)
     }
 
     pub fn toggle_schema(&mut self, schema_name: &str) {
