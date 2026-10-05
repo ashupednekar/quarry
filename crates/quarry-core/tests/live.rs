@@ -73,3 +73,24 @@ fn postgres_applies_edits_atomically() {
     assert_eq!(count.rows[0][0], Int(2), "failed submit must not leave the insert behind");
     rt.block_on(s.execute("DROP TABLE edit_t")).unwrap();
 }
+
+/// Introspection reports foreign keys with the referenced schema (G5)
+#[test]
+fn postgres_introspects_foreign_keys() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS fk_test CASCADE",
+        "CREATE SCHEMA fk_test",
+        "CREATE TABLE fk_test.parent (id int PRIMARY KEY)",
+        "CREATE TABLE fk_test.child (id int PRIMARY KEY, parent_id int REFERENCES fk_test.parent(id))",
+    ] {
+        rt.block_on(s.execute(sql)).unwrap();
+    }
+    let cat = rt.block_on(s.introspect()).unwrap();
+    let child = cat.find_table(Some("fk_test"), "child").unwrap();
+    let fk = &child.foreign_keys[0];
+    assert_eq!((fk.from_column.as_str(), fk.to_schema.as_str(), fk.to_table.as_str(), fk.to_column.as_str()), ("parent_id", "fk_test", "parent", "id"));
+    rt.block_on(s.execute("DROP SCHEMA fk_test CASCADE")).unwrap();
+}

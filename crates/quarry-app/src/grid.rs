@@ -19,7 +19,31 @@ use std::sync::Arc;
 
 actions!(
     grid,
-    [EditCell, CancelEdit, AddRow, DuplicateRow, DeleteRow, SetNull, SetDefault, ToggleValueEditor, ApplyValue, SubmitChanges, RevertChanges]
+    [
+        EditCell,
+        CancelEdit,
+        AddRow,
+        DuplicateRow,
+        DeleteRow,
+        SetNull,
+        SetDefault,
+        ToggleValueEditor,
+        ApplyValue,
+        SubmitChanges,
+        RevertChanges,
+        CopyValue,
+        CopyRowTsv,
+        CopyRowCsv,
+        CopyRowJson,
+        CopyRowInsert,
+        CopyAllTsv,
+        CopyAllCsv,
+        CopyAllJson,
+        CopyAllInsert,
+        HideColumn,
+        ShowAllColumns,
+        FollowForeignKey
+    ]
 );
 
 /// DataGrip-style grid keys; scoped to the grid so ⌘N/⌘↵ keep their global meaning elsewhere.
@@ -39,6 +63,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-enter", ApplyValue, Some("ValueEditor > Input")),
         KeyBinding::new("secondary-enter", SubmitChanges, Some("DataTable")),
         KeyBinding::new("secondary-alt-z", RevertChanges, Some("DataTable")),
+        KeyBinding::new("secondary-c", CopyValue, Some("DataTable")),
+        KeyBinding::new("secondary-shift-c", CopyRowTsv, Some("DataTable")),
+        KeyBinding::new("f4", FollowForeignKey, Some("DataTable")),
     ]);
 }
 
@@ -55,6 +82,8 @@ pub struct TableSource {
     pub read_only_reason: Option<&'static str>,
     /// Postgres accepts `SET col = DEFAULT`; SQLite needs the column's default expression
     pub default_keyword: bool,
+    /// Columns that reference other tables (G5)
+    pub foreign_keys: Vec<quarry_core::schema::ForeignKeyRef>,
     pub filter: String,
     pub order_by: Option<(String, bool)>, // (column, descending)
     pub has_more: bool,
@@ -119,6 +148,8 @@ pub struct ResultSet {
     editing: Option<CellEditor>,
     /// Side panel for long text and JSON ("value editor"); follows the selected cell
     inspector: Option<Inspector>,
+    /// Display order of columns (actual indices); hidden columns are left out. `None` = natural order
+    order: Option<Vec<usize>>,
     colors: CellColors,
 }
 
@@ -163,6 +194,7 @@ impl ResultSet {
             notice: None,
             editing: None,
             inspector: None,
+            order: None,
             colors: CellColors::from(theme),
         }
     }
@@ -172,10 +204,82 @@ impl ResultSet {
     }
 
     pub fn set_results(&mut self, results: Vec<QueryResult>) {
+        // Keep the user's column order/hiding across reloads of the same shape
+        let same_columns = self.result().map(|r| &r.columns) == results.first().map(|r| &r.columns);
+        if !same_columns {
+            self.order = None;
+        }
         self.results = results;
         self.active = 0;
         self.editing = None;
         self.inspector = None;
+    }
+
+    /// Switches between result sub-tabs
+    pub fn set_active(&mut self, ix: usize) {
+        self.active = ix;
+        self.order = None;
+        self.editing = None;
+        self.inspector = None;
+    }
+
+    /// Actual column index for a displayed column
+    pub fn actual(&self, display: usize) -> usize {
+        self.order.as_ref().and_then(|o| o.get(display).copied()).unwrap_or(display)
+    }
+
+    /// Displayed columns, as actual indices, in display order
+    fn visible(&self) -> Vec<usize> {
+        self.order.clone().unwrap_or_else(|| (0..self.result().map_or(0, |r| r.columns.len())).collect())
+    }
+
+    pub fn hide_column(&mut self, display: usize) {
+        let mut order = self.visible();
+        if order.len() > 1 && display < order.len() {
+            order.remove(display);
+            self.order = Some(order);
+        }
+    }
+
+    pub fn show_all_columns(&mut self) {
+        self.order = None;
+    }
+
+    pub fn hidden_count(&self) -> usize {
+        self.result().map_or(0, |r| r.columns.len()) - self.visible().len()
+    }
+
+    /// The table a foreign-key cell points at, and a WHERE condition for its row
+    pub fn foreign_key_target(&self, row: usize, display: usize) -> Option<(String, String, String)> {
+        let col = self.actual(display);
+        let name = self.column_name(col)?;
+        let fk = self.source.as_ref()?.foreign_keys.iter().find(|f| f.from_column == name)?;
+        let value = self.cell_value(row, col).0.filter(|v| !v.is_null())?;
+        let filter = format!("{} = {}", quote_ident(&fk.to_column), value.to_sql_literal());
+        Some((fk.to_schema.clone(), fk.to_table.clone(), filter))
+    }
+
+    /// Copies one row (or all rows) of visible columns in the given format
+    pub fn copy_text(&self, row: Option<usize>, format: quarry_core::export::ExportFormat, delimiter: char) -> Option<String> {
+        let r = self.result()?;
+        let rows: Vec<Vec<DbValue>> = match row {
+            Some(row) => vec![(0..r.columns.len()).map(|c| self.cell_value(row, c).0.unwrap_or(DbValue::Null)).collect()],
+            None => r.rows.clone(),
+        };
+        let table = self.source.as_ref().map(|s| s.qualified_name()).unwrap_or_else(|| "query_result".into());
+        let opts = quarry_core::export::ExportOptions {
+            format,
+            delimiter,
+            header: row.is_none(),
+            null_text: String::new(),
+            columns: Some(self.visible()),
+            table,
+        };
+        let mut buf = Vec::new();
+        let mut ex = quarry_core::export::Exporter::begin(&mut buf, &r.columns, opts).ok()?;
+        ex.rows(&rows).ok()?;
+        ex.finish().ok()?;
+        String::from_utf8(buf).ok().map(|s| s.trim_end().to_string())
     }
 
     pub fn read_only_reason(&self) -> Option<&'static str> {
@@ -267,6 +371,7 @@ impl ResultSet {
         if self.editing.is_some() {
             return;
         }
+        let col = self.actual(col);
         if let Some(reason) = self.read_only_reason() {
             self.notice = Some(reason.to_string());
             cx.notify();
@@ -361,6 +466,7 @@ impl ResultSet {
         if !self.editable() || self.row_state(row) == RowState::Deleted {
             return;
         }
+        let col = self.actual(col);
         let Some(name) = self.column_name(col).map(str::to_string) else { return };
         let loaded = self.loaded_len();
         if row >= loaded {
@@ -381,7 +487,7 @@ impl ResultSet {
 
     pub fn set_null(&mut self, row: usize, col: usize) {
         if self.editable() && self.row_state(row) != RowState::Deleted {
-            self.set_value(row, col, DbValue::Null);
+            self.set_value(row, self.actual(col), DbValue::Null);
         }
     }
 
@@ -403,6 +509,7 @@ impl ResultSet {
 
     /// Shows a cell in the side value editor; JSON is pretty-printed
     pub fn inspect(&mut self, row: usize, col: usize, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let col = self.actual(col);
         let value = self.cell_value(row, col).0;
         let is_json = matches!(value, Some(DbValue::Json(_)))
             || self.column_schema(col).is_some_and(|c| c.data_type == ColumnType::Json);
@@ -529,7 +636,7 @@ fn parse_input(text: &str, col: Option<&ColumnSchema>) -> Result<DbValue, String
 
 impl TableDelegate for ResultSet {
     fn columns_count(&self, _: &App) -> usize {
-        self.result().map_or(0, |r| r.columns.len())
+        self.order.as_ref().map_or_else(|| self.result().map_or(0, |r| r.columns.len()), Vec::len)
     }
 
     fn rows_count(&self, _: &App) -> usize {
@@ -538,6 +645,7 @@ impl TableDelegate for ResultSet {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         let r = self.result().expect("column() is only called when columns exist");
+        let col_ix = self.actual(col_ix);
         let numeric = r
             .rows
             .first()
@@ -562,6 +670,7 @@ impl TableDelegate for ResultSet {
     }
 
     fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let col_ix = self.actual(col_ix);
         // Tables sort on the server (the full table, not just the loaded page), like DataGrip
         if let Some(name) = self.source.as_ref().and(self.column_name(col_ix)).map(str::to_string) {
             let src = self.source.as_mut().expect("checked above");
@@ -593,22 +702,26 @@ impl TableDelegate for ResultSet {
         self.fetch(Fetch::More, window, cx);
     }
 
-    fn context_menu(&mut self, _row_ix: usize, menu: PopupMenu, _: &mut Window, _: &mut Context<TableState<Self>>) -> PopupMenu {
-        if self.read_only_reason().is_some() {
-            return menu;
+    fn move_column(&mut self, col_ix: usize, to_ix: usize, _: &mut Window, _: &mut Context<TableState<Self>>) {
+        let mut order = self.visible();
+        if col_ix < order.len() && to_ix < order.len() {
+            let c = order.remove(col_ix);
+            order.insert(to_ix, c);
+            self.order = Some(order);
         }
-        menu.menu("Edit Cell", Box::new(EditCell))
-            .menu("Set NULL", Box::new(SetNull))
-            .menu("Set DEFAULT", Box::new(SetDefault))
-            .menu("Open in Value Editor", Box::new(ToggleValueEditor))
-            .separator()
-            .menu("Add Row", Box::new(AddRow))
-            .menu("Duplicate Row", Box::new(DuplicateRow))
-            .menu("Delete Row", Box::new(DeleteRow))
+    }
+
+    fn context_menu(&mut self, _row_ix: usize, menu: PopupMenu, _: &mut Window, _: &mut Context<TableState<Self>>) -> PopupMenu {
+        grid_menu(menu, self)
     }
 
     fn render_td(&mut self, row_ix: usize, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         let c = self.colors;
+        let col_ix = self.actual(col_ix);
+        // Foreign-key cells look like links (F4 follows them)
+        let is_fk = self
+            .column_name(col_ix)
+            .is_some_and(|n| self.source.as_ref().is_some_and(|s| s.foreign_keys.iter().any(|f| f.from_column == n)));
         let mono = cx.theme().mono_font_family.clone();
         if let Some(ed) = self.editing.as_ref().filter(|e| e.row == row_ix && e.col == col_ix) {
             return div().size_full().child(Input::new(&ed.input).xsmall()).into_any_element();
@@ -628,6 +741,7 @@ impl TableDelegate for ResultSet {
             Some(v) => div()
                 .text_color(if state == RowState::Deleted { c.muted } else { c.text })
                 .when(state == RowState::Deleted, |d| d.line_through())
+                .when(is_fk && state != RowState::Deleted, |d| d.underline())
                 .truncate()
                 .child(v.to_display_string())
                 .into_any_element(),
@@ -646,6 +760,37 @@ impl TableDelegate for ResultSet {
     }
 }
 
+/// The grid's right-click menu (DataGrip's cell menu)
+pub fn grid_menu(menu: PopupMenu, rs: &ResultSet) -> PopupMenu {
+    let has_fks = rs.source.as_ref().is_some_and(|s| !s.foreign_keys.is_empty());
+    let menu = menu
+        .menu("Copy Value", Box::new(CopyValue))
+        .menu("Copy Row as TSV", Box::new(CopyRowTsv))
+        .menu("Copy Row as CSV", Box::new(CopyRowCsv))
+        .menu("Copy Row as JSON", Box::new(CopyRowJson))
+        .menu("Copy Row as SQL INSERT", Box::new(CopyRowInsert))
+        .menu("Copy All as TSV", Box::new(CopyAllTsv))
+        .menu("Copy All as CSV", Box::new(CopyAllCsv))
+        .menu("Copy All as JSON", Box::new(CopyAllJson))
+        .menu("Copy All as SQL INSERT", Box::new(CopyAllInsert))
+        .separator()
+        .menu("Hide Column", Box::new(HideColumn))
+        .when(rs.order.is_some(), |m| m.menu("Show All Columns", Box::new(ShowAllColumns)))
+        .when(has_fks, |m| m.menu("Go to Referenced Row", Box::new(FollowForeignKey)))
+        .menu("Open in Value Editor", Box::new(ToggleValueEditor));
+    if rs.read_only_reason().is_some() {
+        return menu;
+    }
+    menu.separator()
+        .menu("Edit Cell", Box::new(EditCell))
+        .menu("Set NULL", Box::new(SetNull))
+        .menu("Set DEFAULT", Box::new(SetDefault))
+        .separator()
+        .menu("Add Row", Box::new(AddRow))
+        .menu("Duplicate Row", Box::new(DuplicateRow))
+        .menu("Delete Row", Box::new(DeleteRow))
+}
+
 /// Row/cell operations shared by keyboard actions, the context menu and the toolbar.
 /// They target the selected cell, or the right-clicked row.
 pub fn apply_row_action(grid: &Entity<TableState<ResultSet>>, action: &dyn Action, window: &mut Window, cx: &mut App) {
@@ -653,8 +798,42 @@ pub fn apply_row_action(grid: &Entity<TableState<ResultSet>>, action: &dyn Actio
         let target = table.selected_cell().or_else(|| table.right_clicked_row().map(|r| (r, 0)));
         let any = action.as_any();
         let rs = table.delegate_mut();
+        use quarry_core::export::ExportFormat::{Csv, Json, Sql};
+        let copy_format = if any.is::<CopyRowTsv>() || any.is::<CopyAllTsv>() {
+            Some((Csv, '\t'))
+        } else if any.is::<CopyRowCsv>() || any.is::<CopyAllCsv>() {
+            Some((Csv, ','))
+        } else if any.is::<CopyRowJson>() || any.is::<CopyAllJson>() {
+            Some((Json, ','))
+        } else if any.is::<CopyRowInsert>() || any.is::<CopyAllInsert>() {
+            Some((Sql, ','))
+        } else {
+            None
+        };
+        let whole = any.is::<CopyAllTsv>() || any.is::<CopyAllCsv>() || any.is::<CopyAllJson>() || any.is::<CopyAllInsert>();
+        let mut clipboard = None;
         let new_row = match target {
             _ if any.is::<AddRow>() => rs.add_row(),
+            _ if any.is::<ShowAllColumns>() => {
+                rs.show_all_columns();
+                None
+            }
+            _ if whole => {
+                clipboard = copy_format.and_then(|(f, d)| rs.copy_text(None, f, d));
+                None
+            }
+            Some((row, _)) if copy_format.is_some() => {
+                clipboard = copy_format.and_then(|(f, d)| rs.copy_text(Some(row), f, d));
+                None
+            }
+            Some((row, col)) if any.is::<CopyValue>() => {
+                clipboard = rs.cell_value(row, rs.actual(col)).0.map(|v| if v.is_null() { String::new() } else { v.to_display_string() });
+                None
+            }
+            Some((_, col)) if any.is::<HideColumn>() => {
+                rs.hide_column(col);
+                None
+            }
             Some((row, col)) if any.is::<EditCell>() => {
                 rs.start_edit(row, col, None, window, cx);
                 None
@@ -682,6 +861,9 @@ pub fn apply_row_action(grid: &Entity<TableState<ResultSet>>, action: &dyn Actio
             }
             _ => None,
         };
+        if let Some(text) = clipboard {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
         table.refresh(cx);
         if let Some(row) = new_row {
             table.scroll_to_row(row, cx);
@@ -703,6 +885,7 @@ impl DataGrid {
         on_review: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_submit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_export: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_follow_fk: impl Fn(&mut T, (String, String, String), &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         let rs = grid.read(cx).delegate();
         let pending_count = rs.pending.total_count();
@@ -711,6 +894,7 @@ impl DataGrid {
         let notice = rs.notice.clone();
         let is_table = rs.source.is_some();
         let read_only = rs.read_only_reason();
+        let hidden = rs.hidden_count();
         let inspector = rs.inspector.as_ref().map(|i| {
             let col = rs.column_name(i.col).unwrap_or_default().to_string();
             (i.editor.clone(), col, i.row, read_only.is_some() || rs.row_state(i.row) == RowState::Deleted)
@@ -765,6 +949,17 @@ impl DataGrid {
                     .tooltip("Export (⇧⌘E)")
                     .on_click(cx.listener(move |this, _, window, cx| on_export(this, window, cx))),
             )
+            .when(hidden > 0, |this| {
+                let grid = grid.clone();
+                this.child(
+                    Button::new("grid-hidden")
+                        .label(format!("{hidden} hidden"))
+                        .ghost()
+                        .xsmall()
+                        .tooltip("Show all columns")
+                        .on_click(move |_, window, cx| apply_row_action(&grid, &ShowAllColumns, window, cx)),
+                )
+            })
             .child(div().flex_1())
             .when_some(notice.clone(), |this, n| {
                 this.child(div().px_2().text_xs().text_color(theme.danger).truncate().child(n))
@@ -847,7 +1042,7 @@ impl DataGrid {
                                 .when(ix != active, |d| d.text_color(theme.text_muted).hover(|s| s.bg(theme.bg_hover)))
                                 .on_click(move |_, _, cx| {
                                     grid.update(cx, |t, cx| {
-                                        t.delegate_mut().active = ix;
+                                        t.delegate_mut().set_active(ix);
                                         t.refresh(cx);
                                         cx.notify();
                                     });
@@ -895,6 +1090,59 @@ impl DataGrid {
             .on_action({
                 let g = grid.clone();
                 move |a: &ToggleValueEditor, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyValue, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyRowTsv, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyRowCsv, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyRowJson, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyRowInsert, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyAllTsv, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyAllCsv, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyAllJson, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &CopyAllInsert, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &HideColumn, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |a: &ShowAllColumns, w, cx| apply_row_action(&g, a, w, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                cx.listener(move |this, _: &FollowForeignKey, window, cx| {
+                    let target = g.read(cx).selected_cell().and_then(|(row, col)| g.read(cx).delegate().foreign_key_target(row, col));
+                    if let Some(target) = target {
+                        on_follow_fk(this, target, window, cx);
+                    }
+                })
             })
             .on_action(move |_: &CancelEdit, window, cx| {
                 grid_cancel.update(cx, |t, cx| {

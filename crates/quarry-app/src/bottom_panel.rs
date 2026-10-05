@@ -436,7 +436,7 @@ impl QuarryWindow {
             Button::new(id).label(label).xsmall().map(|b| if on { b.primary() } else { b.ghost() })
         };
         let grid_view = |grid: &Entity<TableState<ResultSet>>, cx: &Context<Self>| {
-            DataGrid::render(grid, theme, cx, |_, _, _| {}, |_, _, _| {}, |_, _, _| {}, |_, _, _| {})
+            DataGrid::render(grid, theme, cx, |_, _, _| {}, |_, _, _| {}, |_, _, _| {}, |_, _, _| {}, |_, _, _, _| {})
         };
 
         let body: AnyElement = match active {

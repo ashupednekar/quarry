@@ -65,6 +65,8 @@ pub struct ColumnSchema {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForeignKeyRef {
     pub from_column: String,
+    #[serde(default)]
+    pub to_schema: String,
     pub to_table: String,
     pub to_column: String,
 }

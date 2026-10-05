@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, SchemaCatalog, TableSchema};
+use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableSchema};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb};
 use crate::value::DbValue;
 use async_trait::async_trait;
@@ -117,6 +117,19 @@ impl DatabaseSession for PostgresSession {
 
         let pk_rows = self.client.query(pks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
 
+        // Foreign keys, one row per referencing column (G5)
+        let fks_query = r#"
+            SELECT kcu.table_schema, kcu.table_name, kcu.column_name,
+                   ccu.table_schema, ccu.table_name, ccu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY';
+        "#;
+        let fk_rows = self.client.query(fks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+
         let mut tables = Vec::new();
 
         for trow in table_rows {
@@ -153,13 +166,18 @@ impl DatabaseSession for PostgresSession {
                 })
                 .collect();
 
+            let foreign_keys = fk_rows
+                .iter()
+                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
+                .map(|r| ForeignKeyRef { from_column: r.get(2), to_schema: r.get(3), to_table: r.get(4), to_column: r.get(5) })
+                .collect();
             tables.push(TableSchema {
                 schema_name,
                 table_name,
                 is_view,
                 columns,
                 primary_keys: table_pks,
-                foreign_keys: Vec::new(),
+                foreign_keys,
             });
         }
 

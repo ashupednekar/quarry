@@ -132,6 +132,7 @@ impl DatabaseSession for SqliteSession {
             if let Ok(mut fk_stmt) = conn.prepare(&fk_pragma) {
                 if let Ok(fk_rows) = fk_stmt.query_map([], |row| {
                     Ok(ForeignKeyRef {
+                        to_schema: "main".to_string(),
                         to_table: row.get(2)?,
                         from_column: row.get(3)?,
                         to_column: row.get(4)?,

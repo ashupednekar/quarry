@@ -128,6 +128,8 @@ struct QuarryWindow {
     export: export_dialog::ExportState,
     import: import_wizard::ImportState,
     params: Option<params_dialog::ParamsDialog>,
+    /// Open grid context menu: (position, menu, dismiss subscription)
+    grid_menu: Option<(Point<Pixels>, Entity<gpui::component::menu::PopupMenu>, Subscription)>,
     /// Last value entered for each parameter name
     param_memory: std::collections::HashMap<String, String>,
     /// Per-tab subscriptions (grid events), dropped with the tab
@@ -203,6 +205,7 @@ impl QuarryWindow {
             export,
             import,
             params: None,
+            grid_menu: None,
             param_memory: Default::default(),
         };
         this.apply_theme(cx);
@@ -385,7 +388,8 @@ impl QuarryWindow {
             None => Some("Read-only: table not found in schema"),
             _ => None,
         };
-        let (columns, primary_keys) = schema.map(|t| (t.columns.clone(), t.primary_keys.clone())).unwrap_or_default();
+        let (columns, primary_keys, foreign_keys) =
+            schema.map(|t| (t.columns.clone(), t.primary_keys.clone(), t.foreign_keys.clone())).unwrap_or_default();
         let id = format!("t-{}.{}", schema_name, table_name);
         let grid = self.new_grid(
             &id,
@@ -396,6 +400,7 @@ impl QuarryWindow {
                 columns,
                 primary_keys,
                 read_only_reason,
+                foreign_keys,
                 default_keyword: self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres),
                 filter: String::new(),
                 order_by: None,
@@ -417,15 +422,44 @@ impl QuarryWindow {
         self.state.active_tab_index = self.state.tabs.len() - 1;
     }
 
+    /// Opens the referenced table filtered to the row a foreign-key cell points at (G5)
+    fn follow_foreign_key(&mut self, (schema, table, filter): (String, String, String), window: &mut Window, cx: &mut Context<Self>) {
+        self.open_table_tab(&table, &schema, window, cx);
+        if let Some(Tab::Table { filter: input, .. }) = self.state.active_tab() {
+            input.clone().update(cx, |i, cx| i.set_value(filter, window, cx));
+        }
+        self.refresh_active_tab(window, cx);
+        cx.notify();
+    }
+
+    fn open_grid_menu(&mut self, grid: Entity<TableState<ResultSet>>, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = grid.update(cx, |t, cx| {
+            t.set_selected_cell(row, col, cx);
+            t.focus_handle(cx)
+        });
+        let menu = gpui::component::menu::PopupMenu::build(window, cx, |menu, _, cx| {
+            grid::grid_menu(menu.action_context(focus), grid.read(cx).delegate())
+        });
+        menu.update(cx, |m, cx| m.focus_handle(cx).focus(window, cx));
+        let sub = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.grid_menu = None;
+            cx.notify();
+        });
+        self.grid_menu = Some((window.mouse_position(), menu, sub));
+        cx.notify();
+    }
+
     fn new_grid(&mut self, tab_id: &str, source: Option<TableSource>, window: &mut Window, cx: &mut Context<Self>) -> Entity<TableState<ResultSet>> {
         let rs = ResultSet::new(&self.theme, source);
         let grid = cx.new(|cx| TableState::new(rs, window, cx).cell_selectable(true).col_resizable(true).col_selectable(false));
         // Double-click edits the cell (read-only grids explain why they can't)
-        let sub = cx.subscribe_in(&grid, window, |_, grid, ev: &TableEvent, window, cx| {
+        let sub = cx.subscribe_in(&grid, window, |this, grid, ev: &TableEvent, window, cx| {
             match *ev {
                 TableEvent::DoubleClickedCell(row, col) => {
                     grid.update(cx, |t, cx| t.delegate_mut().start_edit(row, col, None, window, cx))
                 }
+                // Cell-selection mode handles right-clicks itself, so open the menu here
+                TableEvent::RightClickedCell(row, col) => this.open_grid_menu(grid.clone(), row, col, window, cx),
                 // The value editor follows the selection
                 TableEvent::SelectCell(row, col) => grid.update(cx, |t, cx| {
                     if t.delegate().inspector_open() {
@@ -1125,6 +1159,7 @@ impl Render for QuarryWindow {
                     |this, window, cx| this.review_changes(&ReviewChanges, window, cx),
                     |this, window, cx| this.commit_pending_changes(window, cx),
                     |this, _, cx| this.open_export(cx),
+                    |this, target, window, cx| this.follow_foreign_key(target, window, cx),
                 ));
                 match tab {
                     // Editor over results, with a draggable divider
@@ -1270,6 +1305,9 @@ impl Render for QuarryWindow {
             .children(export_dialog)
             .children(import_wizard)
             .children(params_dialog)
+            .when_some(self.grid_menu.as_ref().map(|(p, m, _)| (*p, m.clone())), |this, (pos, menu)| {
+                this.child(deferred(anchored().position(pos).snap_to_window().child(menu)).with_priority(1))
+            })
             .when_some(self.state.toast_message.clone(), |this, (msg, error)| {
                 this.child(
                     div()
