@@ -8,6 +8,7 @@ mod completion;
 mod connections;
 mod editor;
 mod export_dialog;
+mod params_dialog;
 mod grid;
 mod history;
 mod import_wizard;
@@ -58,6 +59,8 @@ actions!(
         RollbackTx,
         ToggleTheme,
         ExportResults,
+        Explain,
+        ExplainAnalyze,
         MenuUp,
         MenuDown,
     ]
@@ -79,9 +82,19 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("escape", Dismiss, None),
         KeyBinding::new("secondary-shift-e", ExportResults, None),
+        KeyBinding::new("secondary-alt-e", Explain, None),
+        KeyBinding::new("secondary-alt-shift-e", ExplainAnalyze, None),
         KeyBinding::new("up", MenuUp, Some("CommandBar > Input")),
         KeyBinding::new("down", MenuDown, Some("CommandBar > Input")),
     ]);
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum RunMode {
+    Current,
+    All,
+    Explain,
+    ExplainAnalyze,
 }
 
 const NEW_QUERY_SQL: &str = "SELECT * FROM users LIMIT 50;";
@@ -104,6 +117,9 @@ struct QuarryWindow {
     toast_reveal: Option<std::path::PathBuf>,
     export: export_dialog::ExportState,
     import: import_wizard::ImportState,
+    params: Option<params_dialog::ParamsDialog>,
+    /// Last value entered for each parameter name
+    param_memory: std::collections::HashMap<String, String>,
     /// Per-tab subscriptions (grid events), dropped with the tab
     tab_subscriptions: std::collections::HashMap<String, Subscription>,
     panel: bottom_panel::PanelState,
@@ -175,6 +191,8 @@ impl QuarryWindow {
             toast_reveal: None,
             export,
             import,
+            params: None,
+            param_memory: Default::default(),
         };
         this.apply_theme(cx);
         this
@@ -412,21 +430,22 @@ impl QuarryWindow {
     /// Runs the selection, the whole script (`run_all`), or the statement at the cursor.
     /// Statements run in order and stop at the first failure (UC3).
     fn run_query_tab(&mut self, run_all: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(session) = self.state.session.clone() else { return };
-        let Some(Tab::Query { id, editor, grid, is_running, error_message, .. }) =
-            self.state.tabs.get_mut(self.state.active_tab_index)
-        else {
-            return;
-        };
+        self.start_run(if run_all { RunMode::All } else { RunMode::Current }, window, cx);
+    }
+
+    /// Collects what to run (selection, statement at cursor, or everything), wraps EXPLAIN,
+    /// and asks for parameter values when the SQL has `:name` / `$1` placeholders (Q6, Q7)
+    pub fn start_run(&mut self, mode: RunMode, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Tab::Query { editor, is_running, .. }) = self.state.active_tab() else { return };
         if *is_running {
             return;
         }
         let ed = editor.read(cx);
         let text = ed.value();
         let sel = ed.selected_range();
-        let statements: Vec<String> = if !sel.is_empty() {
+        let mut statements: Vec<String> = if !sel.is_empty() {
             quarry_sql::split_statements(&text[sel]).into_iter().map(|s| s.sql).collect()
-        } else if run_all {
+        } else if mode == RunMode::All {
             quarry_sql::split_statements(&text).into_iter().map(|s| s.sql).collect()
         } else {
             quarry_sql::find_statement_at_offset(&text, ed.cursor()).into_iter().map(|s| s.sql).collect()
@@ -434,6 +453,39 @@ impl QuarryWindow {
         if statements.is_empty() {
             return;
         }
+        if matches!(mode, RunMode::Explain | RunMode::ExplainAnalyze) {
+            let pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
+            let sql = statements.swap_remove(0);
+            if mode == RunMode::ExplainAnalyze && quarry_core::session::is_mutation(&sql) {
+                self.toast("EXPLAIN ANALYZE runs the statement, which would change data. Use Explain instead.", true, cx);
+                return;
+            }
+            statements = vec![match (pg, mode) {
+                (true, RunMode::ExplainAnalyze) => format!("EXPLAIN (ANALYZE, BUFFERS) {sql}"),
+                (true, _) => format!("EXPLAIN {sql}"),
+                // SQLite has no ANALYZE variant; the query plan is the useful view
+                (false, _) => format!("EXPLAIN QUERY PLAN {sql}"),
+            }];
+        }
+        let mut params: Vec<String> = Vec::new();
+        for p in statements.iter().flat_map(|s| quarry_sql::find_params(s)) {
+            if !params.contains(&p) {
+                params.push(p);
+            }
+        }
+        if params.is_empty() {
+            self.execute_statements(statements, window, cx);
+        } else {
+            self.open_params(statements, params, window, cx);
+        }
+    }
+
+    /// Runs statements in order on the active connection; stops at the first failure (UC3)
+    pub fn execute_statements(&mut self, statements: Vec<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.state.session.clone() else { return };
+        let Some(Tab::Query { id, grid, is_running, error_message, .. }) = self.state.tabs.get_mut(self.state.active_tab_index) else {
+            return;
+        };
         *is_running = true;
         *error_message = None;
         let (tab_id, grid) = (id.clone(), grid.clone());
@@ -619,6 +671,11 @@ impl QuarryWindow {
 
     /// Escape: close the topmost overlay
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        if self.params.take().is_some() {
+            self.refocus_root(window, cx);
+            cx.notify();
+            return;
+        }
         if self.export.open {
             self.export.open = false;
             cx.notify();
@@ -690,6 +747,10 @@ impl QuarryWindow {
             self.open_add_conn(window, cx);
         } else if action_id == "action:toggle_sidebar" {
             self.toggle_sidebar(&ToggleSidebar, window, cx);
+        } else if action_id == "action:explain" {
+            self.start_run(RunMode::Explain, window, cx);
+        } else if action_id == "action:explain_analyze" {
+            self.start_run(RunMode::ExplainAnalyze, window, cx);
         } else if action_id == "action:export" {
             self.open_export(cx);
         } else if action_id == "action:import" {
@@ -871,6 +932,7 @@ impl Render for QuarryWindow {
         let kill_confirm = self.render_kill_confirm(cx);
         let export_dialog = self.render_export_dialog(cx);
         let import_wizard = self.render_import_wizard(cx);
+        let params_dialog = self.render_params_dialog(cx);
         let active_tab = self.state.active_tab().cloned();
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
@@ -1085,6 +1147,8 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::rollback_tx))
             .on_action(cx.listener(Self::toggle_theme))
             .on_action(cx.listener(|this, _: &ExportResults, _, cx| this.open_export(cx)))
+            .on_action(cx.listener(|this, _: &Explain, window, cx| this.start_run(RunMode::Explain, window, cx)))
+            .on_action(cx.listener(|this, _: &ExplainAnalyze, window, cx| this.start_run(RunMode::ExplainAnalyze, window, cx)))
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
             // Drop a SQLite file anywhere to open it (C3, U11)
@@ -1144,6 +1208,7 @@ impl Render for QuarryWindow {
             .children(kill_confirm)
             .children(export_dialog)
             .children(import_wizard)
+            .children(params_dialog)
             .when_some(self.state.toast_message.clone(), |this, (msg, error)| {
                 this.child(
                     div()

@@ -56,6 +56,8 @@ impl CommandBar {
             ("action:add_conn", "Add Database Connection", "ACTION", "ACT", "+"),
             ("action:toggle_sidebar", "Toggle Sidebar", "VIEW", "UI", "⌘B"),
             ("action:toggle_bottom", "Toggle Bottom Panel", "VIEW", "UI", "⌘J"),
+            ("action:explain", "Explain Query Plan", "ACTION", "SQL", "⌥⌘E"),
+            ("action:explain_analyze", "Explain Analyze", "ACTION", "SQL", "⇧⌥⌘E"),
             ("action:export", "Export Results…", "ACTION", "DATA", "⇧⌘E"),
             ("action:import", "Import Data (CSV, JSON)…", "ACTION", "DATA", ""),
             ("action:dump", "Dump Database to SQL…", "ACTION", "DATA", ""),
