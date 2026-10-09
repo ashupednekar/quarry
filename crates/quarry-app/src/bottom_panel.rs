@@ -5,7 +5,7 @@
 
 use crate::grid::{DataGrid, ResultSet};
 use crate::runtime::run_db;
-use crate::state::{BottomPanelTab, ConnectionTargetKind};
+use crate::state::BottomPanelTab;
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::QuarryWindow;
@@ -15,67 +15,11 @@ use gpui::component::input::{Input, InputEvent, InputState};
 use gpui::component::table::TableState;
 use gpui::component::{Disableable, Sizable};
 use gpui::*;
-use quarry_core::session::DatabaseSession;
+use quarry_core::monitor::{ServerView, Snapshot};
 use quarry_core::{DbError, DbValue, QueryResult};
 use std::time::Duration;
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum ServerView {
-    Activity,
-    Statements,
-    Database,
-    Locks,
-    Logs,
-}
-
-impl ServerView {
-    const ALL: [ServerView; 5] = [ServerView::Activity, ServerView::Statements, ServerView::Database, ServerView::Locks, ServerView::Logs];
-
-    fn label(self) -> &'static str {
-        match self {
-            ServerView::Activity => "Active queries",
-            ServerView::Statements => "Statements",
-            ServerView::Database => "Database",
-            ServerView::Locks => "Locks",
-            ServerView::Logs => "Logs",
-        }
-    }
-
-    fn sql(self) -> &'static str {
-        match self {
-            ServerView::Activity => {
-                "SELECT pid, usename AS user, datname AS database, client_addr::text AS client, state, \
-                 wait_event_type AS waiting_on, (now() - query_start)::text AS running_for, left(query, 500) AS query \
-                 FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND backend_type = 'client backend' \
-                 ORDER BY query_start NULLS LAST"
-            }
-            ServerView::Statements => {
-                "SELECT calls, round(total_exec_time::numeric, 1) AS total_ms, round(mean_exec_time::numeric, 2) AS mean_ms, \
-                 rows, left(query, 500) AS query FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 200"
-            }
-            ServerView::Database => {
-                "SELECT datname AS database, numbackends AS connections, xact_commit AS commits, xact_rollback AS rollbacks, \
-                 blks_hit, blks_read, tup_returned, tup_fetched, tup_inserted, tup_updated, tup_deleted, deadlocks \
-                 FROM pg_stat_database WHERE datname IS NOT NULL ORDER BY datname"
-            }
-            ServerView::Locks => {
-                "SELECT l.pid, l.locktype, l.mode, l.granted, l.relation::regclass::text AS relation, a.state, \
-                 left(a.query, 300) AS query FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) \
-                 WHERE l.pid <> pg_backend_pid() ORDER BY l.granted, l.pid"
-            }
-            // Read in Rust (`read_logs`): the file, how far back, and the prefix all vary
-            ServerView::Logs => "",
-        }
-    }
-}
-
-const STATEMENTS_HELP: &str = "pg_stat_statements isn't enabled on this server. Add it to shared_preload_libraries \
-in postgresql.conf, restart Postgres, then run: CREATE EXTENSION pg_stat_statements;";
-const LOGS_OFF_HELP: &str = "This server doesn't write log files (logging_collector is off). Set logging_collector = on \
-in postgresql.conf and restart Postgres. Managed services (RDS, Cloud SQL, Supabase…) show logs in their own console.";
-const LOGS_PERMISSION_HELP: &str = "Reading server logs needs a superuser, or a role with pg_monitor and pg_read_server_files: \
-GRANT pg_monitor, pg_read_server_files TO your_role;";
-const SQLITE_HELP: &str = "SQLite runs inside Quarry, so there's no server to monitor. The Activity Log shows everything Quarry ran.";
+const NO_MONITOR_HELP: &str = "This database has no server to monitor. The Activity Log shows everything Quarry ran.";
 
 pub struct PanelState {
     history_grid: Entity<TableState<ResultSet>>,
@@ -203,39 +147,6 @@ impl PanelState {
             _subs: subs,
         }
     }
-}
-
-/// The chosen (or newest) log file's last `pages` × 64 KB, newest line first, split by the server's
-/// `log_line_prefix`. Also returns the log directory's files, newest first.
-async fn read_logs(session: &dyn DatabaseSession, file: Option<String>, pages: u32) -> Result<(QueryResult, Vec<String>), DbError> {
-    let text = |r: &QueryResult| r.rows.iter().filter_map(|row| row.first().map(|v| v.to_display_string())).collect::<Vec<_>>();
-    let files = text(&session.execute_quiet("SELECT name FROM pg_ls_logdir() ORDER BY modification DESC").await?);
-    let Some(name) = file.filter(|f| files.contains(f)).or_else(|| files.first().cloned()) else {
-        return Ok((result(&["time", "pid", "level", "message"], vec![]), files));
-    };
-    let quoted = name.replace('\'', "''");
-    let bytes = 65536 * pages as i64;
-    let sql = format!(
-        "SELECT pg_read_file(current_setting('log_directory') || '/{quoted}', \
-         greatest((pg_stat_file(current_setting('log_directory') || '/{quoted}')).size - {bytes}, 0), {bytes}), \
-         current_setting('log_line_prefix')"
-    );
-    let r = session.execute_quiet(&sql).await?;
-    let row = r.rows.first();
-    let (body, prefix) = (
-        row.and_then(|r| r.first()).map(|v| v.to_display_string()).unwrap_or_default(),
-        row.and_then(|r| r.get(1)).map(|v| v.to_display_string()).unwrap_or_default(),
-    );
-    let rows = body
-        .lines()
-        .rev()
-        .filter(|l| !l.is_empty())
-        .map(|l| {
-            let (t, p, lvl, m) = crate::server_logs::parse_line(&prefix, l);
-            vec![DbValue::Text(t), DbValue::Text(p), DbValue::Text(lvl), DbValue::Text(m)]
-        })
-        .collect();
-    Ok((result(&["time", "pid", "level", "message"], rows), files))
 }
 
 fn result(columns: &[&str], rows: Vec<Vec<DbValue>>) -> QueryResult {
@@ -373,9 +284,8 @@ impl QuarryWindow {
     }
 
     pub fn refresh_server(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let is_pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
-        let Some(session) = self.state.session.clone().filter(|_| is_pg) else {
-            self.panel.server_message = Some(if self.state.session.is_some() { SQLITE_HELP } else { "Connect to a database first." }.into());
+        let Some(session) = self.state.session.clone().filter(|s| s.monitor().is_some()) else {
+            self.panel.server_message = Some(if self.state.session.is_some() { NO_MONITOR_HELP } else { "Connect to a database first." }.into());
             self.panel.server_raw = None;
             set_grid(&self.panel.server_grid, result(&[], vec![]), cx);
             return;
@@ -386,27 +296,19 @@ impl QuarryWindow {
         self.panel.server_loading = true;
         let view = self.panel.server_view;
         let (log_file, log_pages) = (self.panel.log_file.clone(), self.panel.log_pages);
-        // L3a: say what's missing instead of failing silently
+        // L3a: the driver says what's missing instead of failing silently
         let fut = async move {
-            if view == ServerView::Statements {
-                let ext = session.execute_quiet("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'").await?;
-                if ext.rows.is_empty() {
-                    return Ok(Err(STATEMENTS_HELP));
-                }
-            }
-            if view == ServerView::Logs {
-                let on = session.execute_quiet("SELECT current_setting('logging_collector')").await?;
-                if on.rows.first().and_then(|r| r.first()).is_some_and(|v| v.to_display_string() != "on") {
-                    return Ok(Err(LOGS_OFF_HELP));
-                }
-                return match read_logs(session.as_ref(), log_file, log_pages).await {
-                    Err(e) if e.to_string().contains("permission denied") => Ok(Err(LOGS_PERMISSION_HELP)),
-                    other => other.map(Ok),
-                };
-            }
-            session.execute_quiet(view.sql()).await.map(|r| Ok((r, Vec::new())))
+            let monitor = session.monitor().ok_or(DbError::Cancelled)?;
+            let (snapshot, files) = match view {
+                ServerView::Logs => monitor.logs(log_file, log_pages).await.map(|p| (p.rows, p.files))?,
+                _ => (monitor.snapshot(view).await?, Vec::new()),
+            };
+            Ok(match snapshot {
+                Snapshot::Rows(r) => Ok((r, files)),
+                Snapshot::Unavailable(help) => Err(help),
+            })
         };
-        run_db(window, cx, fut, move |this, res: Result<Result<(QueryResult, Vec<String>), &'static str>, DbError>, _, cx| {
+        run_db(window, cx, fut, move |this, res: Result<Result<(QueryResult, Vec<String>), String>, DbError>, _, cx| {
             let p = &mut this.panel;
             p.server_loading = false;
             if p.server_view != view {
@@ -486,7 +388,10 @@ impl QuarryWindow {
     pub fn kill_backend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((pid, terminate)) = self.panel.confirm_kill.take() else { return };
         let Some(session) = self.state.session.clone() else { return };
-        let fut = async move { if terminate { session.terminate_backend(pid).await } else { session.cancel_backend(pid).await } };
+        let fut = async move {
+            let monitor = session.monitor().ok_or(DbError::Cancelled)?;
+            if terminate { monitor.terminate(pid).await } else { monitor.cancel(pid).await }
+        };
         run_db(window, cx, fut, move |this, res, window, cx| {
             this.state.messages.push(match res {
                 Ok(()) => format!("{} backend {}.", if terminate { "Terminated" } else { "Cancelled the query on" }, pid),
@@ -655,7 +560,7 @@ impl QuarryWindow {
                             .items_center()
                             .border_b_1()
                             .border_color(theme.border)
-                            .children(ServerView::ALL.into_iter().map(|view| {
+                            .children(self.state.session.as_ref().and_then(|s| s.monitor()).map_or(&[][..], |m| m.views()).iter().copied().map(|view| {
                                 toggle(view.label(), view.label(), p.server_view == view)
                                     .on_click(cx.listener(move |this, _, window, cx| this.set_server_view(view, window, cx)))
                             }))

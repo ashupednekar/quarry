@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+mod dump;
+mod logs;
+mod monitor;
+
+pub use dump::split_password;
+
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableSchema};
+use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb};
 use crate::value::DbValue;
 use async_trait::async_trait;
@@ -13,6 +19,8 @@ use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 
 pub struct PostgresSession {
     client: Arc<Client>,
+    /// What we connected with (through the SSH tunnel, if any), for client tools like pg_dump
+    url: String,
     read_only: bool,
     database_name: String,
     tx: TxState,
@@ -44,6 +52,7 @@ impl PostgresSession {
 
         Ok(Self {
             client: Arc::new(client),
+            url: connection_str.to_string(),
             read_only,
             database_name,
             tx: TxState::default(),
@@ -62,6 +71,10 @@ fn statement_err(e: tokio_postgres::Error) -> DbError {
         Some(ErrorPosition::Original(at)) => DbError::SqlError(format!("{e} (at character {at})")),
         _ => DbError::SqlError(e.to_string()),
     }
+}
+
+fn sql_string(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
 }
 
 /// Reads back the position `statement_err` appended
@@ -196,7 +209,8 @@ impl DatabaseSession for PostgresSession {
             });
         }
 
-        Ok(SchemaCatalog { schemas, tables })
+        let default_schema = self.client.query_one("SELECT current_schema()", &[]).await.ok().and_then(|r| r.get(0));
+        Ok(SchemaCatalog { schemas, tables, default_schema })
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -251,20 +265,35 @@ impl DatabaseSession for PostgresSession {
         Ok(statements.len())
     }
 
-    async fn cancel_backend(&self, pid: i64) -> Result<(), DbError> {
-        self.client
-            .execute("SELECT pg_cancel_backend($1)", &[&(pid as i32)])
-            .await
-            .map_err(|e| DbError::SqlError(e.to_string()))?;
-        Ok(())
+    fn monitor(&self) -> Option<&dyn crate::monitor::Monitor> {
+        Some(self)
     }
 
-    async fn terminate_backend(&self, pid: i64) -> Result<(), DbError> {
-        self.client
-            .execute("SELECT pg_terminate_backend($1)", &[&(pid as i32)])
-            .await
-            .map_err(|e| DbError::SqlError(e.to_string()))?;
-        Ok(())
+    fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
+        Some(self)
+    }
+
+    /// Postgres doesn't keep DDL: CREATE TABLE comes from the catalog, the rest from pg_catalog
+    async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
+        let rel = format!("{}::regclass", sql_string(&self.dialect().qualified(&table.schema_name, &table.table_name)));
+        let extra = self.run_statement(&format!(
+            "SELECT format('ALTER TABLE %s ADD CONSTRAINT %I %s', conrelid::regclass, conname, pg_get_constraintdef(oid)) \
+             FROM pg_constraint WHERE conrelid = {rel} AND contype IN ('c', 'u', 'x') \
+             UNION ALL SELECT pg_get_indexdef(indexrelid) FROM pg_index \
+             WHERE indrelid = {rel} AND indexrelid NOT IN (SELECT conindid FROM pg_constraint WHERE conrelid = {rel}) \
+             UNION ALL SELECT format('COMMENT ON TABLE %s IS %L', {rel}, obj_description({rel}, 'pg_class')) \
+             WHERE obj_description({rel}, 'pg_class') IS NOT NULL \
+             UNION ALL SELECT format('COMMENT ON COLUMN %s.%I IS %L', {rel}, attname, col_description(attrelid, attnum)) \
+             FROM pg_attribute WHERE attrelid = {rel} AND attnum > 0 AND NOT attisdropped AND col_description(attrelid, attnum) IS NOT NULL"
+        )).await?;
+        let indexes = self.run_statement(&format!(
+            "SELECT i.relname, ix.indisunique, array_to_string(ARRAY(SELECT pg_get_indexdef(ix.indexrelid, k + 1, true) \
+             FROM generate_subscripts(ix.indkey, 1) AS k ORDER BY k), ', ') \
+             FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid WHERE ix.indrelid = {rel} ORDER BY i.relname"
+        )).await?;
+        let mut parts = vec![format!("-- Rebuilt from the catalog\n{}", table.create_sql(self.dialect()))];
+        parts.extend(extra.rows.iter().map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';'))));
+        Ok(TableInfo { ddl: parts.join("\n\n"), indexes: crate::schema::index_rows(&indexes) })
     }
 
     fn is_read_only(&self) -> bool {

@@ -4,7 +4,7 @@
 //! A table tab is the table's home: its data, its structure, and its DDL (OOUX)
 
 use crate::runtime::run_db;
-use crate::state::{ConnectionTargetKind, Tab};
+use crate::state::Tab;
 use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::component::input::EditorState;
@@ -28,70 +28,24 @@ pub struct TableDetail {
     pub ddl: Entity<EditorState>,
 }
 
-fn sql_string(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
-}
-
 impl QuarryWindow {
     pub fn set_table_view(&mut self, view: TableView, window: &mut Window, cx: &mut Context<Self>) {
         self.schedule_session_save(cx);
         let ix = self.state.active_tab_index;
-        let Some(Tab::Table { view: v, detail, schema_name, table_name, grid, connection, .. }) = self.state.tabs.get_mut(ix) else { return };
+        let Some(Tab::Table { view: v, detail, schema_name, table_name, grid, .. }) = self.state.tabs.get_mut(ix) else { return };
         *v = view;
         cx.notify();
         if view == TableView::Data || detail.is_some() {
             return;
         }
         let Some(session) = grid.read(cx).delegate().source.as_ref().map(|s| s.session.clone()) else { return };
-        let is_sqlite = connection.as_ref().is_none_or(|c| c.kind != ConnectionTargetKind::Postgres);
         let (schema, table) = (schema_name.clone(), table_name.clone());
-        let created = self.state.catalog.find_table(Some(&schema), &table).map(|t| t.create_sql());
-        let (ddl_sql, index_sql) = if is_sqlite {
-            (
-                // SQLite keeps each object's DDL
-                format!("SELECT type, sql FROM sqlite_master WHERE tbl_name = {} AND sql IS NOT NULL ORDER BY type = 'index', name", sql_string(&table)),
-                format!(
-                    "SELECT il.name, il.\"unique\", (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) \
-                     FROM pragma_index_list({}) il ORDER BY il.name",
-                    sql_string(&table)
-                ),
-            )
-        } else {
-            // Postgres doesn't keep DDL: CREATE TABLE comes from the catalog, the rest from pg_catalog
-            let rel = format!("{}::regclass", sql_string(&quarry_core::edits::qualified_name(&schema, &table)));
-            (
-                format!(
-                    "SELECT 'constraint', format('ALTER TABLE %s ADD CONSTRAINT %I %s', conrelid::regclass, conname, pg_get_constraintdef(oid)) \
-                     FROM pg_constraint WHERE conrelid = {rel} AND contype IN ('c', 'u', 'x') \
-                     UNION ALL SELECT 'index', pg_get_indexdef(indexrelid) FROM pg_index \
-                     WHERE indrelid = {rel} AND indexrelid NOT IN (SELECT conindid FROM pg_constraint WHERE conrelid = {rel}) \
-                     UNION ALL SELECT 'comment', format('COMMENT ON TABLE %s IS %L', {rel}, obj_description({rel}, 'pg_class')) \
-                     WHERE obj_description({rel}, 'pg_class') IS NOT NULL \
-                     UNION ALL SELECT 'comment', format('COMMENT ON COLUMN %s.%I IS %L', {rel}, attname, col_description(attrelid, attnum)) \
-                     FROM pg_attribute WHERE attrelid = {rel} AND attnum > 0 AND NOT attisdropped AND col_description(attrelid, attnum) IS NOT NULL"
-                ),
-                format!(
-                    "SELECT i.relname, ix.indisunique, array_to_string(ARRAY(SELECT pg_get_indexdef(ix.indexrelid, k + 1, true) \
-                     FROM generate_subscripts(ix.indkey, 1) AS k ORDER BY k), ', ') \
-                     FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid WHERE ix.indrelid = {rel} ORDER BY i.relname"
-                ),
-            )
-        };
-        let fut = async move {
-            let ddl = session.execute_quiet(&ddl_sql).await.map_err(|e| e.to_string())?;
-            let indexes = session.execute_quiet(&index_sql).await.map_err(|e| e.to_string())?;
-            Ok::<_, String>((ddl, indexes))
-        };
+        let Some(tbl) = self.state.catalog.find_table(Some(&schema), &table).cloned() else { return };
+        let fut = async move { session.table_info(&tbl).await.map_err(|e| e.to_string()) };
         run_db(window, cx, fut, move |this, res, window, cx| {
-            let detail = res.map(|(ddl, idx)| {
-                let mut parts: Vec<String> = ddl.rows.iter().map(|row| format!("{};", row[1].to_display_string().trim_end_matches(';'))).collect();
-                if !is_sqlite {
-                    parts.insert(0, format!("-- Rebuilt from the catalog\n{}", created.clone().unwrap_or_default()));
-                }
-                let text = parts.join("\n\n");
-                let ddl = cx.new(|cx| EditorState::new(window, cx).language("sql").line_number(true).default_value(text));
-                let truthy = |v: &quarry_core::DbValue| matches!(v.to_display_string().as_str(), "1" | "t" | "true");
-                let indexes = idx.rows.iter().map(|r| (r[0].to_display_string(), truthy(&r[1]), r[2].to_display_string())).collect();
+            let detail = res.map(|info| {
+                let ddl = cx.new(|cx| EditorState::new(window, cx).language("sql").line_number(true).default_value(info.ddl));
+                let indexes = info.indexes.into_iter().map(|i| (i.name, i.unique, i.columns)).collect();
                 TableDetail { indexes, ddl }
             });
             // The tab may have moved or closed while loading

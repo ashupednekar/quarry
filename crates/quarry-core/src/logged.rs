@@ -6,6 +6,7 @@
 
 use crate::edits::PendingChanges;
 use crate::schema::SchemaCatalog;
+use crate::monitor::{LogPage, Monitor, ServerView, Snapshot};
 use crate::session::{DatabaseSession, DbError, QueryResult, TxState};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -105,18 +106,17 @@ impl DatabaseSession for LoggedSession {
         res
     }
 
-    async fn cancel_backend(&self, pid: i64) -> Result<(), DbError> {
-        let start = Instant::now();
-        let res = self.inner.cancel_backend(pid).await;
-        self.record(format!("-- cancel backend {pid}"), start, &res, |_| 0);
-        res
+    async fn table_info(&self, table: &crate::schema::TableSchema) -> Result<crate::schema::TableInfo, DbError> {
+        self.inner.table_info(table).await
     }
 
-    async fn terminate_backend(&self, pid: i64) -> Result<(), DbError> {
-        let start = Instant::now();
-        let res = self.inner.terminate_backend(pid).await;
-        self.record(format!("-- terminate backend {pid}"), start, &res, |_| 0);
-        res
+    fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
+        self.inner.dumper()
+    }
+
+    fn monitor(&self) -> Option<&dyn Monitor> {
+        // Wrapped so cancel/terminate show up in the activity log
+        self.inner.monitor().map(|_| self as &dyn Monitor)
     }
 
     fn is_read_only(&self) -> bool {
@@ -129,6 +129,42 @@ impl DatabaseSession for LoggedSession {
 
     fn dialect(&self) -> &'static dyn crate::Dialect {
         self.inner.dialect()
+    }
+}
+
+/// Only reached through `LoggedSession::monitor`, which checks the inner session has one
+#[async_trait]
+impl Monitor for LoggedSession {
+    fn views(&self) -> &'static [ServerView] {
+        self.inner.monitor().map_or(&[], |m| m.views())
+    }
+
+    async fn snapshot(&self, view: ServerView) -> Result<Snapshot, DbError> {
+        self.inner_monitor()?.snapshot(view).await
+    }
+
+    async fn logs(&self, file: Option<String>, pages: u32) -> Result<LogPage, DbError> {
+        self.inner_monitor()?.logs(file, pages).await
+    }
+
+    async fn cancel(&self, id: i64) -> Result<(), DbError> {
+        let start = Instant::now();
+        let res = self.inner_monitor()?.cancel(id).await;
+        self.record(format!("-- cancel backend {id}"), start, &res, |_| 0);
+        res
+    }
+
+    async fn terminate(&self, id: i64) -> Result<(), DbError> {
+        let start = Instant::now();
+        let res = self.inner_monitor()?.terminate(id).await;
+        self.record(format!("-- terminate backend {id}"), start, &res, |_| 0);
+        res
+    }
+}
+
+impl LoggedSession {
+    fn inner_monitor(&self) -> Result<&dyn Monitor, DbError> {
+        self.inner.monitor().ok_or_else(|| DbError::Internal("no monitor".into()))
     }
 }
 

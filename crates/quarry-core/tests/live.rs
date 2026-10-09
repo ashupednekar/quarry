@@ -94,3 +94,44 @@ fn postgres_introspects_foreign_keys() {
     assert_eq!((fk.from_column.as_str(), fk.to_schema.as_str(), fk.to_table.as_str(), fk.to_column.as_str()), ("parent_id", "fk_test", "parent", "id"));
     rt.block_on(s.execute("DROP SCHEMA fk_test CASCADE")).unwrap();
 }
+
+/// Table info, monitoring and bytea edits go through the driver, not app-side SQL
+#[test]
+fn postgres_driver_extras() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    use quarry_core::edits::PendingChanges;
+    use quarry_core::monitor::{ServerView, Snapshot};
+    use quarry_core::DbValue::*;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    for sql in [
+        "DROP TABLE IF EXISTS extras_t",
+        "CREATE TABLE extras_t (id int PRIMARY KEY, code text UNIQUE, data bytea)",
+        "COMMENT ON TABLE extras_t IS 'for tests'",
+        "INSERT INTO extras_t VALUES (1, 'a', NULL)",
+    ] {
+        rt.block_on(s.execute(sql)).unwrap();
+    }
+    let table = rt.block_on(s.introspect()).unwrap().find_table(Some("public"), "extras_t").cloned().unwrap();
+    let info = rt.block_on(s.table_info(&table)).unwrap();
+    assert!(info.ddl.contains("CREATE TABLE \"public\".\"extras_t\"") && info.ddl.contains("UNIQUE (code)") && info.ddl.contains("'for tests'"), "{}", info.ddl);
+    assert_eq!(info.indexes.iter().map(|i| (i.name.as_str(), i.unique)).collect::<Vec<_>>(), vec![("extras_t_code_key", true), ("extras_t_pkey", true)]);
+
+    let monitor = s.monitor().unwrap();
+    assert!(matches!(rt.block_on(monitor.snapshot(ServerView::Database)).unwrap(), Snapshot::Rows(r) if !r.rows.is_empty()));
+
+    // Blob literals use bytea's hex form
+    let mut c = PendingChanges::new();
+    c.set_cell(vec![("id".into(), Int(1))], "data", Null, Blob(vec![0, 255]));
+    rt.block_on(s.apply_edits("\"public\".\"extras_t\"", &c)).unwrap();
+    let r = rt.block_on(s.execute("SELECT data FROM extras_t")).unwrap();
+    assert_eq!(r.rows[0][0], Blob(vec![0, 255]));
+
+    // pg_dump runs with the session's own URL; skipped where the client tools aren't installed
+    let out = std::env::temp_dir().join("quarry_live_dump.sql");
+    match rt.block_on(s.dumper().unwrap().dump(&out)) {
+        Ok(_) => assert!(std::fs::read_to_string(&out).unwrap().contains("CREATE TABLE public.extras_t")),
+        Err(e) => assert!(e.contains("isn't installed") || e.contains("version mismatch"), "{e}"),
+    }
+    rt.block_on(s.execute("DROP TABLE extras_t")).unwrap();
+}

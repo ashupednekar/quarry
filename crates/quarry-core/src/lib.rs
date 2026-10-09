@@ -7,6 +7,7 @@ pub mod edits;
 pub mod export;
 pub mod import;
 pub mod logged;
+pub mod monitor;
 pub mod postgres;
 pub mod schema;
 pub mod session;
@@ -65,7 +66,14 @@ mod tests {
         stale.set_cell(key, "email", old, DbValue::Text("someone.else@example.com".to_string()));
         assert!(matches!(session.apply_edits(&table, &stale).await, Err(DbError::ConcurrentModification)));
 
-        // 6. Verify updated row
+        // 6. Table info: stored DDL plus indexes
+        session.execute("CREATE UNIQUE INDEX users_email ON users (email)").await.unwrap();
+        let table = session.introspect().await.unwrap().find_table(None, "users").cloned().unwrap();
+        let info = session.table_info(&table).await.unwrap();
+        assert!(info.ddl.starts_with("CREATE TABLE users") && info.ddl.contains("CREATE UNIQUE INDEX users_email"));
+        assert_eq!(info.indexes, vec![schema::IndexInfo { name: "users_email".into(), unique: true, columns: "email".into() }]);
+
+        // 7. Verify updated row
         let verify = session.execute("SELECT email FROM users WHERE id = 1").await.unwrap();
         assert_eq!(verify.rows[0][0], DbValue::Text("alice.updated@example.com".to_string()));
     }

@@ -92,33 +92,7 @@ pub fn with_secret(profile: &ConnectionProfile) -> String {
     }
 }
 
-/// Splits the password out of a Postgres URL (`postgres://user:pw@host/db`) or
-/// key/value string (`host=x password=pw`).
-pub fn split_password(conn: &str) -> (String, Option<String>) {
-    if let Some((scheme, rest)) = conn.split_once("://") {
-        let authority_end = rest.find('/').unwrap_or(rest.len());
-        let (authority, tail) = rest.split_at(authority_end);
-        if let Some((userinfo, host)) = authority.rsplit_once('@') {
-            if let Some((user, pw)) = userinfo.split_once(':') {
-                return (format!("{scheme}://{user}@{host}{tail}"), Some(pw.to_string()));
-            }
-        }
-        return (conn.to_string(), None);
-    }
-    // ponytail: whitespace-split; quoted values containing spaces aren't handled
-    let mut password = None;
-    let kept: Vec<&str> = conn
-        .split_whitespace()
-        .filter(|tok| match tok.strip_prefix("password=") {
-            Some(pw) => {
-                password = Some(pw.to_string());
-                false
-            }
-            None => true,
-        })
-        .collect();
-    (kept.join(" "), password)
-}
+pub use quarry_core::postgres::split_password;
 
 fn insert_password(conn: &str, pw: &str) -> String {
     match conn.split_once("://") {

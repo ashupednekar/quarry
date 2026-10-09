@@ -26,7 +26,6 @@ mod state;
 mod status_bar;
 mod table_detail;
 mod layout;
-mod server_logs;
 mod tab_switcher;
 mod theme;
 mod ui;

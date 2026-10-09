@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableSchema};
+use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState};
 use crate::value::DbValue;
 use async_trait::async_trait;
@@ -157,6 +157,7 @@ impl DatabaseSession for SqliteSession {
         Ok(SchemaCatalog {
             schemas: vec!["main".to_string()],
             tables,
+            default_schema: Some("main".to_string()),
         })
     }
 
@@ -205,12 +206,22 @@ impl DatabaseSession for SqliteSession {
         result.map(|_| statements.len())
     }
 
-    async fn cancel_backend(&self, _pid: i64) -> Result<(), DbError> {
-        Ok(())
+    fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
+        Some(self)
     }
 
-    async fn terminate_backend(&self, _pid: i64) -> Result<(), DbError> {
-        Ok(())
+    /// SQLite keeps each object's DDL
+    async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
+        let name = format!("'{}'", table.table_name.replace('\'', "''"));
+        let conn = self.conn.lock().await;
+        let ddl = run_statement(&conn, &format!("SELECT sql FROM sqlite_master WHERE tbl_name = {name} AND sql IS NOT NULL ORDER BY type = 'index', name"), Instant::now())?;
+        let indexes = run_statement(
+            &conn,
+            &format!("SELECT il.name, il.\"unique\", (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) FROM pragma_index_list({name}) il ORDER BY il.name"),
+            Instant::now(),
+        )?;
+        let ddl = ddl.rows.iter().map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';'))).collect::<Vec<_>>().join("\n\n");
+        Ok(TableInfo { ddl, indexes: crate::schema::index_rows(&indexes) })
     }
 
     fn is_read_only(&self) -> bool {

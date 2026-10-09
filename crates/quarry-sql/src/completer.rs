@@ -432,6 +432,7 @@ mod tests {
     #[test]
     fn test_completer_table_and_columns() {
         let catalog = SchemaCatalog {
+            default_schema: None,
             schemas: vec!["public".to_string()],
             tables: vec![TableSchema {
                 schema_name: "public".to_string(),
@@ -486,6 +487,7 @@ mod tests {
         SchemaCatalog {
             schemas: vec!["public".into()],
             tables: vec![t("customers", &["id", "email"], vec![]), t("orders", &["id", "customer_id", "total"], vec![fk])],
+            default_schema: None,
         }
     }
 

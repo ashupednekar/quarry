@@ -2,14 +2,33 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 
-//! Built-in SQLite dump (X3): schema + data as a replayable SQL script.
+//! Whole-database dumps (X3). Optional: a driver offers one through `DatabaseSession::dumper`.
 
 use crate::edits::quote_ident;
 use crate::session::DatabaseSession;
 use crate::value::DbValue;
+use async_trait::async_trait;
 use std::io::Write;
+use std::path::Path;
 
-/// Writes `BEGIN; CREATE TABLE …; INSERT …; CREATE INDEX/VIEW/TRIGGER …; COMMIT;`. Returns rows written.
+#[async_trait]
+pub trait Dumper: Send + Sync {
+    /// Writes the database to `out` as a replayable SQL script. Returns what was dumped, for the UI.
+    async fn dump(&self, out: &Path) -> Result<String, String>;
+}
+
+#[async_trait]
+impl Dumper for crate::SqliteSession {
+    async fn dump(&self, out: &Path) -> Result<String, String> {
+        let file = std::fs::File::create(out).map_err(|e| e.to_string())?;
+        let mut w = std::io::BufWriter::new(file);
+        let rows = sqlite_dump(self, &mut w).await?;
+        w.flush().map_err(|e| e.to_string())?;
+        Ok(format!("{rows} rows"))
+    }
+}
+
+/// Built-in SQLite dump: writes `BEGIN; CREATE TABLE …; INSERT …; CREATE INDEX/VIEW/TRIGGER …; COMMIT;`. Returns rows written.
 pub async fn sqlite_dump(session: &dyn DatabaseSession, out: &mut impl Write) -> Result<usize, String> {
     let objects = session
         .execute("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type = 'table' DESC, rowid")

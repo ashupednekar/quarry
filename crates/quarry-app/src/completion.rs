@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn hovers_tables_and_columns() {
         let t = |name: &str, cols| TableSchema { schema_name: "public".into(), table_name: name.into(), is_view: false, columns: cols, primary_keys: vec![], foreign_keys: vec![] };
-        let cat = SchemaCatalog { schemas: vec!["public".into()], tables: vec![t("users", vec![col("id", true), col("email", false)]), t("orders", vec![col("id", true)])] };
+        let cat = SchemaCatalog { schemas: vec!["public".into()], tables: vec![t("users", vec![col("id", true), col("email", false)]), t("orders", vec![col("id", true)])], default_schema: None };
         let sql = "select u.email, id from users u join public.orders o";
         let at = |w: &str| sql.find(w).unwrap() + 1;
         assert!(hover_markdown(sql, at("users"), &cat).unwrap().starts_with("**public.users**"));

@@ -3,7 +3,7 @@
 
 use crate::dialect::Dialect;
 use crate::edits::PendingChanges;
-use crate::schema::SchemaCatalog;
+use crate::schema::{SchemaCatalog, TableInfo, TableSchema};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -118,11 +118,21 @@ pub trait DatabaseSession: Send + Sync {
     /// Fails with `ConcurrentModification` if any statement doesn't affect exactly one row.
     async fn apply_edits(&self, table: &str, changes: &PendingChanges) -> Result<usize, DbError>;
 
-    /// Cancels the running query of a server backend (Postgres: pg_cancel_backend, L5)
-    async fn cancel_backend(&self, pid: i64) -> Result<(), DbError>;
+    /// DDL and indexes for a table's Structure and DDL views. The default rebuilds `CREATE TABLE`
+    /// from the catalog; drivers that can do better (stored DDL, indexes, constraints) override it.
+    async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
+        Ok(TableInfo { ddl: table.create_sql(self.dialect()), indexes: Vec::new() })
+    }
 
-    /// Terminates a server backend connection (Postgres: pg_terminate_backend, L5)
-    async fn terminate_backend(&self, pid: i64) -> Result<(), DbError>;
+    /// Whole-database dump, when the database supports one
+    fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
+        None
+    }
+
+    /// Server monitoring (activity, locks, logs), when the database has a server to watch
+    fn monitor(&self) -> Option<&dyn crate::monitor::Monitor> {
+        None
+    }
 
     fn tx(&self) -> &TxState;
 

@@ -86,10 +86,11 @@ impl TableSchema {
         !self.primary_keys.is_empty()
     }
 
-    /// `CREATE TABLE` rebuilt from the catalog, for databases that don't store their DDL (Postgres).
+    /// `CREATE TABLE` rebuilt from the catalog, for databases that don't store their DDL.
     /// Covers columns, defaults, the primary key and foreign keys; not checks, uniques or comments.
-    pub fn create_sql(&self) -> String {
-        use crate::edits::{qualified_name, quote_ident};
+    pub fn create_sql(&self, d: &dyn crate::Dialect) -> String {
+        let quote_ident = |s: &str| d.quote_ident(s);
+        let qualified_name = |s: &str, t: &str| d.qualified(s, t);
         let list = |cols: &[String]| cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
         let mut lines: Vec<String> = self
             .columns
@@ -121,10 +122,34 @@ impl TableSchema {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexInfo {
+    pub name: String,
+    pub unique: bool,
+    /// Column list (or expressions) as one display string
+    pub columns: String,
+}
+
+/// Rows of (name, unique, columns) as indexes; `unique` may come back as a bool or 0/1
+pub fn index_rows(r: &crate::session::QueryResult) -> Vec<IndexInfo> {
+    let truthy = |v: &crate::DbValue| matches!(v.to_display_string().as_str(), "1" | "t" | "true");
+    r.rows.iter().map(|r| IndexInfo { name: r[0].to_display_string(), unique: truthy(&r[1]), columns: r[2].to_display_string() }).collect()
+}
+
+/// What the Structure and DDL views show beyond the catalog
+#[derive(Debug, Clone, Default)]
+pub struct TableInfo {
+    pub ddl: String,
+    pub indexes: Vec<IndexInfo>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaCatalog {
     pub schemas: Vec<String>,
     pub tables: Vec<TableSchema>,
+    /// Where unqualified names resolve (Postgres: current_schema(), SQLite: main)
+    #[serde(default)]
+    pub default_schema: Option<String>,
 }
 
 impl SchemaCatalog {
@@ -163,7 +188,7 @@ mod tests {
             foreign_keys: vec![ForeignKeyRef { from_column: "customer_id".into(), to_schema: String::new(), to_table: "customers".into(), to_column: "id".into() }],
         };
         assert_eq!(
-            t.create_sql(),
+            t.create_sql(&crate::dialect::Postgres),
             "CREATE TABLE \"public\".\"orders\" (\n  \"id\" integer NOT NULL,\n  \"customer_id\" integer DEFAULT 0,\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"customer_id\") REFERENCES \"public\".\"customers\" (\"id\")\n);"
         );
     }

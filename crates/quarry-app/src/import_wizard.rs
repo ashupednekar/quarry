@@ -4,7 +4,7 @@
 //! Import wizard (X4-X8, Flow E): file → preview → map columns → behavior → run.
 
 use crate::grid::{DataGrid, ResultSet};
-use crate::state::{ConnectionTargetKind, Tab};
+use crate::state::Tab;
 use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::component::button::ButtonVariants;
@@ -199,7 +199,8 @@ impl QuarryWindow {
     fn run_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(session), Some(profile)) = self.current_connection(cx) else { return };
         let st = &self.import;
-        let default_schema = if profile.kind == ConnectionTargetKind::Postgres { "public" } else { "main" };
+        let catalog_default = self.state.catalog.default_schema.clone();
+        let default_schema = catalog_default.as_deref().or(self.state.catalog.schemas.first().map(String::as_str)).unwrap_or("main");
         let (table, create, mapping) = if st.new_table {
             let name = sanitize(&st.new_name.read(cx).value());
             let cols: Vec<(String, String)> = st
