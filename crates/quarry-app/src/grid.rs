@@ -5,11 +5,12 @@ use crate::runtime::run_db;
 use crate::theme::Theme;
 use crate::ui::*;
 use gpui::assets::IconName;
-use gpui::component::button::{Button, ButtonVariants};
+use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
 use gpui::component::menu::PopupMenu;
 use gpui::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
-use gpui::component::{ActiveTheme, Disableable, Sizable};
+use gpui::component::tooltip::Tooltip;
+use gpui::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui::*;
 use quarry_core::edits::{quote_ident, PendingChanges, PendingRowInsert, RowKey};
 use quarry_core::schema::{ColumnSchema, ColumnType};
@@ -22,6 +23,8 @@ actions!(
     [
         EditCell,
         CancelEdit,
+        NextCell,
+        PrevCell,
         AddRow,
         DuplicateRow,
         DeleteRow,
@@ -52,6 +55,11 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", EditCell, Some("DataTable")),
         KeyBinding::new("f2", EditCell, Some("DataTable")),
         KeyBinding::new("escape", CancelEdit, Some("DataTable > Input")),
+        KeyBinding::new("tab", NextCell, Some("DataTable > Input")),
+        KeyBinding::new("shift-tab", PrevCell, Some("DataTable > Input")),
+        KeyBinding::new("secondary-enter", SubmitChanges, Some("DataTable > Input")),
+        KeyBinding::new("secondary-alt-n", SetNull, Some("DataTable > Input")),
+        KeyBinding::new("shift-enter", ToggleValueEditor, Some("DataTable > Input")),
         KeyBinding::new("secondary-n", AddRow, Some("DataTable")),
         KeyBinding::new("secondary-d", DuplicateRow, Some("DataTable")),
         KeyBinding::new("secondary-backspace", DeleteRow, Some("DataTable")),
@@ -125,8 +133,10 @@ struct Inspector {
 struct CellEditor {
     row: usize,
     col: usize,
+    display_col: usize,
     input: Entity<InputState>,
     initial: String,
+    error: Option<String>,
     _sub: Subscription,
 }
 
@@ -147,11 +157,24 @@ pub struct ResultSet {
     /// Last validation or commit problem, shown in the toolbar until the next change
     pub notice: Option<String>,
     editing: Option<CellEditor>,
+    /// The currently selected cell (row, col)
+    pub selected_cell: Option<(usize, usize)>,
     /// Side panel for long text and JSON ("value editor"); follows the selected cell
     inspector: Option<Inspector>,
     /// Display order of columns (actual indices); hidden columns are left out. `None` = natural order
     order: Option<Vec<usize>>,
     colors: CellColors,
+    /// From settings: how NULL reads and the widest an auto-sized column gets
+    null_label: SharedString,
+    max_col_width: f32,
+    /// The column being sorted (by name) and how; the header icon is rebuilt from this
+    sort: Option<(String, ColumnSort)>,
+    /// Server logs: rows whose value in this column is ERROR/FATAL/PANIC read in red
+    pub level_column: Option<usize>,
+    /// Right-click menu on a column header: where, the menu, and its dismiss subscription
+    header_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    /// Query results in their original order, so "default" can put them back
+    unsorted: Option<Vec<Vec<DbValue>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -164,6 +187,11 @@ struct CellColors {
     pending_bg: Rgba,
     inserted_bg: Rgba,
     deleted_bg: Rgba,
+    accent: Rgba,
+    editor_bg: Rgba,
+    /// Text on a success/danger fill
+    on_fill: Rgba,
+    grid_line: Hsla,
 }
 
 impl From<&Theme> for CellColors {
@@ -175,8 +203,12 @@ impl From<&Theme> for CellColors {
             success: theme.success,
             danger: theme.danger,
             pending_bg: theme.pending_cell_bg,
-            inserted_bg: rgba(0x10b98126),
-            deleted_bg: rgba(0xef444426),
+            inserted_bg: Theme::tint(theme.success, 0.15).into(),
+            deleted_bg: Theme::tint(theme.danger, 0.15).into(),
+            on_fill: theme.on_accent(),
+            grid_line: theme.grid_line(),
+            accent: theme.accent,
+            editor_bg: if theme.is_dark { theme.bg_surface } else { theme.bg_app },
         }
     }
 }
@@ -184,6 +216,11 @@ impl From<&Theme> for CellColors {
 impl ResultSet {
     pub fn set_theme(&mut self, theme: &Theme) {
         self.colors = CellColors::from(theme);
+    }
+
+    pub fn set_prefs(&mut self, null_label: &str, max_col_width: f32) {
+        self.null_label = null_label.to_string().into();
+        self.max_col_width = max_col_width;
     }
 
     pub fn new(theme: &Theme, source: Option<TableSource>) -> Self {
@@ -194,8 +231,15 @@ impl ResultSet {
             source,
             notice: None,
             editing: None,
+            selected_cell: None,
             inspector: None,
             order: None,
+            null_label: "NULL".into(),
+            max_col_width: 420.0,
+            sort: None,
+            level_column: None,
+            header_menu: None,
+            unsorted: None,
             colors: CellColors::from(theme),
         }
     }
@@ -213,6 +257,12 @@ impl ResultSet {
         self.results = results;
         self.active = 0;
         self.editing = None;
+        self.selected_cell = None;
+        // New query results arrive unsorted; table tabs keep sorting on the server
+        if self.source.is_none() {
+            self.sort = None;
+        }
+        self.unsorted = None;
         self.inspector = None;
     }
 
@@ -221,6 +271,7 @@ impl ResultSet {
         self.active = ix;
         self.order = None;
         self.editing = None;
+        self.selected_cell = None;
         self.inspector = None;
     }
 
@@ -313,6 +364,78 @@ impl ResultSet {
             .collect()
     }
 
+    /// Sorts by display column `col_ix`; `Default` restores the original order
+    fn apply_sort(&mut self, col_ix: usize, sort: ColumnSort, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let col_ix = self.actual(col_ix);
+        let Some(name) = self.result().and_then(|r| r.columns.get(col_ix)).cloned() else { return };
+        self.sort = (sort != ColumnSort::Default).then(|| (name.clone(), sort));
+        // Rebuild the headers from `self.sort` once this update is done, so the icon shows what's applied
+        cx.defer_in(window, |table, _, cx| table.refresh(cx));
+
+        // Tables sort on the server (the full table, not just the loaded page), like DataGrip
+        if let Some(src) = self.source.as_mut() {
+            src.order_by = match sort {
+                ColumnSort::Ascending => Some((name, false)),
+                ColumnSort::Descending => Some((name, true)),
+                ColumnSort::Default => None,
+            };
+            self.fetch(Fetch::Reset, window, cx);
+            return;
+        }
+        let Some(r) = self.results.get_mut(self.active) else { return };
+        let original = self.unsorted.get_or_insert_with(|| r.rows.clone());
+        match sort {
+            ColumnSort::Ascending => r.rows.sort_by(|a, b| a[col_ix].cmp_val(&b[col_ix])),
+            ColumnSort::Descending => r.rows.sort_by(|a, b| b[col_ix].cmp_val(&a[col_ix])),
+            ColumnSort::Default => r.rows = std::mem::take(original),
+        }
+        if sort == ColumnSort::Default {
+            self.unsorted = None;
+        }
+    }
+
+    fn open_header_menu(&mut self, col: usize, pos: Point<Pixels>, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let name = self.column_name(self.actual(col)).unwrap_or_default().to_string();
+        let grid = cx.entity().downgrade();
+        let item = |label: &'static str, f: fn(&mut ResultSet, usize, &mut Window, &mut Context<TableState<ResultSet>>)| {
+            let grid = grid.clone();
+            gpui::component::menu::PopupMenuItem::new(label).on_click(move |_, window, cx| {
+                grid.update(cx, |t, cx| {
+                    f(t.delegate_mut(), col, window, cx);
+                    t.refresh(cx);
+                    cx.notify();
+                })
+                .ok();
+            })
+        };
+        let can_hide = self.visible().len() > 1;
+        let has_hidden = self.order.is_some();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.item(item("Sort Ascending", |rs, c, w, cx| rs.apply_sort(c, ColumnSort::Ascending, w, cx)))
+                .item(item("Sort Descending", |rs, c, w, cx| rs.apply_sort(c, ColumnSort::Descending, w, cx)))
+                .item(item("Clear Sort", |rs, c, w, cx| rs.apply_sort(c, ColumnSort::Default, w, cx)))
+                .separator()
+                .when(can_hide, |m| m.item(item("Hide Column", |rs, c, _, _| rs.hide_column(c))))
+                .when(has_hidden, |m| m.item(item("Show All Columns", |rs, _, _, _| rs.show_all_columns())))
+                .item(gpui::component::menu::PopupMenuItem::new("Copy Column Name").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(name.clone()))
+                }))
+        });
+        menu.update(cx, |m, cx| m.focus_handle(cx).focus(window, cx));
+        let sub = cx.subscribe(&menu, |t, _, _: &DismissEvent, cx| {
+            t.delegate_mut().header_menu = None;
+            cx.notify();
+        });
+        self.header_menu = Some((pos, menu, sub));
+        cx.notify();
+    }
+
+    fn is_error_row(&self, row: usize) -> bool {
+        self.level_column.is_some_and(|col| {
+            matches!(self.cell_value(row, col).0, Some(DbValue::Text(ref l)) if matches!(l.as_str(), "ERROR" | "FATAL" | "PANIC"))
+        })
+    }
+
     fn row_state(&self, row: usize) -> RowState {
         if row >= self.loaded_len() {
             RowState::Inserted
@@ -367,12 +490,12 @@ impl ResultSet {
     // ── Editing ─────────────────────────────────────────────
 
     /// Opens the in-cell editor. `seed` replaces the value (type-to-edit); otherwise the value is kept.
-    pub fn start_edit(&mut self, row: usize, col: usize, seed: Option<String>, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+    pub fn start_edit(&mut self, row: usize, display_col: usize, seed: Option<String>, window: &mut Window, cx: &mut Context<TableState<Self>>) {
         // Enter inside the editor also bubbles up as EditCell; the open editor must win so it can commit
         if self.editing.is_some() {
             return;
         }
-        let col = self.actual(col);
+        let col = self.actual(display_col);
         if let Some(reason) = self.read_only_reason() {
             self.notice = Some(reason.to_string());
             cx.notify();
@@ -381,20 +504,84 @@ impl ResultSet {
         if self.row_state(row) == RowState::Deleted || self.column_name(col).is_none() {
             return;
         }
+        let is_null = self.cell_value(row, col).0.as_ref().is_some_and(DbValue::is_null);
         let initial = self.cell_value(row, col).0.map(|v| edit_text(&v)).unwrap_or_default();
-        let text = seed.unwrap_or_else(|| initial.clone());
-        let end = text.chars().count() as u32;
-        let input = cx.new(|cx| InputState::new(window, cx).default_value(text));
-        input.update(cx, |i, cx| i.set_cursor_position(Position::new(0, end), window, cx));
+        let text = seed.clone().unwrap_or_else(|| initial.clone());
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).default_value(text.clone());
+            if is_null {
+                state = state.placeholder("<null>");
+            }
+            state
+        });
+        if seed.is_none() {
+            input.update(cx, |i, cx| i.select_all(window, cx));
+        } else {
+            let end = text.chars().count() as u32;
+            input.update(cx, |i, cx| i.set_cursor_position(Position::new(0, end), window, cx));
+        }
+        input.update(cx, |i, cx| i.focus(window, cx));
+
+        let error = if seed.is_some() {
+            parse_input(&text, self.column_schema(col)).err()
+        } else {
+            None
+        };
+
         let sub = cx.subscribe_in(&input, window, |table, _, ev: &InputEvent, window, cx| match ev {
-            InputEvent::PressEnter { .. } | InputEvent::Blur => {
+            InputEvent::PressEnter { shift, secondary } => {
+                if *secondary {
+                    table.delegate_mut().finish_edit(true, cx);
+                    window.focus(&table.focus_handle(cx), cx);
+                } else if *shift {
+                    let (row, display_col) = match table.delegate().editing.as_ref() {
+                        Some(ed) => (ed.row, ed.display_col),
+                        None => (0, 0),
+                    };
+                    table.delegate_mut().finish_edit(true, cx);
+                    table.delegate_mut().inspect(row, display_col, window, cx);
+                } else {
+                    let (row, display_col) = match table.delegate().editing.as_ref() {
+                        Some(ed) => (ed.row, ed.display_col),
+                        None => (0, 0),
+                    };
+                    table.delegate_mut().finish_edit(true, cx);
+                    let total_rows = table.delegate().rows_count(cx);
+                    if row + 1 < total_rows {
+                        table.set_selected_cell(row + 1, display_col, cx);
+                        table.delegate_mut().selected_cell = Some((row + 1, display_col));
+                        table.scroll_to_row(row + 1, cx);
+                    }
+                    window.focus(&table.focus_handle(cx), cx);
+                }
+            }
+            InputEvent::Blur => {
                 table.delegate_mut().finish_edit(true, cx);
-                window.focus(&table.focus_handle(cx), cx);
+            }
+            InputEvent::Change => {
+                table.delegate_mut().validate_current_edit(cx);
             }
             _ => {}
         });
-        self.editing = Some(CellEditor { row, col, input, initial, _sub: sub });
+        self.editing = Some(CellEditor { row, col, display_col, input, initial, error, _sub: sub });
+        self.selected_cell = Some((row, display_col));
         self.notice = None;
+        cx.notify();
+    }
+
+    fn validate_current_edit(&mut self, cx: &mut Context<TableState<Self>>) {
+        let (col, text, initial) = match self.editing.as_ref() {
+            Some(ed) => (ed.col, ed.input.read(cx).value().to_string(), ed.initial.clone()),
+            None => return,
+        };
+        let error = if text != initial {
+            parse_input(&text, self.column_schema(col)).err()
+        } else {
+            None
+        };
+        if let Some(ed) = self.editing.as_mut() {
+            ed.error = error;
+        }
         cx.notify();
     }
 
@@ -404,7 +591,10 @@ impl ResultSet {
         let text = ed.input.read(cx).value().to_string();
         if commit && text != ed.initial {
             match parse_input(&text, self.column_schema(ed.col)) {
-                Ok(value) => self.set_value(ed.row, ed.col, value),
+                Ok(value) => {
+                    self.set_value(ed.row, ed.col, value);
+                    self.notice = None;
+                }
                 Err(e) => self.notice = Some(e),
             }
         }
@@ -618,6 +808,12 @@ fn parse_input(text: &str, col: Option<&ColumnSchema>) -> Result<DbValue, String
     let Some(col) = col else { return Ok(DbValue::Text(text.to_string())) };
     let bad = |what: &str| format!("\"{}\" is not a valid {} for {}", text, what, col.name);
     let t = text.trim();
+    if col.is_nullable && (t.is_empty() || t.eq_ignore_ascii_case("null") || t.eq_ignore_ascii_case("<null>")) && col.data_type != ColumnType::Text {
+        return Ok(DbValue::Null);
+    }
+    if col.is_nullable && (t.eq_ignore_ascii_case("<null>") || t == "\\N") {
+        return Ok(DbValue::Null);
+    }
     match &col.data_type {
         ColumnType::Integer | ColumnType::BigInt => t.parse().map(DbValue::Int).map_err(|_| bad("integer")),
         ColumnType::Float if col.raw_type_name.to_lowercase().contains("numeric")
@@ -664,32 +860,40 @@ impl TableDelegate for ResultSet {
             .chain([name.chars().count() + 4])
             .max()
             .unwrap_or(8);
-        let max = if matches!(name.as_str(), "statement" | "query") { 720.0 } else { 420.0 };
+        let max = if matches!(name.as_str(), "statement" | "query") { self.max_col_width.max(720.0) } else { self.max_col_width };
         // ~8.4px per monospace character at the grid's text size, plus cell padding
         let width = (chars as f32 * 8.4 + 32.0).clamp(64.0, max);
-        let col = Column::new(col_ix.to_string(), name.clone()).width(px(width)).sortable();
+        let col = Column::new(col_ix.to_string(), name.clone()).width(px(width));
+        let col = match &self.sort {
+            Some((n, ColumnSort::Ascending)) if n == name => col.ascending(),
+            Some((n, ColumnSort::Descending)) if n == name => col.descending(),
+            _ => col.sortable(),
+        };
         if numeric { col.text_right() } else { col }
     }
 
-    fn perform_sort(&mut self, col_ix: usize, sort: ColumnSort, window: &mut Window, cx: &mut Context<TableState<Self>>) {
-        let col_ix = self.actual(col_ix);
-        // Tables sort on the server (the full table, not just the loaded page), like DataGrip
-        if let Some(name) = self.source.as_ref().and(self.column_name(col_ix)).map(str::to_string) {
-            let src = self.source.as_mut().expect("checked above");
-            src.order_by = match sort {
-                ColumnSort::Ascending => Some((name, false)),
-                ColumnSort::Descending => Some((name, true)),
-                ColumnSort::Default => None,
-            };
-            self.fetch(Fetch::Reset, window, cx);
-            return;
-        }
-        let Some(r) = self.results.get_mut(self.active) else { return };
-        match sort {
-            ColumnSort::Ascending => r.rows.sort_by(|a, b| a[col_ix].cmp_val(&b[col_ix])),
-            ColumnSort::Descending => r.rows.sort_by(|a, b| b[col_ix].cmp_val(&a[col_ix])),
-            ColumnSort::Default => {}
-        }
+    fn render_th(&mut self, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+        let grid = cx.entity().downgrade();
+        div()
+            .id(("th", col_ix))
+            .size_full()
+            .on_mouse_down(MouseButton::Right, move |ev: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                let pos = ev.position;
+                grid.update(cx, |t, cx| t.delegate_mut().open_header_menu(col_ix, pos, window, cx)).ok();
+            })
+            .child(self.column(col_ix, cx).name.clone())
+    }
+
+    fn perform_sort(&mut self, col_ix: usize, _: ColumnSort, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let Some(name) = self.result().and_then(|r| r.columns.get(self.actual(col_ix))).cloned() else { return };
+        // Our own cycle, default → ascending → descending → default (the table's own goes the other way)
+        let sort = match &self.sort {
+            Some((n, ColumnSort::Ascending)) if *n == name => ColumnSort::Descending,
+            Some((n, ColumnSort::Descending)) if *n == name => ColumnSort::Default,
+            _ => ColumnSort::Ascending,
+        };
+        self.apply_sort(col_ix, sort, window, cx);
     }
 
     fn loading(&self, _: &App) -> bool {
@@ -717,38 +921,261 @@ impl TableDelegate for ResultSet {
         grid_menu(menu, self)
     }
 
-    fn render_td(&mut self, row_ix: usize, col_ix: usize, _: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
+    fn render_td(&mut self, row_ix: usize, col_ix: usize, window: &mut Window, cx: &mut Context<TableState<Self>>) -> impl IntoElement {
         let c = self.colors;
+        let display_col = col_ix;
         let col_ix = self.actual(col_ix);
+        let is_selected = self.selected_cell == Some((row_ix, display_col));
         // Foreign-key cells look like links (F4 follows them)
         let is_fk = self
             .column_name(col_ix)
             .is_some_and(|n| self.source.as_ref().is_some_and(|s| s.foreign_keys.iter().any(|f| f.from_column == n)));
         let mono = cx.theme().mono_font_family.clone();
         if let Some(ed) = self.editing.as_ref().filter(|e| e.row == row_ix && e.col == col_ix) {
-            return div().size_full().child(Input::new(&ed.input).xsmall()).into_any_element();
+            let error = ed.error.clone();
+            let has_error = error.is_some();
+            let is_bool = self.column_schema(col_ix).is_some_and(|c| c.data_type == ColumnType::Boolean);
+            let is_nullable = self.column_schema(col_ix).is_none_or(|c| c.is_nullable);
+
+            let input_widget = div()
+                .flex_1()
+                .h_full()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .child(
+                    Input::new(&ed.input)
+                        .appearance(false)
+                        .bordered(false)
+                        .focus_bordered(false)
+                        .font_family(mono.clone())
+                        .text_color(c.text)
+                        .px_0()
+                        .py_0()
+                        .h_full()
+                        .w_full(),
+                );
+
+            let error_badge = error.map(|err| {
+                div()
+                    .id("grid-cell-error-icon")
+                    .flex_shrink_0()
+                    .px_1()
+                    .text_color(c.danger)
+                    .tooltip(move |window, cx| Tooltip::new(err.clone()).build(window, cx))
+                    .child(Icon::new(IconName::TriangleAlert).xsmall())
+            });
+
+            let bool_actions = if is_bool {
+                Some(
+                    h_flex()
+                        .flex_shrink_0()
+                        .gap_1()
+                        .px_1()
+                        .child(
+                            div()
+                                .id("cell-quick-true")
+                                .cursor_pointer()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(px(3.0))
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .bg(c.token_bg)
+                                .text_color(c.success)
+                                .hover(|s| s.bg(c.success).text_color(c.on_fill))
+                                .tooltip(move |window, cx| Tooltip::new("Set true").build(window, cx))
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |table, _, _, cx| {
+                                    table.delegate_mut().editing = None;
+                                    table.delegate_mut().set_value(row_ix, col_ix, DbValue::Boolean(true));
+                                    table.refresh(cx);
+                                    cx.notify();
+                                }))
+                                .child("true"),
+                        )
+                        .child(
+                            div()
+                                .id("cell-quick-false")
+                                .cursor_pointer()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded(px(3.0))
+                                .text_xs()
+                                .font_weight(FontWeight::MEDIUM)
+                                .bg(c.token_bg)
+                                .text_color(c.danger)
+                                .hover(|s| s.bg(c.danger).text_color(c.on_fill))
+                                .tooltip(move |window, cx| Tooltip::new("Set false").build(window, cx))
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |table, _, _, cx| {
+                                    table.delegate_mut().editing = None;
+                                    table.delegate_mut().set_value(row_ix, col_ix, DbValue::Boolean(false));
+                                    table.refresh(cx);
+                                    cx.notify();
+                                }))
+                                .child("false"),
+                        ),
+                )
+            } else {
+                None
+            };
+
+            let null_button = if is_nullable && !is_bool {
+                Some(
+                    div()
+                        .id("cell-quick-null")
+                        .flex_shrink_0()
+                        .cursor_pointer()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(px(3.0))
+                        .text_xs()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(c.muted)
+                        .bg(c.token_bg)
+                        .hover(|s| s.bg(c.accent).text_color(c.on_fill))
+                        .tooltip(move |window, cx| Tooltip::new("Set NULL (⌥⌘N)").build(window, cx))
+                        .on_mouse_down(MouseButton::Left, cx.listener(move |table, _, _, cx| {
+                            table.delegate_mut().editing = None;
+                            table.delegate_mut().set_null(row_ix, display_col);
+                            table.refresh(cx);
+                            cx.notify();
+                        }))
+                        .child("NULL"),
+                )
+            } else {
+                None
+            };
+
+            let expand_button = div()
+                .id("cell-quick-expand")
+                .flex_shrink_0()
+                .cursor_pointer()
+                .p_1()
+                .rounded(px(3.0))
+                .text_color(c.muted)
+                .hover(|s| s.bg(c.token_bg).text_color(c.accent))
+                .tooltip(move |window, cx| Tooltip::new("Open in Value Editor (⇧↵)").build(window, cx))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |table, _, window, cx| {
+                    table.delegate_mut().finish_edit(true, cx);
+                    table.delegate_mut().inspect(row_ix, display_col, window, cx);
+                    table.refresh(cx);
+                    cx.notify();
+                }))
+                .child(Icon::new(IconName::PanelRight).xsmall());
+
+            return div()
+                .id("grid-cell-editor")
+                .absolute()
+                .top(px(-4.0))
+                .bottom(px(-4.0))
+                .left(px(-8.0))
+                .right(px(-8.0))
+                .bg(c.editor_bg)
+                .border_2()
+                .border_color(if has_error { c.danger } else { c.accent })
+                .rounded(px(2.0))
+                .shadow(vec![BoxShadow {
+                    color: hsla(0., 0., 0., 0.4),
+                    offset: point(px(0.), px(2.)),
+                    blur_radius: px(8.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
+                .flex()
+                .items_center()
+                .justify_between()
+                .overflow_hidden()
+                .font_family(mono)
+                .pl_2()
+                .child(input_widget)
+                .child(
+                    h_flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .gap_1()
+                        .pr_1p5()
+                        .children(error_badge)
+                        .children(bool_actions)
+                        .children(null_button)
+                        .child(expand_button),
+                )
+                .into_any_element();
         }
         let state = self.row_state(row_ix);
         let (value, edited) = self.cell_value(row_ix, col_ix);
         let numeric = matches!(value, Some(DbValue::Int(_) | DbValue::Float(_) | DbValue::Decimal(_)));
-        let token = |label: &'static str, fg: Rgba| {
+        let token = |label: SharedString, fg: Rgba| {
             div().px_1p5().rounded(px(3.0)).bg(c.token_bg).text_color(fg).child(label)
         };
         let content = match &value {
-            None => token("DEFAULT", c.muted).into_any_element(),
-            Some(DbValue::Null) => token("NULL", c.muted).into_any_element(),
-            Some(DbValue::Expr(_)) => token("DEFAULT", c.muted).into_any_element(),
-            Some(DbValue::Boolean(true)) => token("true", c.success).into_any_element(),
-            Some(DbValue::Boolean(false)) => token("false", c.danger).into_any_element(),
+            None => token("DEFAULT".into(), c.muted).into_any_element(),
+            Some(DbValue::Null) => token(self.null_label.clone(), c.muted).into_any_element(),
+            Some(DbValue::Expr(_)) => token("DEFAULT".into(), c.muted).into_any_element(),
+            Some(DbValue::Boolean(true)) => token("true".into(), c.success).into_any_element(),
+            Some(DbValue::Boolean(false)) => token("false".into(), c.danger).into_any_element(),
             Some(v) => div()
-                .text_color(if state == RowState::Deleted { c.muted } else { c.text })
+                .text_color(if state == RowState::Deleted {
+                    c.muted
+                } else if self.is_error_row(row_ix) {
+                    c.danger
+                } else {
+                    c.text
+                })
                 .when(state == RowState::Deleted, |d| d.line_through())
                 .when(is_fk && state != RowState::Deleted, |d| d.underline())
                 .truncate()
                 .child(v.to_display_string())
                 .into_any_element(),
         };
+        // Column divider on the cell's true right edge: the table pads cells 8px sideways and 4px up and down (Size::Medium)
+        let divider = div().absolute().top(px(-4.0)).bottom(px(-4.0)).right(px(-8.0)).w_px().bg(c.grid_line);
+
+        // JetBrains DataGrip-style selection box (only when table is focused)
+        let is_focused = cx.focus_handle().contains_focused(window, cx);
+        let selection_box = (is_selected && is_focused).then(|| {
+            div()
+                .id("cell-selection-box")
+                .absolute()
+                .top(px(-4.0))
+                .bottom(px(-4.0))
+                .left(px(-8.0))
+                .right(px(-8.0))
+                .bg(if edited { Hsla::from(c.pending_bg) } else { Theme::tint(c.accent, 0.14) })
+                .border_2()
+                .border_color(c.accent)
+        });
+
+        // Pending uncommitted edit background (when not selected)
+        let pending_box = (edited && !is_selected).then(|| {
+            div()
+                .id("cell-pending-bg")
+                .absolute()
+                .top(px(-4.0))
+                .bottom(px(-4.0))
+                .left(px(-8.0))
+                .right(px(-8.0))
+                .bg(c.pending_bg)
+        });
+
+        // JetBrains DataGrip-style modified cell indicator (top-right corner pip)
+        let modified_corner = edited.then(|| {
+            div()
+                .id("cell-modified-corner")
+                .absolute()
+                .top(px(-4.0))
+                .right(px(-8.0))
+                .w(px(7.0))
+                .h(px(7.0))
+                .bg(c.accent)
+                .rounded_bl(px(4.0))
+        });
+
         div()
+            .relative()
+            .child(divider)
+            .children(pending_box)
+            .children(selection_box)
+            .children(modified_corner)
             .size_full()
             .flex()
             .items_center()
@@ -756,7 +1183,6 @@ impl TableDelegate for ResultSet {
             .when(numeric, |d| d.justify_end())
             .when(state == RowState::Inserted, |d| d.bg(c.inserted_bg))
             .when(state == RowState::Deleted, |d| d.bg(c.deleted_bg))
-            .when(edited, |d| d.bg(c.pending_bg))
             .child(content)
             .into_any_element()
     }
@@ -841,10 +1267,12 @@ pub fn apply_row_action(grid: &Entity<TableState<ResultSet>>, action: &dyn Actio
                 None
             }
             Some((row, col)) if any.is::<SetDefault>() => {
+                rs.finish_edit(false, cx);
                 rs.set_default(row, col);
                 None
             }
             Some((row, col)) if any.is::<ToggleValueEditor>() => {
+                rs.finish_edit(true, cx);
                 if rs.inspector_open() {
                     rs.close_inspector();
                 } else {
@@ -858,6 +1286,7 @@ pub fn apply_row_action(grid: &Entity<TableState<ResultSet>>, action: &dyn Actio
                 None
             }
             Some((row, col)) if any.is::<SetNull>() => {
+                rs.finish_edit(false, cx);
                 rs.set_null(row, col);
                 None
             }
@@ -870,7 +1299,64 @@ pub fn apply_row_action(grid: &Entity<TableState<ResultSet>>, action: &dyn Actio
         if let Some(row) = new_row {
             table.scroll_to_row(row, cx);
             table.set_selected_cell(row, 0, cx);
+            table.delegate_mut().selected_cell = Some((row, 0));
         }
+        cx.notify();
+    });
+}
+
+pub fn next_cell(grid: &Entity<TableState<ResultSet>>, window: &mut Window, cx: &mut App) {
+    grid.update(cx, |table, cx| {
+        let (row, display_col) = match table.delegate().editing.as_ref() {
+            Some(ed) => (ed.row, ed.display_col),
+            None => table.selected_cell().unwrap_or((0, 0)),
+        };
+        table.delegate_mut().finish_edit(true, cx);
+        let total_rows = table.delegate().rows_count(cx);
+        let visible_cols = table.delegate().visible().len();
+        if visible_cols == 0 || total_rows == 0 {
+            return;
+        }
+        let (next_row, next_col) = if display_col + 1 < visible_cols {
+            (row, display_col + 1)
+        } else if row + 1 < total_rows {
+            (row + 1, 0)
+        } else if let Some(new_row) = table.delegate_mut().add_row() {
+            (new_row, 0)
+        } else {
+            (row, display_col)
+        };
+        table.set_selected_cell(next_row, next_col, cx);
+        table.delegate_mut().selected_cell = Some((next_row, next_col));
+        table.scroll_to_row(next_row, cx);
+        table.delegate_mut().start_edit(next_row, next_col, None, window, cx);
+        cx.notify();
+    });
+}
+
+pub fn prev_cell(grid: &Entity<TableState<ResultSet>>, window: &mut Window, cx: &mut App) {
+    grid.update(cx, |table, cx| {
+        let (row, display_col) = match table.delegate().editing.as_ref() {
+            Some(ed) => (ed.row, ed.display_col),
+            None => table.selected_cell().unwrap_or((0, 0)),
+        };
+        table.delegate_mut().finish_edit(true, cx);
+        let total_rows = table.delegate().rows_count(cx);
+        let visible_cols = table.delegate().visible().len();
+        if visible_cols == 0 || total_rows == 0 {
+            return;
+        }
+        let (prev_row, prev_col) = if display_col > 0 {
+            (row, display_col - 1)
+        } else if row > 0 {
+            (row - 1, visible_cols.saturating_sub(1))
+        } else {
+            (row, display_col)
+        };
+        table.set_selected_cell(prev_row, prev_col, cx);
+        table.delegate_mut().selected_cell = Some((prev_row, prev_col));
+        table.scroll_to_row(prev_row, cx);
+        table.delegate_mut().start_edit(prev_row, prev_col, None, window, cx);
         cx.notify();
     });
 }
@@ -894,6 +1380,7 @@ impl DataGrid {
         let (set_count, active) = (rs.results.len(), rs.active);
         let error = rs.source.as_ref().and_then(|s| s.error.clone());
         let notice = rs.notice.clone();
+        let header_menu = rs.header_menu.as_ref().map(|(p, m, _)| (*p, m.clone()));
         let is_table = rs.source.is_some();
         let read_only = rs.read_only_reason();
         let hidden = rs.hidden_count();
@@ -904,7 +1391,7 @@ impl DataGrid {
 
         let action_button = |id: &'static str, icon: IconName, tip: &'static str, action: Box<dyn Action>| {
             let grid = grid.clone();
-            Button::new(id)
+            zbutton(id)
                 .icon(icon)
                 .ghost()
                 .xsmall()
@@ -915,14 +1402,14 @@ impl DataGrid {
 
         // Toolbar: Zed-quiet icon buttons with DataGrip's operations
         let toolbar = h_flex()
-            .h(px(30.0))
-            .px_2()
+            .h(px(BAR_H))
+            .px_3()
             .gap_0p5()
             .items_center()
             .border_b_1()
             .border_color(theme.border)
             .child(
-                Button::new("grid-refresh")
+                zbutton("grid-refresh")
                     .icon(IconName::RefreshCw)
                     .ghost()
                     .xsmall()
@@ -936,7 +1423,7 @@ impl DataGrid {
             .child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
             .child({
                 let grid = grid.clone();
-                Button::new("grid-value-editor")
+                zbutton("grid-value-editor")
                     .icon(IconName::PanelRight)
                     .ghost()
                     .xsmall()
@@ -944,7 +1431,7 @@ impl DataGrid {
                     .on_click(move |_, window, cx| apply_row_action(&grid, &ToggleValueEditor, window, cx))
             })
             .child(
-                Button::new("grid-export")
+                zbutton("grid-export")
                     .icon(IconName::Download)
                     .ghost()
                     .xsmall()
@@ -954,7 +1441,7 @@ impl DataGrid {
             .when(hidden > 0, |this| {
                 let grid = grid.clone();
                 this.child(
-                    Button::new("grid-hidden")
+                    zbutton("grid-hidden").pad_xs()
                         .label(format!("{hidden} hidden"))
                         .ghost()
                         .xsmall()
@@ -977,7 +1464,7 @@ impl DataGrid {
                     if pending_count == 1 { "change" } else { "changes" }
                 )))
                 .child(
-                    Button::new("grid-revert")
+                    zbutton("grid-revert")
                         .icon(IconName::Undo2)
                         .ghost()
                         .xsmall()
@@ -991,7 +1478,7 @@ impl DataGrid {
                         }),
                 )
                 .child(
-                    Button::new("grid-review")
+                    zbutton("grid-review").pad_xs()
                         .label("Review")
                         .ghost()
                         .xsmall()
@@ -999,7 +1486,7 @@ impl DataGrid {
                         .on_click(cx.listener(move |this, _, window, cx| on_review(this, window, cx))),
                 )
                 .child(
-                    Button::new("grid-submit")
+                    zbutton("grid-submit").pad_xs()
                         .icon(IconName::Check)
                         .label("Submit")
                         .primary()
@@ -1011,11 +1498,24 @@ impl DataGrid {
 
         let grid_cancel = grid.clone();
         let grid_revert = grid.clone();
+        let grid_out = grid.clone();
 
         v_flex()
+            .id("data-grid-root")
             .size_full()
             .bg(theme.bg_app)
+            .on_mouse_down_out(move |_, _, cx| {
+                grid_out.update(cx, |t, cx| {
+                    t.delegate_mut().finish_edit(true, cx);
+                    t.clear_selection(cx);
+                    t.delegate_mut().selected_cell = None;
+                    t.refresh(cx);
+                });
+            })
             .when(is_table, |this| this.child(toolbar))
+            .when_some(header_menu, |this, (pos, menu)| {
+                this.child(deferred(anchored().position(pos).snap_to_window().child(menu)).with_priority(1))
+            })
             .when(!is_table, |this| {
                 this.when_some(notice.clone(), |this, n| {
                     this.child(div().px_3().py_1().text_xs().text_color(theme.text_muted).border_b_1().border_color(theme.border).child(n))
@@ -1025,7 +1525,7 @@ impl DataGrid {
             .when(set_count > 1, |this| {
                 this.child(
                     h_flex()
-                        .h(px(28.0))
+                        .h(px(CONTROL_H))
                         .px_2()
                         .gap_1()
                         .items_center()
@@ -1146,6 +1646,14 @@ impl DataGrid {
                     }
                 })
             })
+            .on_action({
+                let g = grid.clone();
+                move |_: &NextCell, window, cx| next_cell(&g, window, cx)
+            })
+            .on_action({
+                let g = grid.clone();
+                move |_: &PrevCell, window, cx| prev_cell(&g, window, cx)
+            })
             .on_action(move |_: &CancelEdit, window, cx| {
                 grid_cancel.update(cx, |t, cx| {
                     t.delegate_mut().finish_edit(false, cx);
@@ -1159,7 +1667,13 @@ impl DataGrid {
                     cx.notify();
                 })
             })
-            .on_action(cx.listener(move |this, _: &SubmitChanges, window, cx| on_submit(this, window, cx)))
+            .on_action(cx.listener({
+                let g = grid.clone();
+                move |this, _: &SubmitChanges, window, cx| {
+                    g.update(cx, |t, cx| t.delegate_mut().finish_edit(true, cx));
+                    on_submit(this, window, cx);
+                }
+            }))
             // Type-to-edit: a printable key on a selected cell starts editing with that character (DataGrip)
             .on_key_down({
                 let grid = grid.clone();
@@ -1182,7 +1696,24 @@ impl DataGrid {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(div().flex_1().h_full().min_w_0().child(DataTable::new(grid).bordered(false)))
+                    .child(
+                        div()
+                            .id("data-table-container")
+                            .flex_1()
+                            .h_full()
+                            .min_w_0()
+                            .on_click({
+                                let g = grid.clone();
+                                move |_, _, cx| {
+                                    g.update(cx, |t, cx| {
+                                        t.clear_selection(cx);
+                                        t.delegate_mut().selected_cell = None;
+                                        t.refresh(cx);
+                                    });
+                                }
+                            })
+                            .child(DataTable::new(grid).bordered(false)),
+                    )
                     .when_some(inspector, |this, (editor, col, row, read_only)| {
                         let (g_close, g_apply, g_key) = (grid.clone(), grid.clone(), grid.clone());
                         this.child(
@@ -1198,7 +1729,7 @@ impl DataGrid {
                                 .bg(theme.bg_panel)
                                 .child(
                                     h_flex()
-                                        .h(px(30.0))
+                                        .h(px(BAR_H))
                                         .pl_3()
                                         .pr_1()
                                         .items_center()
@@ -1213,7 +1744,7 @@ impl DataGrid {
                                                 .child(div().text_color(theme.text_muted).child(format!("row {}", row + 1))),
                                         )
                                         .child(
-                                            Button::new("value-editor-close")
+                                            zbutton("value-editor-close")
                                                 .icon(IconName::X)
                                                 .ghost()
                                                 .xsmall()
@@ -1229,7 +1760,7 @@ impl DataGrid {
                                 .when(!read_only, |this| {
                                     this.child(
                                         h_flex().p_2().justify_end().border_t_1().border_color(theme.border).child(
-                                            Button::new("value-editor-apply")
+                                            zbutton("value-editor-apply").pad_xs()
                                                 .label("Apply")
                                                 .primary()
                                                 .xsmall()

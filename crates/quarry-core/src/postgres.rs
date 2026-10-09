@@ -55,6 +55,21 @@ impl PostgresSession {
     }
 }
 
+/// Keeps Postgres' error position (1-based character in the statement) so the editor can point at it
+fn statement_err(e: tokio_postgres::Error) -> DbError {
+    use tokio_postgres::error::ErrorPosition;
+    match e.as_db_error().and_then(|d| d.position()) {
+        Some(ErrorPosition::Original(at)) => DbError::SqlError(format!("{e} (at character {at})")),
+        _ => DbError::SqlError(e.to_string()),
+    }
+}
+
+/// Reads back the position `statement_err` appended
+pub fn error_position(message: &str) -> Option<usize> {
+    let (_, tail) = message.rsplit_once("(at character ")?;
+    tail.strip_suffix(')')?.parse().ok()
+}
+
 #[async_trait]
 impl DatabaseSession for PostgresSession {
     async fn ping(&self) -> Result<Duration, DbError> {
@@ -278,7 +293,7 @@ impl PostgresSession {
             .ok()
             .map(|stmt| stmt.columns().iter().map(|c| c.type_().clone()).collect());
 
-        let messages = self.client.simple_query(sql).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        let messages = self.client.simple_query(sql).await.map_err(statement_err)?;
 
         let mut columns = Vec::new();
         let mut rows = Vec::new();
@@ -346,5 +361,11 @@ mod tests {
         assert_eq!(decode_text(Some("\\x00ff"), Some(&Type::BYTEA)), DbValue::Blob(vec![0, 255]));
         assert_eq!(decode_text(Some("{1,2}"), Some(&Type::INT4_ARRAY)), DbValue::Text("{1,2}".into()));
         assert_eq!(decode_text(Some(""), Some(&Type::TEXT)), DbValue::Text(String::new()));
+    }
+
+    #[test]
+    fn reads_back_error_position() {
+        assert_eq!(super::error_position("db error: ERROR: syntax error at or near \"form\" (at character 10)"), Some(10));
+        assert_eq!(super::error_position("db error: ERROR: relation \"x\" does not exist"), None);
     }
 }

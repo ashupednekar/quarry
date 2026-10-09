@@ -79,6 +79,12 @@ pub enum Tab {
         file: Option<std::path::PathBuf>,
         /// Text as last saved, to show unsaved changes
         saved_text: String,
+        /// The connection this tab runs on; switching to the tab switches to it
+        connection_id: Option<String>,
+        /// Postgres schema runs use (`search_path`); `None` = the connection's default
+        schema: Option<String>,
+        /// SELECTs without their own LIMIT get this one
+        row_limit: Option<u32>,
         is_running: bool,
         error_message: Option<String>,
     },
@@ -90,6 +96,8 @@ pub enum Tab {
         grid: Entity<TableState<ResultSet>>,
         /// The connection this tab was opened on (tabs keep their own connection)
         connection: Option<ConnectionProfile>,
+        view: crate::table_detail::TableView,
+        detail: Option<Result<crate::table_detail::TableDetail, String>>,
     },
 }
 
@@ -128,6 +136,8 @@ pub enum BottomPanelTab {
 pub struct AppState {
     pub workspace_name: String,
     pub active_connection: Option<ConnectionProfile>,
+    /// A saved query being renamed in the sidebar, and the name box
+    pub renaming_query: Option<(std::path::PathBuf, Entity<InputState>)>,
     pub saved_connections: Vec<ConnectionProfile>,
     pub session: Option<Arc<dyn DatabaseSession>>,
     /// Live sessions by connection id, so switching back doesn't reconnect (or lose an in-memory DB)
@@ -139,7 +149,12 @@ pub struct AppState {
     pub catalog: SchemaCatalog,
     /// The same catalog, shared with the editors' autocomplete
     pub completion_catalog: crate::completion::SharedCatalog,
+    /// Bumped on every catalog change; editors are re-linted when it moves past `linted_gen`
+    pub catalog_gen: u64,
+    pub linted_gen: u64,
     pub expanded_schemas: HashSet<String>,
+    /// Connections folded shut in the sidebar (clicking an open connection folds it)
+    pub collapsed_connections: std::collections::HashSet<String>,
     pub sidebar_visible: bool,
 
     // Tabs
@@ -170,6 +185,12 @@ pub struct AppState {
     pub add_conn_read_only: bool,
     pub add_conn_ssh: bool,
     pub add_conn_feedback: Option<(String, bool)>, // (msg, is_error)
+    /// Set while the modal edits a saved connection rather than adding one
+    pub editing_conn: Option<String>,
+    /// Connection modal tab: 0 General, 1 SSH, 2 Advanced
+    pub add_conn_tab: u8,
+    /// Sidebar / bottom panel visibility from before ⇧⎋ maximised the editor
+    pub maximized: Option<(bool, bool)>,
 
 
 
@@ -187,6 +208,7 @@ impl AppState {
         let mut state = Self {
             workspace_name: "quarry".to_string(),
             active_connection: None,
+            renaming_query: None,
             saved_connections: crate::connections::load(),
             session: None,
             open_sessions: HashMap::new(),
@@ -194,7 +216,10 @@ impl AppState {
             tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
             completion_catalog: Default::default(),
+            catalog_gen: 0,
+            linted_gen: 0,
             expanded_schemas: HashSet::new(),
+            collapsed_connections: Default::default(),
             sidebar_visible: true,
 
             tabs: Vec::new(),
@@ -219,6 +244,9 @@ impl AppState {
             add_conn_env: Environment::Local,
             add_conn_read_only: false,
             add_conn_ssh: false,
+            maximized: None,
+            add_conn_tab: 0,
+            editing_conn: None,
             add_conn_feedback: None,
 
 
@@ -312,6 +340,38 @@ impl AppState {
         self.tabs.get(self.active_tab_index)
     }
 
+    /// ⇧⎋: hide the sidebar and bottom panel, or bring them back as they were
+    pub fn toggle_maximize(&mut self) {
+        match self.maximized.take() {
+            Some((sidebar, panel)) => (self.sidebar_visible, self.bottom_panel_open) = (sidebar, panel),
+            None => {
+                self.maximized = Some((self.sidebar_visible, self.bottom_panel_open));
+                (self.sidebar_visible, self.bottom_panel_open) = (false, false);
+            }
+        }
+    }
+
+    /// Closes a connection's session (and SSH tunnel); the saved profile stays
+    pub fn disconnect(&mut self, id: &str) {
+        self.open_sessions.remove(id);
+        self.tunnels.remove(id);
+        if self.active_connection.as_ref().is_some_and(|c| c.id == id) {
+            self.session = None;
+            self.active_connection = None;
+            self.set_catalog(SchemaCatalog::default());
+        }
+    }
+
+    /// Disconnects and forgets a saved connection, including its keychain password
+    pub fn remove_connection(&mut self, id: &str) {
+        self.disconnect(id);
+        self.saved_connections.retain(|c| c.id != id);
+        crate::connections::forget_secret(id);
+        if let Err(e) = crate::connections::save(&self.saved_connections) {
+            self.messages.push(format!("Could not save connections: {}", e));
+        }
+    }
+
     /// Makes an already-open connection active again. Returns false if it isn't open.
     pub fn activate_open_session(&mut self, id: &str) -> bool {
         let Some((session, catalog)) = self.open_sessions.get(id).cloned() else { return false };
@@ -340,6 +400,7 @@ impl AppState {
     pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
         *self.completion_catalog.borrow_mut() = catalog.clone();
         self.catalog = catalog;
+        self.catalog_gen += 1;
     }
 
     pub fn note_recent_table(&mut self, schema: &str, table: &str) {
@@ -358,11 +419,7 @@ impl AppState {
             return None;
         }
         let tab = self.tabs.remove(index);
-        if self.active_tab_index >= self.tabs.len() {
-            self.active_tab_index = self.tabs.len().saturating_sub(1);
-        } else if self.active_tab_index > index {
-            self.active_tab_index -= 1;
-        }
+        self.active_tab_index = after_close(self.active_tab_index, index, self.tabs.len());
         Some(tab)
     }
 
@@ -445,4 +502,31 @@ pub async fn open_session(
     }
     let catalog = session.introspect().await.map_err(|e| format!("Introspection error: {}", e))?;
     Ok((session, catalog, tunnel))
+}
+
+/// Which tab is active after closing `closed`: closing the active one moves to its right-hand
+/// neighbour (or the left one if it was last); closing another keeps the same tab active
+pub fn after_close(active: usize, closed: usize, remaining: usize) -> usize {
+    if remaining == 0 {
+        0
+    } else if active > closed {
+        active - 1
+    } else {
+        active.min(remaining - 1)
+    }
+}
+
+#[cfg(test)]
+mod close_tests {
+    use super::after_close;
+
+    #[test]
+    fn closing_moves_to_the_neighbour_in_view() {
+        // tabs A B C D, B active
+        assert_eq!(after_close(1, 1, 3), 1); // close B -> C (now at 1)
+        assert_eq!(after_close(3, 3, 3), 2); // close the last, D -> C
+        assert_eq!(after_close(2, 0, 3), 1); // close A while C active -> still C
+        assert_eq!(after_close(0, 3, 3), 0); // close D while A active -> still A
+        assert_eq!(after_close(0, 0, 0), 0); // nothing left
+    }
 }

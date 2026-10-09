@@ -7,7 +7,7 @@ use crate::grid::{DataGrid, ResultSet};
 use crate::state::{ConnectionTargetKind, Tab};
 use crate::ui::*;
 use crate::QuarryWindow;
-use gpui::component::button::{Button, ButtonVariants};
+use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Input, InputState};
 use gpui::component::select::{Select, SelectState};
 use gpui::component::table::TableState;
@@ -322,10 +322,11 @@ impl QuarryWindow {
         let busy = st.running.is_some();
         let file = st.path.as_ref().and_then(|p| p.file_name()).map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
 
-        let choice = |id: SharedString, label: &'static str, on: bool| {
-            Button::new(id).label(label).xsmall().disabled(busy).map(|b| if on { b.primary() } else { b.ghost() })
+        // Options are chips; while an import runs they dim
+        let choice = |id: SharedString, label: &'static str, on: bool| chip(&t, id, label, on).when(busy, |d| d.opacity(0.5));
+        let row = |label: &'static str| {
+            h_flex().gap_4().items_center().child(div().w(px(110.0)).flex_shrink_0().text_xs().font_weight(FontWeight::MEDIUM).text_color(t.text_secondary).child(label))
         };
-        let row = |label: &'static str| h_flex().gap_1().items_center().child(div().w(px(110.0)).text_xs().text_color(t.text_muted).child(label));
         let reparse = |f: fn(&mut crate::import_wizard::ImportState)| {
             move |this: &mut QuarryWindow, _: &ClickEvent, window: &mut Window, cx: &mut Context<QuarryWindow>| {
                 f(&mut this.import);
@@ -359,7 +360,7 @@ impl QuarryWindow {
         let target_name = st.existing.as_ref().map(|e| format!("Into {}", e.1));
         let target = row("Target")
             .when_some(target_name, |this, name| {
-                this.child(Button::new("target-existing").label(name).xsmall().disabled(busy).map(|b| if !st.new_table { b.primary() } else { b.ghost() }).on_click(
+                this.child(zbutton("target-existing").pad_xs().label(name).xsmall().disabled(busy).map(|b| if !st.new_table { b.primary() } else { b.ghost() }).on_click(
                     cx.listener(|this, _, _, cx| {
                         this.import.new_table = false;
                         cx.notify();
@@ -378,7 +379,7 @@ impl QuarryWindow {
                 .gap_2()
                 .items_center()
                 .child(div().w(px(180.0)).text_xs().text_color(t.text_primary).truncate().child(h.clone()))
-                .child(div().text_xs().text_color(t.text_muted).child("→"))
+                .child(gpui::component::Icon::new(gpui::assets::IconName::ArrowRight).xsmall().text_color(t.text_muted))
                 .child(div().w(px(240.0)).child(if st.new_table {
                     Input::new(&st.types[i]).xsmall().into_any_element()
                 } else {
@@ -438,28 +439,26 @@ impl QuarryWindow {
         let has_failures = st.report.as_ref().is_some_and(|r| !r.failures.is_empty());
         let done = st.report.as_ref().is_some_and(|r| !r.rolled_back && !r.cancelled);
 
-        let footer = h_flex()
-            .gap_2()
-            .items_center()
-            .child(div().flex_1().child(status))
+        let footer = modal_footer(&t)
+            .child(div().flex_1().min_w_0().child(status))
             .when(has_failures && !busy, |this| {
-                this.child(Button::new("import-errors").label("Save error report").ghost().small().on_click(cx.listener(|this, _, _, cx| this.save_error_report(cx))))
+                this.child(zbutton("import-errors").pad_sm().label("Save error report").ghost().small().on_click(cx.listener(|this, _, _, cx| this.save_error_report(cx))))
             })
             .when(busy, |this| {
-                this.child(Button::new("import-stop").label("Cancel import").ghost().small().on_click(cx.listener(|this, _, _, _| {
+                this.child(zbutton("import-stop").pad_sm().label("Cancel import").ghost().small().on_click(cx.listener(|this, _, _, _| {
                     if let Some(job) = &this.import.running {
                         job.cancel.store(true, Ordering::Relaxed);
                     }
                 })))
             })
             .when(!busy, |this| {
-                this.child(Button::new("import-close").label(if done { "Done" } else { "Cancel" }).ghost().small().on_click(cx.listener(|this, _, _, cx| {
+                this.child(zbutton("import-close").pad_sm().label(if done { "Done" } else { "Cancel" }).ghost().small().on_click(cx.listener(|this, _, _, cx| {
                     this.import.open = false;
                     cx.notify();
                 })))
                 .when(!done, |this| {
                     this.child(
-                        Button::new("import-run")
+                        zbutton("import-run").pad_sm()
                             .label("Import")
                             .primary()
                             .small()
@@ -469,31 +468,26 @@ impl QuarryWindow {
                 })
             });
 
-        let section = |title: &'static str| div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_secondary).child(title);
+        let section = |title: &'static str| section_title(&t, title);
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000060))
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(56.0))
+            modal_backdrop("import-card-backdrop", dismiss_on_click)
                 .child(
-                    v_flex()
-                        .id("import-card")
-                        .w(px(760.0))
+                    modal_card("import-card", 760.0, &t)
+                        // Enter in any field imports, like the primary button
+                        .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
+                            let st = &this.import;
+                            let done = st.report.as_ref().is_some_and(|r| !r.rolled_back && !r.cancelled);
+                            if !this.import_busy() && !done && !st.data.rows.is_empty() {
+                                this.run_import(window, cx)
+                            }
+                        }))
                         .max_h(px(760.0))
-                        .p_4()
-                        .gap_3()
-                        .rounded(px(8.0))
-                        .bg(t.bg_sidebar)
-                        .border_1()
-                        .border_color(t.border)
-                        .shadow_lg()
-                        .overflow_y_scroll()
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child(format!("Import {file}")))
+                        .overflow_hidden()
+                        .child(modal_header(&t, "Import", Some(file.clone().into()), dismiss_on_click))
+                        .child(
+                            modal_body("import-body")
+                                .flex_1()
+                                .gap_4()
                         .child(source)
                         .child(section("Preview"))
                         .child(
@@ -511,7 +505,8 @@ impl QuarryWindow {
                         .child(target)
                         .child(section(if st.new_table { "Columns and types" } else { "Map columns" }))
                         .child(columns)
-                        .child(behavior)
+                        .child(behavior),
+                        )
                         .child(footer),
                 )
                 .into_any_element(),

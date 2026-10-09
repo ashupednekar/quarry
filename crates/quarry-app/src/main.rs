@@ -9,6 +9,7 @@ mod connections;
 mod editor;
 mod export_dialog;
 mod files;
+mod object_menu;
 mod params_dialog;
 mod peek;
 mod pins;
@@ -18,10 +19,15 @@ mod import_wizard;
 mod review_modal;
 mod runtime;
 mod settings;
+mod settings_modal;
 mod sidebar;
 mod ssh;
 mod state;
 mod status_bar;
+mod table_detail;
+mod layout;
+mod server_logs;
+mod tab_switcher;
 mod theme;
 mod ui;
 
@@ -30,7 +36,7 @@ use command_bar::CommandBar;
 use editor::QueryEditor;
 use gpui::component::input::{EditorState, Input, InputEvent, InputState};
 use gpui::assets::IconName;
-use gpui::component::button::{Button, ButtonVariants};
+use gpui::component::button::ButtonVariants;
 use gpui::component::resizable::{h_resizable, resizable_panel, v_resizable};
 use gpui::component::{ActiveTheme, Icon, Sizable};
 use gpui::*;
@@ -57,7 +63,16 @@ actions!(
         ToggleBottomPanel,
         NewQuery,
         CloseTab,
+        CloseWindow,
+        Quit,
+        Hide,
+        HideOthers,
+        ShowAll,
+        Minimize,
+        Zoom,
         Dismiss,
+        ToggleMaximize,
+        OpenSettings,
         ToggleTxMode,
         CommitTx,
         RollbackTx,
@@ -67,6 +82,8 @@ actions!(
         ExplainAnalyze,
         FormatSql,
         ReopenClosedTab,
+        TabSwitcherNext,
+        TabSwitcherPrev,
         ToggleSplit,
         PinCurrentTab,
         CommandPalette,
@@ -85,6 +102,9 @@ actions!(
         OpenFile,
         MenuUp,
         MenuDown,
+        IncreaseFontSize,
+        DecreaseFontSize,
+        ResetFontSize,
     ]
 );
 
@@ -103,13 +123,24 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-n", NewQuery, None),
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("escape", Dismiss, None),
+        // Standard macOS window/app shortcuts (also shown in the menu bar)
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-h", Hide, None),
+        KeyBinding::new("alt-secondary-h", HideOthers, None),
+        KeyBinding::new("secondary-m", Minimize, None),
+        KeyBinding::new("shift-secondary-w", CloseWindow, None),
+        KeyBinding::new("shift-escape", ToggleMaximize, None),
         KeyBinding::new("secondary-shift-e", ExportResults, None),
         KeyBinding::new("secondary-alt-e", Explain, None),
         KeyBinding::new("shift-alt-f", FormatSql, None),
+        KeyBinding::new("alt-enter", gpui::base::input::ToggleCodeActions, Some("Input")),
         KeyBinding::new("shift-alt-f", FormatSql, Some("Input")),
         KeyBinding::new("secondary-shift-s", SaveFileAs, None),
         KeyBinding::new("secondary-o", OpenFile, None),
         KeyBinding::new("secondary-shift-t", ReopenClosedTab, None),
+        KeyBinding::new("ctrl-tab", TabSwitcherNext, None),
+        KeyBinding::new("ctrl-shift-tab", TabSwitcherPrev, None),
         KeyBinding::new("secondary-shift-p", CommandPalette, None),
         // Spaces (U5): one keystroke to switch connection
         KeyBinding::new("ctrl-1", SwitchSpace1, None),
@@ -122,6 +153,19 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-8", SwitchSpace8, None),
         KeyBinding::new("ctrl-9", SwitchSpace9, None),
         KeyBinding::new("secondary-\\", ToggleSplit, None),
+        // Font size / zoom shortcuts (⌘+/⌘- on macOS, Ctrl+/Ctrl- on others)
+        KeyBinding::new("secondary-+", IncreaseFontSize, None),
+        KeyBinding::new("secondary-=", IncreaseFontSize, None),
+        KeyBinding::new("secondary-shift-=", IncreaseFontSize, None),
+        KeyBinding::new("secondary-shift-+", IncreaseFontSize, None),
+        KeyBinding::new("secondary-+", IncreaseFontSize, Some("Input")),
+        KeyBinding::new("secondary-=", IncreaseFontSize, Some("Input")),
+        KeyBinding::new("secondary-shift-=", IncreaseFontSize, Some("Input")),
+        KeyBinding::new("secondary-shift-+", IncreaseFontSize, Some("Input")),
+        KeyBinding::new("secondary--", DecreaseFontSize, None),
+        KeyBinding::new("secondary--", DecreaseFontSize, Some("Input")),
+        KeyBinding::new("secondary-0", ResetFontSize, None),
+        KeyBinding::new("secondary-0", ResetFontSize, Some("Input")),
         // ⌘↵ on a command-bar result opens it in the split (U3); registered after the Input binding so it wins
         KeyBinding::new("secondary-enter", OpenInSplit, Some("CommandBar > Input")),
         KeyBinding::new("secondary-alt-shift-e", ExplainAnalyze, None),
@@ -138,8 +182,6 @@ pub enum RunMode {
     ExplainAnalyze,
 }
 
-const NEW_QUERY_SQL: &str = "SELECT * FROM users LIMIT 50;";
-
 struct QuarryWindow {
     state: AppState,
     theme: Theme,
@@ -151,10 +193,15 @@ struct QuarryWindow {
     onboard_input: Entity<InputState>,
     /// SSH tunnel fields in the connection form: host[:port], user, key file
     ssh_inputs: [Entity<InputState>; 3],
+    /// Postgres host, port, user, password, database; kept in sync with the URL field
+    pg_inputs: [Entity<InputState>; 5],
+    /// Set while one side of the URL/fields sync writes the other, so it doesn't echo back
+    conn_syncing: bool,
     /// Statement timeout (seconds) in the connection form
     timeout_input: Entity<InputState>,
     /// `Some(dark)` once the user picks a theme; otherwise follow the OS
-    theme_override: Option<bool>,
+    /// The picked theme; None follows the OS between Quarry Dark and Light
+    theme_choice: Option<Theme>,
     toast_task: Option<Task<()>>,
     session_save_task: Option<Task<()>>,
     /// Recently closed tabs, newest last, for ⇧⌘T
@@ -163,6 +210,11 @@ struct QuarryWindow {
     split_id: Option<String>,
     peek: Option<peek::Peek>,
     settings: settings::Settings,
+    /// Settings last pushed into editors and grids (they need a window, so this happens at render)
+    applied_settings: Option<settings::Settings>,
+    settings_open: bool,
+    /// Theme names for the picker, read when Settings opens
+    settings_themes: Vec<String>,
     /// Data-changing statements waiting for a "yes" on a PROD connection
     pending_prod_run: Option<Vec<String>>,
     peek_task: Option<Task<()>>,
@@ -173,11 +225,25 @@ struct QuarryWindow {
     params: Option<params_dialog::ParamsDialog>,
     /// Open grid context menu: (position, menu, dismiss subscription)
     grid_menu: Option<(Point<Pixels>, Entity<gpui::component::menu::PopupMenu>, Subscription)>,
+    /// The query tab whose connection was last synced with the active one (see `sync_tab_connection`)
+    synced_tab: Option<String>,
+    /// Tab ids, most recently active first (⌃Tab order)
+    tab_mru: Vec<String>,
+    /// A query tab's connection being reopened; the tab keeps it instead of following the active one meanwhile
+    connecting_for_tab: Option<String>,
+    /// Table tabs from last session, waiting for their connection (connection id, table)
+    pending_table_tabs: Vec<(String, files::SavedTable)>,
+    /// Results fill the query tab, editor hidden
+    results_expanded: bool,
+    /// ⌃Tab switcher open, with this index into `tab_mru` highlighted
+    tab_switcher: Option<usize>,
     /// Last value entered for each parameter name
     param_memory: std::collections::HashMap<String, String>,
     /// Per-tab subscriptions (grid events), dropped with the tab
     tab_subscriptions: std::collections::HashMap<String, Subscription>,
     panel: bottom_panel::PanelState,
+    confirm_close_open: bool,
+    force_close: bool,
 }
 
 impl QuarryWindow {
@@ -185,7 +251,8 @@ impl QuarryWindow {
         let state = AppState::new();
 
         let command_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search tables, actions, or type SQL…"));
-        let conn_name_input = cx.new(|cx| InputState::new(window, cx).default_value("Local SQLite"));
+        // Empty by default: a blank name is filled from the address (host:port/db), never a stale "Local SQLite"
+        let conn_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Instance name, e.g. docker-postgres (optional)"));
         let conn_path_input = cx.new(|cx| InputState::new(window, cx).default_value(":memory:"));
         let onboard_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Paste a connection URL or a SQLite file path")
@@ -198,7 +265,10 @@ impl QuarryWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("Private key file (optional; default: ssh-agent)")),
         ];
 
-        let subscriptions = vec![
+        let pg_inputs = ["localhost", "5432", "postgres", "", "postgres"]
+            .map(|ph| cx.new(|cx| InputState::new(window, cx).placeholder(ph).masked(ph.is_empty())));
+
+        let mut subscriptions = vec![
             cx.subscribe_in(&command_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     this.state.command_bar_selected_index = 0;
@@ -207,11 +277,12 @@ impl QuarryWindow {
                 InputEvent::PressEnter { .. } => this.confirm_command_bar(window, cx),
                 _ => {}
             }),
-            cx.subscribe_in(&conn_path_input, window, |this, input, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { .. } => this.connect_add_conn_modal(window, cx),
+            cx.subscribe_in(&conn_path_input, window, |this, input, ev: &InputEvent, _window, cx| match ev {
                 // Pasting a URL picks the database type (C1)
                 InputEvent::Change => {
-                    this.state.add_conn_kind = guess_profile(&input.read(cx).value()).kind;
+                    let url = input.read(cx).value().to_string();
+                    this.state.add_conn_kind = guess_profile(&url).kind;
+                    this.fill_pg_fields(_window, cx);
                     cx.notify();
                 }
                 _ => {}
@@ -225,6 +296,18 @@ impl QuarryWindow {
                 }
             }),
         ];
+        for input in &pg_inputs {
+            subscriptions.push(cx.subscribe_in(input, window, |this, _, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::Change) && !this.conn_syncing {
+                    let fields = this.pg_inputs.each_ref().map(|i| i.read(cx).value().to_string());
+                    let url = this.conn_path_input.read(cx).value().to_string();
+                    let query = connections::parse_pg_url(&url).map(|(_, q)| q).unwrap_or_default();
+                    this.conn_syncing = true;
+                    this.conn_path_input.update(cx, |i, cx| i.set_value(connections::build_pg_url(&fields, &query), window, cx));
+                    this.conn_syncing = false;
+                }
+            }));
+        }
 
         let theme = Theme::for_mode(os_is_dark(window));
         let export = export_dialog::ExportState::new(window, cx);
@@ -242,14 +325,19 @@ impl QuarryWindow {
             tab_subscriptions: Default::default(),
             onboard_input,
             ssh_inputs,
+            pg_inputs,
+            conn_syncing: false,
             timeout_input,
-            theme_override: None,
+            theme_choice: None,
             toast_task: None,
             session_save_task: None,
             closed_tabs: Vec::new(),
             split_id: None,
             peek: None,
             settings: settings::Settings::default(),
+            applied_settings: None,
+            settings_open: false,
+            settings_themes: Vec::new(),
             pending_prod_run: None,
             peek_task: None,
             toast_reveal: None,
@@ -257,7 +345,15 @@ impl QuarryWindow {
             import,
             params: None,
             grid_menu: None,
+            synced_tab: None,
+            tab_mru: Vec::new(),
+            connecting_for_tab: None,
+            pending_table_tabs: Vec::new(),
+            results_expanded: false,
+            tab_switcher: None,
             param_memory: Default::default(),
+            confirm_close_open: false,
+            force_close: false,
         };
         this.reload_settings(cx);
         let keymap_errors = settings::apply_keymap(cx);
@@ -285,25 +381,55 @@ impl QuarryWindow {
     /// Theme follows the OS appearance unless the user picked one
     /// Reads settings.json and applies theme, fonts and defaults (P3, P4)
     fn reload_settings(&mut self, cx: &mut Context<Self>) {
-        let (s, error) = settings::load();
-        self.theme_override = match s.theme.as_str() {
-            "dark" => Some(true),
-            "light" => Some(false),
-            _ => None,
+        let (s, mut error) = settings::load();
+        self.theme_choice = match s.theme.trim().to_lowercase().as_str() {
+            "" | "system" => None,
+            name => match Theme::named(name, true) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    error = Some(e);
+                    None
+                }
+            },
         };
+        // Re-paint even when only a user theme's colours changed (same name)
+        self.theme.name.clear();
         {
             let kit = gpui::component::theme::Theme::global_mut(cx);
             kit.font_size = px(s.font_size);
-            kit.mono_font_size = px(s.font_size - 1.0);
-            if !s.mono_font_family.trim().is_empty() {
-                kit.mono_font_family = s.mono_font_family.clone().into();
-            }
+            kit.mono_font_size = px(s.mono_size());
         }
+        theme::apply_fonts(cx, &s.mono_font_family);
         self.settings = s;
         if let Some(e) = error {
             self.toast(e, true, cx);
         }
         cx.refresh_windows();
+    }
+
+    /// Pushes editor and grid settings into every open view
+    fn apply_settings_to_views(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let s = self.settings.clone();
+        for tab in &self.state.tabs {
+            if let Tab::Query { editor, .. } = tab {
+                editor.update(cx, |e, cx| {
+                    e.set_tab_size(gpui::base::input::TabSize { tab_size: s.tab_size.max(1), hard_tabs: false }, cx);
+                    e.set_soft_wrap(s.soft_wrap, window, cx);
+                    e.set_line_number(s.line_numbers, window, cx);
+                    e.lsp_mut().completion_provider = s.autocomplete.then(|| {
+                        std::rc::Rc::new(completion::SchemaCompletions(self.state.completion_catalog.clone())) as std::rc::Rc<dyn gpui::component::input::CompletionProvider>
+                    });
+                });
+            }
+        }
+        let grids: Vec<_> = self.state.tabs.iter().map(|t| t.grid().clone()).chain(self.panel.grids()).collect();
+        for grid in grids {
+            grid.update(cx, |t, cx| {
+                t.delegate_mut().set_prefs(&s.null_display, s.max_column_width);
+                cx.notify();
+            });
+        }
+        self.applied_settings = Some(s);
     }
 
     fn open_config_file(&mut self, keymap: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -320,9 +446,9 @@ impl QuarryWindow {
     }
 
     fn sync_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let dark = self.theme_override.unwrap_or_else(|| os_is_dark(window));
-        if dark != self.theme.is_dark {
-            self.theme = Theme::for_mode(dark);
+        let want = self.theme_choice.clone().unwrap_or_else(|| Theme::for_mode(os_is_dark(window)));
+        if want.name != self.theme.name {
+            self.theme = want;
             self.apply_theme(cx);
         }
     }
@@ -330,6 +456,8 @@ impl QuarryWindow {
     fn apply_theme(&mut self, cx: &mut Context<Self>) {
         use gpui::component::theme::{Theme as KitTheme, ThemeMode};
         KitTheme::change(if self.theme.is_dark { ThemeMode::Dark } else { ThemeMode::Light }, None, cx);
+        theme::apply_fonts(cx, &self.settings.mono_font_family);
+        self.theme.apply_to_kit(cx);
         let grids: Vec<_> = self.state.tabs.iter().map(|t| t.grid().clone()).chain(self.panel.grids()).collect();
         for grid in grids {
             grid.update(cx, |t, cx| {
@@ -340,9 +468,27 @@ impl QuarryWindow {
     }
 
     fn toggle_theme(&mut self, _: &ToggleTheme, window: &mut Window, cx: &mut Context<Self>) {
-        self.theme_override = Some(!self.theme.is_dark);
+        self.theme_choice = Some(Theme::for_mode(!self.theme.is_dark));
         self.sync_theme(window, cx);
         cx.notify();
+    }
+
+    fn increase_font_size(&mut self, _: &IncreaseFontSize, _: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.font_size < settings::Settings::MAX_FONT_SIZE {
+            self.change_setting(|s| s.increase_font_size(), cx);
+        }
+    }
+
+    fn decrease_font_size(&mut self, _: &DecreaseFontSize, _: &mut Window, cx: &mut Context<Self>) {
+        if self.settings.font_size > settings::Settings::MIN_FONT_SIZE {
+            self.change_setting(|s| s.decrease_font_size(), cx);
+        }
+    }
+
+    fn reset_font_size(&mut self, _: &ResetFontSize, _: &mut Window, cx: &mut Context<Self>) {
+        if (self.settings.font_size - settings::Settings::default().font_size).abs() > f32::EPSILON || self.settings.mono_font_size > 0.0 {
+            self.change_setting(|s| s.reset_font_size(), cx);
+        }
     }
 
     /// One tab's content: editor over results for queries, filter bar over the grid for tables
@@ -364,29 +510,108 @@ impl QuarryWindow {
                 .size_full()
                 .child(gpui::component::input::Editor::new(editor).h_full().bordered(false))
                 .into_any_element(),
-            // Editor over results, with a draggable divider
-            Tab::Query { editor, is_running, error_message, .. } => v_resizable("query-split")
-                .child(resizable_panel().size(px(220.0)).size_range(px(80.0)..px(1200.0)).child(QueryEditor::render(
+            // Editor over results, with a draggable divider. Until the first run the editor gets the whole tab.
+            Tab::Query { editor, is_running, error_message, grid: results, schema, row_limit, .. } => {
+                let conn = self.state.active_connection.as_ref().map(|c| (c.name.as_str(), c.env));
+                let is_pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
+                let schema_label = is_pg.then(|| schema.clone().unwrap_or_else(|| "default schema".into()));
+                let editor = QueryEditor::render(
                     editor,
                     *is_running,
-                    error_message.as_deref(),
+                    self.settings.soft_wrap,
+                    conn,
+                    schema_label,
+                    *row_limit,
                     &self.theme,
                     cx,
                     |this, window, cx| this.refresh_active_tab(window, cx),
-                )))
-                .child(resizable_panel().child(grid))
+                    |this, window, cx| this.open_connection_menu(window, cx),
+                    |this, window, cx| this.open_schema_menu(window, cx),
+                    |this, window, cx| this.open_limit_menu(window, cx),
+                );
+                let summary = {
+                    let rs = results.read(cx).delegate();
+                    rs.results.get(rs.active).map(|r| {
+                        let ms = r.execution_time.as_millis();
+                        match (r.columns.is_empty(), r.rows.len()) {
+                            (true, _) => format!("{} rows affected · {ms} ms", r.rows_affected),
+                            (false, 1) => format!("1 row · {ms} ms"),
+                            (false, n) => format!("{n} rows · {ms} ms"),
+                        }
+                    })
+                };
+                if summary.is_none() && error_message.is_none() && !*is_running {
+                    return div().size_full().child(editor).into_any_element();
+                }
+                let header = h_flex()
+                    .h(px(28.0))
+                    .px_3()
+                    .gap_2()
+                    .items_center()
+                    .bg(t.bg_sidebar)
+                    .border_y_1()
+                    .border_color(t.border)
+                    .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_secondary).child("Results"))
+                    .map(|h| match (error_message, *is_running) {
+                        (_, true) => h.child(div().text_xs().text_color(t.text_muted).child("Running…")),
+                        (Some(err), _) => h.child(div().flex_1().min_w_0().text_xs().text_color(t.danger).truncate().child(err.clone())),
+                        (None, _) => h.child(div().text_xs().text_color(t.text_muted).child(summary.clone().unwrap_or_default())),
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        zbutton("results-expand")
+                            .h(px(22.0))
+                            .px_2()
+                            .icon(if self.results_expanded { IconName::Minimize2 } else { IconName::Maximize2 })
+                            .ghost()
+                            .xsmall()
+                            .tooltip(if self.results_expanded { "Show the editor" } else { "Hide the editor" })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.results_expanded = !this.results_expanded;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        zbutton("results-export")
+                            .h(px(22.0))
+                            .px_2()
+                            .icon(IconName::Download)
+                            .label("Export")
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Export (⇧⌘E)")
+                            .on_click(cx.listener(|this, _, _, cx| this.open_export(cx))),
+                    );
+                let results = v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(grid));
+                if self.results_expanded {
+                    return results.into_any_element();
+                }
+                v_resizable("query-split")
+                    .on_resize(layout::remember("query-split"))
+                    .child(resizable_panel().size(layout::size("query-split", 0, 260.0)).size_range(px(80.0)..px(1200.0)).child(editor))
+                    .child(resizable_panel().child(results))
+                    .into_any_element()
+            }
+            Tab::Table { view, .. } if *view != table_detail::TableView::Data => v_flex()
+                .size_full()
+                .child(
+                    h_flex().h(px(BAR_H)).w_full().px_3().border_b_1().border_color(t.border).items_center().child(self.render_table_view_switch(*view, cx)),
+                )
+                .child(div().flex_1().min_h_0().child(self.render_table_detail(tab, cx)))
                 .into_any_element(),
-            Tab::Table { filter, .. } => v_flex()
+            Tab::Table { filter, view, .. } => v_flex()
                 .size_full()
                 .child(
                     h_flex()
-                        .h(px(34.0))
+                        .h(px(BAR_H))
                         .w_full()
                         .px_3()
                         .gap_2()
                         .border_b_1()
                         .border_color(t.border)
                         .items_center()
+                        .child(self.render_table_view_switch(*view, cx))
+                        .child(div().w_px().h(px(16.0)).bg(t.border))
                         // Single-line inputs propagate Enter: apply the filter
                         .on_action(cx.listener(|this, _: &gpui::component::input::Enter, window, cx| {
                             this.refresh_active_tab(window, cx);
@@ -394,7 +619,7 @@ impl QuarryWindow {
                         .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("WHERE"))
                         .child(div().flex_1().child(Input::new(filter).appearance(false)))
                         .child(
-                            Button::new("filter-clear-btn")
+                            zbutton("filter-clear-btn").pad_xs()
                                 .label("Clear")
                                 .ghost()
                                 .xsmall()
@@ -406,6 +631,67 @@ impl QuarryWindow {
         }
     }
 
+    /// Nothing open: the everyday starting points, Zed-style, plus recent tables
+    fn render_launcher(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let t = self.theme.clone();
+        let row = |id: ElementId, icon: IconName, label: SharedString, hint: &'static str| {
+            h_flex()
+                .id(id)
+                .h(px(32.0))
+                .px_3()
+                .gap_3()
+                .items_center()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(|s| s.bg(t.bg_hover))
+                .child(Icon::new(icon).small().text_color(t.text_muted))
+                .child(div().flex_1().text_sm().text_color(t.text_primary).truncate().child(label))
+                .child(div().text_xs().text_color(t.text_muted).child(hint))
+        };
+        let start = v_flex()
+            .gap_0p5()
+            .child(row("l-new".into(), IconName::SquareTerminal, "New query".into(), "⌘N").on_click(cx.listener(|this, _, window, cx| this.new_query(&NewQuery, window, cx))))
+            .child(
+                row("l-search".into(), IconName::Search, "Search tables & commands".into(), "⌘K")
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_command_bar(&ToggleCommandBar, window, cx))),
+            )
+            .child(row("l-open".into(), IconName::FolderOpen, "Open file".into(), "⌘O").on_click(cx.listener(|this, _, window, cx| this.open_sql_file(window, cx))))
+            .child(row("l-settings".into(), IconName::Settings2, "Settings".into(), "⌘,").on_click(cx.listener(|this, _, _, cx| this.open_settings(cx))));
+        let recent: Vec<(String, String)> = self.state.recent_tables.iter().take(5).cloned().collect();
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(
+                v_flex()
+                    .w(px(380.0))
+                    .gap_5()
+                    .child(
+                        v_flex()
+                            .px_3()
+                            .gap_1()
+                            .child(div().text_base().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child(
+                                self.state.active_connection.as_ref().map_or_else(|| "Quarry".to_string(), |c| c.name.clone()),
+                            ))
+                            .child(div().text_xs().text_color(t.text_muted).child("Pick a table from the sidebar, or start here")),
+                    )
+                    .child(start)
+                    .when(!recent.is_empty(), |d| {
+                        d.child(
+                            v_flex()
+                                .gap_0p5()
+                                .child(div().px_3().pb_1().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child("Recent"))
+                                .children(recent.into_iter().enumerate().map(|(i, (schema, table))| {
+                                    row(("l-recent", i).into(), IconName::Table, table.clone().into(), "").on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_pin(pins::Pin::Table { schema: schema.clone(), table: table.clone() }, window, cx)
+                                    }))
+                                })),
+                        )
+                    }),
+            )
+            .into_any_element()
+    }
+
     /// "Run on PROD?" for statements that change data
     fn render_prod_confirm(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let statements = self.pending_prod_run.as_ref()?;
@@ -413,26 +699,12 @@ impl QuarryWindow {
         let name = self.state.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default();
         let count = statements.iter().filter(|s| quarry_core::session::is_mutation(s)).count();
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000080))
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(140.0))
+            modal_backdrop("prod-backdrop", dismiss_on_click)
                 .child(
-                    v_flex()
-                        .id("prod-card")
-                        .w(px(460.0))
+                    modal_card("prod-card", 460.0, t)
                         .p_4()
                         .gap_3()
-                        .rounded(px(8.0))
-                        .bg(t.bg_sidebar)
-                        .border_1()
-                        .border_color(t.danger)
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.danger).child(format!("Change data on {name} (PROD)?")))
+                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child(format!("Change data on {name} (PROD)?")))
                         .child(div().text_xs().text_color(t.text_secondary).child(format!(
                             "{count} of these statements change data or schema. Turn this check off with \"confirm_on_prod\" in settings."
                         )))
@@ -443,15 +715,170 @@ impl QuarryWindow {
                             h_flex()
                                 .justify_end()
                                 .gap_2()
-                                .child(Button::new("prod-no").label("Cancel").ghost().small().on_click(cx.listener(|this, _, _, cx| {
+                                .child(zbutton("prod-no").pad_sm().label("Cancel").ghost().small().on_click(cx.listener(|this, _, _, cx| {
                                     this.pending_prod_run = None;
                                     cx.notify();
                                 })))
-                                .child(Button::new("prod-yes").label("Run on PROD").danger().small().on_click(cx.listener(|this, _, window, cx| {
+                                .child(zbutton("prod-yes").pad_sm().label("Run on PROD").danger().small().on_click(cx.listener(|this, _, window, cx| {
                                     if let Some(statements) = this.pending_prod_run.take() {
                                         this.execute_statements_now(statements, window, cx);
                                     }
                                 }))),
+                        ),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// Returns descriptions of any pending/unsaved changes across grids, files, and transactions
+    pub fn unsaved_changes(&self, cx: &App) -> Vec<String> {
+        let mut changes = Vec::new();
+
+        // 1. Data grid pending changes (cell edits, row inserts, row deletes)
+        for tab in &self.state.tabs {
+            if let Tab::Table { table_name, grid, .. } = tab {
+                let pending = grid.read(cx).delegate().pending.total_count();
+                if pending > 0 {
+                    changes.push(format!(
+                        "{pending} uncommitted {} in '{table_name}'",
+                        if pending == 1 { "edit" } else { "edits" }
+                    ));
+                }
+            }
+        }
+        for grid in self.panel.grids() {
+            let pending = grid.read(cx).delegate().pending.total_count();
+            if pending > 0 {
+                changes.push(format!(
+                    "{pending} uncommitted {} in query results",
+                    if pending == 1 { "edit" } else { "edits" }
+                ));
+            }
+        }
+
+        // 2. Unsaved query tabs (file-backed or scratch with edits)
+        for tab in &self.state.tabs {
+            if let Tab::Query { title, editor, file, saved_text, .. } = tab {
+                let text = editor.read(cx).value();
+                if text.as_ref() != saved_text.as_str() {
+                    if let Some(f) = file {
+                        let name = f.file_name().and_then(|n| n.to_str()).unwrap_or(title);
+                        changes.push(format!("Unsaved file '{name}'"));
+                    } else if !text.trim().is_empty() {
+                        changes.push(format!("Unsaved query in '{title}'"));
+                    }
+                }
+            }
+        }
+
+        // 3. Active uncommitted transaction
+        if self.current_connection(cx).0.is_some_and(|s| s.in_transaction()) {
+            changes.push("Open database transaction (will be rolled back)".into());
+        }
+
+        // 4. Running queries
+        for tab in &self.state.tabs {
+            if let Tab::Query { title, is_running, .. } = tab {
+                if *is_running {
+                    changes.push(format!("Running query in '{title}'"));
+                }
+            }
+        }
+
+        changes
+    }
+
+    pub fn has_unsaved_changes(&self, cx: &App) -> bool {
+        !self.unsaved_changes(cx).is_empty()
+    }
+
+    fn handle_close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        if self.force_close || !self.has_unsaved_changes(cx) {
+            window.remove_window();
+        } else {
+            self.confirm_close_open = true;
+            cx.notify();
+        }
+    }
+
+    fn handle_quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.force_close || !self.has_unsaved_changes(cx) {
+            cx.quit();
+        } else {
+            self.confirm_close_open = true;
+            cx.notify();
+        }
+    }
+
+    /// "Discard unsaved changes?" modal when closing window
+    fn render_close_confirm(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.confirm_close_open {
+            return None;
+        }
+        let changes = self.unsaved_changes(cx);
+        let t = &self.theme;
+        let count = changes.len();
+        Some(
+            modal_backdrop("close-confirm-backdrop", dismiss_on_click)
+                .child(
+                    modal_card("close-confirm-card", 460.0, t)
+                        .p_4()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text_primary)
+                                .child("Discard unsaved changes?"),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(t.text_secondary)
+                                .child(if count == 1 {
+                                    "You have unsaved changes that will be lost if you close the window:"
+                                } else {
+                                    "You have multiple unsaved changes that will be lost if you close the window:"
+                                }),
+                        )
+                        .child(
+                            v_flex()
+                                .gap_1()
+                                .children(changes.into_iter().take(6).map(|item| {
+                                    h_flex()
+                                        .gap_2()
+                                        .items_center()
+                                        .child(div().size(px(4.0)).rounded_full().bg(t.text_muted))
+                                        .child(div().text_xs().text_color(t.text_primary).truncate().child(item))
+                                })),
+                        )
+                        .child(
+                            h_flex()
+                                .justify_end()
+                                .gap_2()
+                                .child(
+                                    zbutton("close-confirm-cancel")
+                                        .pad_sm()
+                                        .label("Cancel")
+                                        .ghost()
+                                        .small()
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.confirm_close_open = false;
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    zbutton("close-confirm-discard")
+                                        .pad_sm()
+                                        .label("Close Window")
+                                        .danger()
+                                        .small()
+                                        .on_click(cx.listener(|this, _, window, _cx| {
+                                            this.confirm_close_open = false;
+                                            this.force_close = true;
+                                            window.remove_window();
+                                        })),
+                                ),
                         ),
                 )
                 .into_any_element(),
@@ -481,19 +908,20 @@ impl QuarryWindow {
                     )
                     .child(
                         h_flex()
-                            .gap_1()
+                            .gap_2()
                             .child(
-                                Button::new("onboard-demo")
+                                zbutton("onboard-demo").pad_sm()
+                                    .icon(IconName::Database)
                                     .label("Open the demo database")
-                                    .ghost()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(|this, _, window, cx| this.open_demo(window, cx))),
                             )
                             .child(
-                                Button::new("onboard-form")
+                                zbutton("onboard-form").pad_sm()
+                                    .icon(IconName::Settings2)
                                     .label("More options")
                                     .ghost()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(|this, _, window, cx| this.open_add_conn(window, cx))),
                             ),
                     ),
@@ -538,23 +966,43 @@ impl QuarryWindow {
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(language)
-                .line_number(true)
+                .line_number(self.settings.line_numbers)
+                .soft_wrap(self.settings.soft_wrap)
+                .tab_size(gpui::base::input::TabSize { tab_size: self.settings.tab_size.max(1), hard_tabs: false })
+                .placeholder("Write SQL here. ⌘↵ runs the selection or the statement at the cursor; ⌥↵ shows actions.")
                 .default_value(sql.to_string())
         });
         let completions = std::rc::Rc::new(completion::SchemaCompletions(self.state.completion_catalog.clone()));
+        let me = cx.entity().downgrade();
         editor.update(cx, |e, cx| {
-            e.lsp_mut().completion_provider = Some(completions);
+            e.lsp_mut().completion_provider = self.settings.autocomplete.then_some(completions);
+            e.lsp_mut().hover_provider = Some(std::rc::Rc::new(completion::SchemaHover(self.state.completion_catalog.clone())));
+            e.lsp_mut().code_action_providers.push(std::rc::Rc::new(completion::SqlActions(self.state.completion_catalog.clone())));
+            e.lsp_mut().definition_provider = Some(std::rc::Rc::new(completion::TableDefinitions(self.state.completion_catalog.clone())));
+            // ⌘-click lands here: open the table instead of following a URL. Deferred, since the editor is mid-update.
+            let me = me.clone();
+            e.lsp_mut().show_document = Some(std::rc::Rc::new(move |params, window, cx| {
+                let Some((schema, table)) = completion::table_link(&params.uri) else { return false };
+                let me = me.clone();
+                window.defer(cx, move |window, cx| {
+                    me.update(cx, |this, cx| this.open_pin(pins::Pin::Table { schema, table }, window, cx)).ok();
+                });
+                true
+            }));
             e.focus(window, cx);
         });
         let id = format!("q-{}", uuid::Uuid::new_v4());
         // Every edit schedules a session save, so unsaved queries survive a restart (Q9)
-        let sub = cx.subscribe(&editor, |this, _, ev: &InputEvent, cx| {
+        completion::lint_editor(&editor, &self.state.completion_catalog, cx);
+        let sub = cx.subscribe(&editor, |this, editor, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
+                completion::lint_editor(&editor, &this.state.completion_catalog, cx);
                 this.schedule_session_save(cx);
                 cx.notify();
             }
         });
         self.tab_subscriptions.insert(format!("{id}:editor"), sub);
+        self.tab_subscriptions.insert(format!("{id}:statement"), self.track_current_statement(&editor, cx));
         let grid = self.new_grid(&id, None, window, cx);
         let title = file
             .as_ref()
@@ -568,13 +1016,17 @@ impl QuarryWindow {
             grid,
             file,
             saved_text: sql.to_string(),
+            connection_id: self.state.active_connection.as_ref().map(|c| c.id.clone()),
+            schema: None,
+            row_limit: None,
             is_running: false,
             error_message: None,
         });
         self.state.active_tab_index = self.state.tabs.len() - 1;
+        self.schedule_session_save(cx);
     }
 
-    fn open_table_tab(&mut self, table_name: &str, schema_name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_table_tab(&mut self, table_name: &str, schema_name: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.state.note_recent_table(schema_name, table_name);
         if let Some(idx) = self.state.find_tab(table_name) {
             self.state.active_tab_index = idx;
@@ -626,8 +1078,11 @@ impl QuarryWindow {
             filter,
             grid,
             connection: self.state.active_connection.clone(),
+            view: Default::default(),
+            detail: None,
         });
         self.state.active_tab_index = self.state.tabs.len() - 1;
+        self.schedule_session_save(cx);
     }
 
     /// Opens the referenced table filtered to the row a foreign-key cell points at (G5)
@@ -638,6 +1093,43 @@ impl QuarryWindow {
         }
         self.refresh_active_tab(window, cx);
         cx.notify();
+    }
+
+    /// Tints the statement ⌘↵ would run, and keeps the gutter ▶ next to it
+    fn track_current_statement(&self, editor: &Entity<EditorState>, cx: &mut Context<Self>) -> Subscription {
+        use gpui::component::input::{RangeDecoration, RangeDecorationCollection, RangeDecorationStyle};
+        let tint = Hsla::from(self.theme.accent).opacity(0.07);
+        let decorations: std::rc::Rc<std::cell::RefCell<Option<RangeDecorationCollection>>> = Default::default();
+        let mut last = (0..0, None);
+        cx.observe(editor, move |this, editor, cx| {
+            let e = editor.read(cx);
+            let sql = e.value();
+            let span = if this.settings.highlight_current_statement {
+                quarry_sql::find_statement_at_offset(&sql, e.cursor().min(sql.len())).map_or(0..0, |s| s.start..s.end)
+            } else {
+                0..0
+            };
+            let now = (span.clone(), e.cursor_layout().map(|(b, _)| b.origin.y));
+            if now == last {
+                return;
+            }
+            let span_changed = now.0 != last.0;
+            last = now;
+            if span_changed {
+                let deco = if span.is_empty() { vec![] } else { vec![RangeDecoration::new(span).with_style(RangeDecorationStyle::Fill).with_color(tint)] };
+                // Deferred: this can fire while the editor is mid-update, and updating it then aborts
+                let (editor, decorations) = (editor.clone(), decorations.clone());
+                cx.defer(move |cx| {
+                    let mut d = decorations.borrow_mut();
+                    match d.as_ref() {
+                        // `set` updates the editor itself, so it must not run inside `editor.update`
+                        Some(c) => c.set(deco, cx),
+                        None => *d = Some(editor.update(cx, |e, cx| e.create_range_decorations_collection(deco, cx))),
+                    }
+                });
+            }
+            cx.notify(); // move the gutter ▶
+        })
     }
 
     fn open_grid_menu(&mut self, grid: Entity<TableState<ResultSet>>, row: usize, col: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -658,7 +1150,8 @@ impl QuarryWindow {
     }
 
     fn new_grid(&mut self, tab_id: &str, source: Option<TableSource>, window: &mut Window, cx: &mut Context<Self>) -> Entity<TableState<ResultSet>> {
-        let rs = ResultSet::new(&self.theme, source);
+        let mut rs = ResultSet::new(&self.theme, source);
+        rs.set_prefs(&self.settings.null_display, self.settings.max_column_width);
         let grid = cx.new(|cx| TableState::new(rs, window, cx).cell_selectable(true).col_resizable(true).col_selectable(false));
         // Double-click edits the cell (read-only grids explain why they can't)
         let sub = cx.subscribe_in(&grid, window, |this, grid, ev: &TableEvent, window, cx| {
@@ -670,9 +1163,13 @@ impl QuarryWindow {
                 TableEvent::RightClickedCell(row, col) => this.open_grid_menu(grid.clone(), row, col, window, cx),
                 // The value editor follows the selection
                 TableEvent::SelectCell(row, col) => grid.update(cx, |t, cx| {
+                    t.delegate_mut().selected_cell = Some((row, col));
                     if t.delegate().inspector_open() {
                         t.delegate_mut().inspect(row, col, window, cx);
                     }
+                }),
+                TableEvent::ClearSelection => grid.update(cx, |t, _| {
+                    t.delegate_mut().selected_cell = None;
                 }),
                 _ => {}
             }
@@ -772,16 +1269,31 @@ impl QuarryWindow {
         let Some(session) = self.state.session.clone() else {
             return self.toast("Connect to a database first", true, cx);
         };
-        let Some(Tab::Query { id, grid, is_running, error_message, .. }) = self.state.tabs.get_mut(self.state.active_tab_index) else {
+        let is_pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
+        let Some(Tab::Query { id, grid, is_running, error_message, schema, row_limit, .. }) = self.state.tabs.get_mut(self.state.active_tab_index) else {
             return;
         };
         *is_running = true;
         *error_message = None;
         let (tab_id, grid) = (id.clone(), grid.clone());
+        let statements: Vec<String> = match *row_limit {
+            Some(n) => statements.iter().map(|s| quarry_sql::with_limit(s, n)).collect(),
+            None => statements,
+        };
+        // The session is shared by every tab on this connection, so each run sets the tab's own schema
+        let search_path = is_pg.then(|| match schema {
+            Some(s) => format!("SET search_path TO {}", quarry_core::edits::quote_ident(s)),
+            None => "SET search_path TO DEFAULT".to_string(),
+        });
         cx.notify();
 
         let stmts = statements.clone();
         let fut = async move {
+            if let Some(sp) = search_path {
+                if let Err(e) = session.execute_quiet(&sp).await {
+                    return (Vec::new(), Some((0, e.to_string())));
+                }
+            }
             let mut done = Vec::new();
             for (ix, sql) in stmts.iter().enumerate() {
                 match session.execute(sql).await {
@@ -801,6 +1313,7 @@ impl QuarryWindow {
                 ));
                 this.state.record_history(res.statement.clone(), res.execution_time, res.rows_affected, None);
             }
+            let failed_ix = failure.as_ref().map(|(ix, _)| *ix);
             let failure_msg = failure.map(|(ix, err)| {
                 this.state.record_history(statements[ix].clone(), Default::default(), 0, Some(err.clone()));
                 let msg = if statements.len() > 1 { format!("Statement {} failed: {}", ix + 1, err) } else { err };
@@ -814,8 +1327,12 @@ impl QuarryWindow {
                 t.refresh(cx);
                 cx.notify();
             });
-            if let Some(Tab::Query { is_running, error_message, .. }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id) {
+            if let Some(Tab::Query { is_running, error_message, editor, .. }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id) {
                 *is_running = false;
+                if let (Some(msg), Some(ix)) = (&failure_msg, failed_ix) {
+                    let at = quarry_core::postgres::error_position(msg);
+                    completion::mark_run_error(editor, &statements[ix], at, msg, cx);
+                }
                 *error_message = failure_msg;
             }
             // Schema changed: keep the sidebar and command bar in sync (S6)
@@ -845,7 +1362,7 @@ impl QuarryWindow {
         self.refresh_active_tab(window, cx);
     }
 
-    fn refocus_root(&self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn refocus_root(&self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle, cx);
     }
 
@@ -943,11 +1460,15 @@ impl QuarryWindow {
     }
 
     fn new_query(&mut self, _: &NewQuery, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_query_tab(NEW_QUERY_SQL, window, cx);
+        self.open_query_tab("", window, cx);
         cx.notify();
     }
 
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        // ⌘W with nothing left to close closes the window, as everywhere else on macOS
+        if self.state.tabs.is_empty() {
+            return self.handle_close_window(&CloseWindow, window, cx);
+        }
         self.close_tab_at(self.state.active_tab_index, cx);
         // The closed tab may have held focus; keep shortcuts (like ⇧⌘T) working
         self.refocus_root(window, cx);
@@ -1080,7 +1601,22 @@ impl QuarryWindow {
 
     /// Escape: close the topmost overlay
     fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending_prod_run.take().is_some() {
+        if self.tab_switcher.take().is_some() {
+            cx.notify();
+            return;
+        }
+        if self.state.renaming_query.is_some() {
+            return self.finish_rename(None, window, cx);
+        }
+        if std::mem::take(&mut self.confirm_close_open) {
+            cx.notify();
+            return;
+        }
+        if std::mem::take(&mut self.settings_open) {
+            cx.notify();
+            return;
+        }
+        if self.pending_prod_run.take().is_some() || self.panel.confirm_kill.take().is_some() {
             cx.notify();
             return;
         }
@@ -1144,6 +1680,17 @@ impl QuarryWindow {
         if let Some((schema, table)) = action_id.strip_prefix("table:").and_then(|t| t.split_once('\u{1f}')) {
             self.open_table_tab(table, schema, window, cx);
             self.refresh_active_tab(window, cx);
+        } else if let Some((view, rest)) = action_id.strip_prefix("table-").and_then(|r| r.split_once(':')) {
+            if let Some((schema, table)) = rest.split_once('\u{1f}') {
+                self.open_pin(pins::Pin::Table { schema: schema.into(), table: table.into() }, window, cx);
+                let view = if view == "ddl" { table_detail::TableView::Ddl } else { table_detail::TableView::Structure };
+                self.set_table_view(view, window, cx);
+            }
+        } else if let Some(ix) = action_id.strip_prefix("pin:").and_then(|i| i.parse::<usize>().ok()) {
+            let pin = self.state.active_connection.as_ref().and_then(|c| self.state.pins.get(&c.id)).and_then(|p| p.get(ix)).cloned();
+            if let Some(pin) = pin {
+                self.open_pin(pin, window, cx);
+            }
         } else if let Some(id) = action_id.strip_prefix("connection:") {
             self.connect_saved(id.to_string(), window, cx);
         } else if let Some(ix) = action_id.strip_prefix("history:").and_then(|i| i.parse::<usize>().ok()) {
@@ -1153,6 +1700,8 @@ impl QuarryWindow {
         } else if let Some(query) = action_id.strip_prefix("run:") {
             self.open_query_tab(query, window, cx);
             self.refresh_active_tab(window, cx);
+        } else if action_id == "action:maximize" {
+            self.state.toggle_maximize();
         } else if action_id == "action:new_query" {
             self.new_query(&NewQuery, window, cx);
         } else if action_id == "action:review" {
@@ -1166,7 +1715,7 @@ impl QuarryWindow {
         } else if action_id == "action:explain_analyze" {
             self.start_run(RunMode::ExplainAnalyze, window, cx);
         } else if action_id == "action:settings" {
-            self.open_config_file(false, window, cx);
+            self.open_settings(cx);
         } else if action_id == "action:keymap" {
             self.open_config_file(true, window, cx);
         } else if action_id == "action:pin" {
@@ -1189,6 +1738,12 @@ impl QuarryWindow {
             self.dump_database(window, cx);
         } else if action_id == "action:theme" {
             self.toggle_theme(&ToggleTheme, window, cx);
+        } else if action_id == "action:increase_font" {
+            self.increase_font_size(&IncreaseFontSize, window, cx);
+        } else if action_id == "action:decrease_font" {
+            self.decrease_font_size(&DecreaseFontSize, window, cx);
+        } else if action_id == "action:reset_font" {
+            self.reset_font_size(&ResetFontSize, window, cx);
         } else if action_id == "action:demo" {
             self.open_demo(window, cx);
         } else if action_id == "action:toggle_tx" {
@@ -1204,7 +1759,42 @@ impl QuarryWindow {
         cx.notify();
     }
 
+    /// The Add Connection modal, filled in from a saved connection; saving keeps its id (and keychain password)
+    pub fn open_edit_conn(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(p) = self.state.saved_connections.iter().find(|c| c.id == id).cloned() else { return };
+        self.state.editing_conn = Some(p.id.clone());
+        self.state.add_conn_tab = 0;
+        self.state.add_conn_kind = p.kind.clone();
+        self.state.add_conn_env = p.env;
+        self.state.add_conn_read_only = p.read_only;
+        self.state.add_conn_ssh = p.ssh.is_some();
+        self.state.add_conn_feedback = None;
+        let (path, _) = connections::split_password(&p.path_or_url);
+        self.set_conn_inputs(Some(&p.name), &path, window, cx);
+        let ssh = p.ssh.as_ref();
+        let values = [
+            ssh.map(|s| if s.port == 22 { s.host.clone() } else { format!("{}:{}", s.host, s.port) }),
+            ssh.map(|s| s.user.clone()),
+            ssh.and_then(|s| s.key_path.clone()),
+        ];
+        for (input, v) in self.ssh_inputs.clone().iter().zip(values) {
+            input.update(cx, |i, cx| i.set_value(v.unwrap_or_default(), window, cx));
+        }
+        let timeout = p.statement_timeout_secs.map(|t| t.to_string()).unwrap_or_default();
+        self.timeout_input.update(cx, |i, cx| i.set_value(timeout, window, cx));
+        self.state.add_conn_modal_open = true;
+        self.conn_name_input.update(cx, |i, cx| i.focus(window, cx));
+        cx.notify();
+    }
+
     fn open_add_conn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.editing_conn = None;
+        self.state.add_conn_feedback = None;
+        self.state.add_conn_tab = 0;
+        self.state.add_conn_read_only = false;
+        self.state.add_conn_ssh = false;
+        // A fresh form: nothing carried over from the last connection added
+        self.set_conn_inputs(Some(""), "", window, cx);
         self.state.add_conn_modal_open = true;
         self.conn_name_input.update(cx, |i, cx| i.focus(window, cx));
         cx.notify();
@@ -1215,13 +1805,28 @@ impl QuarryWindow {
             self.conn_name_input.update(cx, |i, cx| i.set_value(name.to_string(), window, cx));
         }
         self.conn_path_input.update(cx, |i, cx| i.set_value(path.to_string(), window, cx));
+        self.fill_pg_fields(window, cx);
+    }
+
+    /// URL → host/port/user/password/database, unless the fields are the ones writing the URL
+    fn fill_pg_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.conn_syncing {
+            return;
+        }
+        let url = self.conn_path_input.read(cx).value().to_string();
+        let fields = connections::parse_pg_url(&url).map_or_else(|| Default::default(), |(f, _)| f);
+        self.conn_syncing = true;
+        for (i, v) in self.pg_inputs.clone().iter().zip(fields) {
+            i.update(cx, |i, cx| i.set_value(v, window, cx));
+        }
+        self.conn_syncing = false;
     }
 
     fn profile_from_modal(&self, cx: &App) -> ConnectionProfile {
         let name = self.conn_name_input.read(cx).value().trim().to_string();
         ConnectionProfile {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: if name.is_empty() { "New Connection".to_string() } else { name },
+            id: self.state.editing_conn.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            name: if name.is_empty() { guess_profile(self.conn_path_input.read(cx).value().as_ref()).name } else { name },
             kind: self.state.add_conn_kind.clone(),
             path_or_url: self.conn_path_input.read(cx).value().trim().to_string(),
             env: self.state.add_conn_env,
@@ -1254,15 +1859,176 @@ impl QuarryWindow {
     /// Connects to a new database using values in the Add Connection modal
     pub fn connect_add_conn_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let profile = self.profile_from_modal(cx);
+        // Editing: replace the saved profile in place and reconnect with the new settings
+        if let Some(id) = self.state.editing_conn.take() {
+            self.state.disconnect(&id);
+            if let Some(slot) = self.state.saved_connections.iter_mut().find(|c| c.id == id) {
+                *slot = profile.clone();
+            }
+            if let Err(e) = connections::save(&self.state.saved_connections) {
+                self.toast(format!("Could not save connection: {e}"), true, cx);
+            }
+        }
         self.state.add_conn_feedback = Some(("Connecting…".to_string(), false));
         self.connect_profile(profile, window, cx);
     }
 
-    /// Sidebar click: switch to a saved connection, reusing its session if it's already open
-    fn connect_saved(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+    /// Query tabs keep their own connection. Landing on a query tab switches to its connection;
+    /// switching connections (sidebar, picker) while on one moves the tab to the new connection.
+    fn sync_tab_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.state.active_connection.as_ref().map(|c| c.id.clone());
+        let Some(Tab::Query { id, connection_id, .. }) = self.state.active_tab() else {
+            self.synced_tab = None;
+            return;
+        };
+        let (id, wanted) = (id.clone(), connection_id.clone());
+        if self.synced_tab.as_ref() != Some(&id) {
+            self.synced_tab = Some(id);
+            if let Some(w) = wanted.filter(|w| current.as_ref() != Some(w)) {
+                if self.state.activate_open_session(&w) {
+                    return;
+                }
+                // Not open (e.g. after a restart): reconnect, and leave the tab alone until that lands
+                if let Some(profile) = self.state.saved_connections.iter().find(|c| c.id == w).cloned() {
+                    self.connecting_for_tab = Some(w);
+                    self.connect_profile(profile, window, cx);
+                    return;
+                }
+            }
+        }
+        if let Some(pending) = &self.connecting_for_tab {
+            if current.as_ref() != Some(pending) {
+                return;
+            }
+            self.connecting_for_tab = None;
+        }
+        if let Some(Tab::Query { connection_id, .. }) = self.state.tabs.get_mut(self.state.active_tab_index) {
+            *connection_id = current;
+        }
+    }
+
+    /// The editor's connection picker: every saved connection, grouped as in the sidebar
+    fn open_connection_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut conns = self.state.saved_connections.clone();
+        conns.sort_by_key(|c| c.env as u8);
+        let current = self.state.active_connection.as_ref().map(|c| c.id.clone());
+        let me = cx.entity().downgrade();
+        let menu = gpui::component::menu::PopupMenu::build(window, cx, |mut menu, _, _| {
+            for c in conns {
+                let me = me.clone();
+                let label = format!("{}  ·  {}", c.name, c.env.label());
+                menu = menu.item(
+                    gpui::component::menu::PopupMenuItem::new(label)
+                        .checked(current.as_ref() == Some(&c.id))
+                        .on_click(move |_, window, cx| {
+                            me.update(cx, |this, cx| this.use_connection(c.id.clone(), window, cx)).ok();
+                        }),
+                );
+            }
+            menu
+        });
+        menu.update(cx, |m, cx| m.focus_handle(cx).focus(window, cx));
+        let sub = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.grid_menu = None;
+            cx.notify();
+        });
+        // Just under the toolbar row, so the menu doesn't cover the picker
+        self.grid_menu = Some((window.mouse_position() + point(px(0.0), px(14.0)), menu, sub));
+        cx.notify();
+    }
+
+    /// Shows a popup menu of (label, checked, value) under the mouse; picking one calls `apply` with its value
+    fn open_choice_menu<V: Clone + 'static>(
+        &mut self,
+        choices: Vec<(String, bool, V)>,
+        apply: fn(&mut Self, V, &mut Context<Self>),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let me = cx.entity().downgrade();
+        let menu = gpui::component::menu::PopupMenu::build(window, cx, |mut menu, _, _| {
+            for (label, checked, value) in choices {
+                let me = me.clone();
+                menu = menu.item(gpui::component::menu::PopupMenuItem::new(label).checked(checked).on_click(move |_, _, cx| {
+                    me.update(cx, |this, cx| {
+                        apply(this, value.clone(), cx);
+                        this.schedule_session_save(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }));
+            }
+            menu
+        });
+        menu.update(cx, |m, cx| m.focus_handle(cx).focus(window, cx));
+        let sub = cx.subscribe(&menu, |this, _, _: &DismissEvent, cx| {
+            this.grid_menu = None;
+            cx.notify();
+        });
+        self.grid_menu = Some((window.mouse_position() + point(px(0.0), px(14.0)), menu, sub));
+        cx.notify();
+    }
+
+    fn open_schema_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Tab::Query { schema: current, .. }) = self.state.active_tab() else { return };
+        let current = current.clone();
+        let mut choices = vec![("Default (search_path)".to_string(), current.is_none(), None)];
+        choices.extend(self.state.catalog.schemas.iter().map(|s| (s.clone(), current.as_ref() == Some(s), Some(s.clone()))));
+        self.open_choice_menu(
+            choices,
+            |this, v, _| {
+                if let Some(Tab::Query { schema, .. }) = this.state.tabs.get_mut(this.state.active_tab_index) {
+                    *schema = v;
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn open_limit_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Tab::Query { row_limit: current, .. }) = self.state.active_tab() else { return };
+        let current = *current;
+        let choices = [None, Some(100), Some(500), Some(1000), Some(5000)]
+            .into_iter()
+            .map(|n| (n.map_or("No limit".to_string(), |n| format!("{n} rows")), current == n, n))
+            .collect();
+        self.open_choice_menu(
+            choices,
+            |this, v, _| {
+                if let Some(Tab::Query { row_limit, .. }) = this.state.tabs.get_mut(this.state.active_tab_index) {
+                    *row_limit = v;
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Makes a saved connection the active one, connecting if it isn't open yet
+    fn use_connection(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
         if self.state.active_connection.as_ref().is_some_and(|c| c.id == id) {
             return;
         }
+        if !self.state.activate_open_session(&id) {
+            if let Some(profile) = self.state.saved_connections.iter().find(|c| c.id == id).cloned() {
+                self.connect_profile(profile, window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Sidebar click: switch to a saved connection, reusing its session if it's already open
+    fn connect_saved(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        // Clicking the open connection folds or unfolds its tree
+        if self.state.active_connection.as_ref().is_some_and(|c| c.id == id) {
+            if !self.state.collapsed_connections.remove(&id) {
+                self.state.collapsed_connections.insert(id);
+            }
+            cx.notify();
+            return;
+        }
+        self.state.collapsed_connections.remove(&id);
         if self.state.activate_open_session(&id) {
             cx.notify();
             return;
@@ -1272,7 +2038,10 @@ impl QuarryWindow {
         }
     }
 
-    fn connect_profile(&mut self, profile: ConnectionProfile, window: &mut Window, cx: &mut Context<Self>) {
+    fn connect_profile(&mut self, mut profile: ConnectionProfile, window: &mut Window, cx: &mut Context<Self>) {
+        if profile.statement_timeout_secs.is_none() && self.settings.default_statement_timeout_secs > 0 {
+            profile.statement_timeout_secs = Some(self.settings.default_statement_timeout_secs);
+        }
         let name = profile.name.clone();
         self.state.messages.push(format!("Connecting to {}…", name));
         cx.notify();
@@ -1289,6 +2058,7 @@ impl QuarryWindow {
                 }
                 Err(e) => {
                     this.toast(format!("Could not connect to {}: {}", name, e), true, cx);
+                    this.connecting_for_tab = None;
                     this.state.add_conn_feedback = Some((e, true));
                 }
             }
@@ -1365,14 +2135,35 @@ impl QuarryWindow {
 impl Render for QuarryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_theme(window, cx);
+        if self.applied_settings.as_ref() != Some(&self.settings) {
+            self.apply_settings_to_views(window, cx);
+        }
+        // The schema changed (connect, switch, refresh): squiggles must reflect the new one
+        if self.state.linted_gen != self.state.catalog_gen {
+            self.state.linted_gen = self.state.catalog_gen;
+            let editors: Vec<_> = self.state.tabs.iter().filter_map(|t| match t {
+                Tab::Query { editor, .. } => Some(editor.clone()),
+                _ => None,
+            }).collect();
+            let catalog = self.state.completion_catalog.clone();
+            cx.defer(move |cx| editors.iter().for_each(|e| completion::lint_editor(e, &catalog, cx)));
+        }
+        self.sync_tab_connection(window, cx);
+        self.reopen_pending_table_tabs(window, cx);
+        self.track_tab_mru(window, cx);
         let bottom_panel = self.render_bottom_panel(window, cx);
         let kill_confirm = self.render_kill_confirm(cx);
+        let tab_switcher = self.render_tab_switcher(cx);
+        let settings_modal = self.render_settings_modal(cx);
         let export_dialog = self.render_export_dialog(cx);
         let import_wizard = self.render_import_wizard(cx);
         let params_dialog = self.render_params_dialog(cx);
         let peek = self.render_peek(cx);
         let prod_confirm = self.render_prod_confirm(cx);
-        let active_tab = self.state.active_tab().cloned();
+        let close_confirm = self.render_close_confirm(cx);
+        // While ⌃Tab is held, the main area previews the highlighted tab; letting go makes it active
+        let previewed = self.tab_switcher.and_then(|i| self.tab_mru.get(i)).and_then(|id| self.state.tabs.iter().find(|t| t.id() == id));
+        let active_tab = previewed.or(self.state.active_tab()).cloned();
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
 
@@ -1398,19 +2189,7 @@ impl Render for QuarryWindow {
             .border_b_1()
             .border_color(t.border)
             .items_center()
-            .child(
-                h_flex()
-                    .flex_1()
-                    .gap_1p5()
-                    .items_center()
-                    .when_some(current_conn.clone(), |this, c| {
-                        this.child(div().size(px(6.0)).rounded_full().bg(env_color(c.env)))
-                            .child(div().text_xs().text_color(t.text_secondary).child(c.name.clone()))
-                            .when(c.env != Environment::Local, |this| {
-                                this.child(div().text_xs().font_weight(FontWeight::BOLD).text_color(env_color(c.env)).child(c.env.label()))
-                            })
-                    }),
-            )
+            .child(div().flex_1())
             .child(
                 h_flex()
                     .id("omnibox-trigger-btn")
@@ -1435,7 +2214,7 @@ impl Render for QuarryWindow {
         // Tabs: icon + title + close; hidden when nothing is open
         let tab_strip = (!self.state.tabs.is_empty()).then(|| {
             h_flex()
-                .h(px(32.0))
+                .h(px(BAR_H))
                 .w_full()
                 .px_1()
                 .gap_px()
@@ -1449,9 +2228,24 @@ impl Render for QuarryWindow {
                         Tab::Query { .. } => IconName::SquareTerminal,
                         Tab::Table { .. } => IconName::Table,
                     };
+                    // Table tabs keep their connection: mark staging/prod so a risky tab is obvious at a glance
+                    let env_color = match tab {
+                        Tab::Table { connection: Some(c), .. } => match c.env {
+                            Environment::Prod => Some(t.danger),
+                            Environment::Staging => Some(t.warning),
+                            Environment::Local => None,
+                        },
+                        _ => None,
+                    };
+                    let table_obj = match tab {
+                        Tab::Table { schema_name, table_name, .. } => {
+                            Some(object_menu::DbObject::Table { schema: schema_name.clone(), table: table_name.clone() })
+                        }
+                        _ => None,
+                    };
                     h_flex()
                         .id(("tab-select", idx))
-                        .h(px(28.0))
+                        .h(px(CONTROL_H))
                         .pl_2p5()
                         .pr_1()
                         .gap_1p5()
@@ -1464,6 +2258,13 @@ impl Render for QuarryWindow {
                             this.state.active_tab_index = idx;
                             cx.notify();
                         }))
+                        .when_some(env_color, |d, c| d.border_b_2().border_color(c))
+                        .when_some(table_obj, |d, obj| {
+                            d.on_mouse_down(MouseButton::Right, cx.listener(move |this, _, window, cx| {
+                                this.state.active_tab_index = idx;
+                                this.open_object_menu(obj.clone(), window, cx);
+                            }))
+                        })
                         .child(Icon::new(icon).xsmall().text_color(if is_active { t.accent } else { t.text_muted }))
                         .child(
                             div()
@@ -1472,42 +2273,40 @@ impl Render for QuarryWindow {
                                 .child(tab.title().to_string()),
                         )
                         .when(
-                            matches!(tab, Tab::Query { file: Some(_), editor, saved_text, .. } if editor.read(cx).value().as_ref() != saved_text.as_str()),
+                            // Unsaved: a new tab with text in it, or a file that differs from disk
+                            matches!(tab, Tab::Query { editor, saved_text, .. } if editor.read(cx).value().as_ref() != saved_text.as_str()),
                             |d| d.child(div().size(px(6.0)).rounded_full().bg(t.text_secondary)),
                         )
                         .child(
-                            Button::new(("tab-close", idx))
+                            zbutton(("tab-close", idx))
                                 .icon(IconName::X)
                                 .ghost()
                                 .xsmall()
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    // The tab under this button selects itself on click; without this it would
+                                    // re-select the closed slot (a neighbour, or nothing when it was the last)
+                                    cx.stop_propagation();
                                     this.close_tab_at(idx, cx);
                                     this.refocus_root(window, cx);
                                 })),
                         )
                 }))
+                // Tabs sit on the strip's bottom edge; centre the + on a tab's height so it lines up with them
                 .child(
-                    Button::new("tab-add-btn")
-                        .icon(IconName::Plus)
-                        .ghost()
-                        .xsmall()
-                        .tooltip("New query (⌘N)")
-                        .on_click(cx.listener(|this, _, window, cx| this.new_query(&NewQuery, window, cx))),
+                    h_flex().h(px(CONTROL_H)).px_1().items_center().child(
+                        zbutton("tab-add-btn")
+                            .icon(IconName::Plus)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("New query (⌘N)")
+                            .on_click(cx.listener(|this, _, window, cx| this.new_query(&NewQuery, window, cx))),
+                    ),
                 )
         });
 
         let center: AnyElement = match active_tab.as_ref() {
             None if self.state.session.is_none() => self.render_onboarding(cx),
-            None => div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .child(div().text_sm().text_color(t.text_secondary).child("Pick a table from the sidebar"))
-                .child(div().text_xs().text_color(t.text_muted).child("or press ⌘K to search, ⌘N for a new query"))
-                .into_any_element(),
+            None => self.render_launcher(cx),
             Some(tab) => match self.split_tab().filter(|_| self.state.tabs.len() > 1) {
                 // Split view (U8): the active tab on the left, the split tab on the right
                 Some(split) => {
@@ -1550,10 +2349,16 @@ impl Render for QuarryWindow {
             |this, schema, table, hovered, window, cx| this.peek_hover(schema, table, hovered, window, cx),
             |this, pin, window, cx| this.open_pin(pin, window, cx),
             |this, pin, _, cx| this.toggle_pin(pin, cx),
+            |this, obj, window, cx| {
+                this.peek = None;
+                this.open_object_menu(obj, window, cx)
+            },
+            |this, path, window, cx| this.open_query_file(path, window, cx),
         );
 
         div()
             .id("quarry-root")
+            .font_family(theme::UI_FONT)
             .track_focus(&self.focus_handle)
             .key_context("Quarry")
             .on_action(cx.listener(Self::toggle_command_bar))
@@ -1564,11 +2369,30 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::toggle_bottom_panel))
             .on_action(cx.listener(Self::new_query))
             .on_action(cx.listener(Self::close_tab))
+            .on_action(cx.listener(|this, _: &TabSwitcherNext, _, cx| this.step_tab_switcher(true, cx)))
+            .on_action(cx.listener(|this, _: &TabSwitcherPrev, _, cx| this.step_tab_switcher(false, cx)))
+            .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| {
+                if !ev.modifiers.control {
+                    this.commit_tab_switcher(window, cx);
+                }
+            }))
             .on_action(cx.listener(Self::dismiss))
+            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
+            .on_action(cx.listener(Self::handle_close_window))
+            .on_action(cx.listener(Self::handle_quit))
+            .on_action(|_: &Minimize, window, _| window.minimize_window())
+            .on_action(|_: &Zoom, window, _| window.zoom_window())
+            .on_action(cx.listener(|this, _: &ToggleMaximize, _, cx| {
+                this.state.toggle_maximize();
+                cx.notify();
+            }))
             .on_action(cx.listener(Self::toggle_tx_mode))
             .on_action(cx.listener(Self::commit_tx))
             .on_action(cx.listener(Self::rollback_tx))
             .on_action(cx.listener(Self::toggle_theme))
+            .on_action(cx.listener(Self::increase_font_size))
+            .on_action(cx.listener(Self::decrease_font_size))
+            .on_action(cx.listener(Self::reset_font_size))
             .on_action(cx.listener(Self::reopen_closed_tab))
             .on_action(cx.listener(|this, _: &PinCurrentTab, _, cx| this.pin_current_tab(cx)))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| this.open_command_palette(window, cx)))
@@ -1608,9 +2432,10 @@ impl Render for QuarryWindow {
             .child(titlebar)
             .child(div().flex_1().min_h_0().child(
                 h_resizable("main-split")
+                    .on_resize(layout::remember("main-split"))
                     .child(
                         resizable_panel()
-                            .size(px(240.0))
+                            .size(layout::size("main-split", 0, 240.0))
                             .size_range(px(160.0)..px(480.0))
                             .visible(self.state.sidebar_visible)
                             .child(sidebar),
@@ -1618,10 +2443,11 @@ impl Render for QuarryWindow {
                     .child(
                         resizable_panel().child(
                             v_resizable("content-split")
+                                .on_resize(layout::remember("content-split"))
                                 .child(resizable_panel().child(v_flex().size_full().children(tab_strip).child(center)))
                                 .child(
                                     resizable_panel()
-                                        .size(px(280.0))
+                                        .size(layout::size("content-split", 1, 280.0))
                                         .size_range(px(120.0)..px(900.0))
                                         .visible(self.state.bottom_panel_open)
                                         .child(bottom_panel),
@@ -1649,11 +2475,14 @@ impl Render for QuarryWindow {
             ))
             // Modals & Overlays (only rendered when active)
             .children(kill_confirm)
+            .children(tab_switcher)
             .children(export_dialog)
             .children(import_wizard)
             .children(params_dialog)
             .children(peek)
             .children(prod_confirm)
+            .children(settings_modal)
+            .children(close_confirm)
             .when_some(self.grid_menu.as_ref().map(|(p, m, _)| (*p, m.clone())), |this, (pos, menu)| {
                 this.child(deferred(anchored().position(pos).snap_to_window().child(menu)).with_priority(1))
             })
@@ -1724,19 +2553,22 @@ impl Render for QuarryWindow {
                     &self.conn_name_input,
                     &self.conn_path_input,
                     [&self.ssh_inputs[0], &self.ssh_inputs[1], &self.ssh_inputs[2]],
+                    self.pg_inputs.each_ref(),
                     &self.timeout_input,
                     |this, _window, cx| {
                         this.state.add_conn_ssh = !this.state.add_conn_ssh;
                         cx.notify();
                     },
                     |this, kind, window, cx| {
-                        let path = if kind == ConnectionTargetKind::Postgres {
-                            "postgres://postgres:postgres@localhost:5432/postgres"
-                        } else {
-                            ":memory:"
-                        };
+                        const PG_SAMPLE: &str = "postgres://postgres:postgres@localhost:5432/postgres";
+                        const SQLITE_SAMPLE: &str = ":memory:";
+                        // Only replace an empty field or the other type's sample, never something typed
+                        let current = this.conn_path_input.read(cx).value().trim().to_string();
+                        if current.is_empty() || current == PG_SAMPLE || current == SQLITE_SAMPLE {
+                            let sample = if kind == ConnectionTargetKind::Postgres { PG_SAMPLE } else { SQLITE_SAMPLE };
+                            this.set_conn_inputs(None, sample, window, cx);
+                        }
                         this.state.add_conn_kind = kind;
-                        this.set_conn_inputs(None, path, window, cx);
                         cx.notify();
                     },
                     |this, env, _window, cx| {
@@ -1753,9 +2585,82 @@ impl Render for QuarryWindow {
                         this.state.add_conn_modal_open = false;
                         cx.notify();
                     },
+                    |this, tab, _window, cx| {
+                        this.state.add_conn_tab = tab;
+                        cx.notify();
+                    },
+                    |this, _window, cx| {
+                        this.state.add_conn_read_only = !this.state.add_conn_read_only;
+                        cx.notify();
+                    },
                 ))
             })
     }
+}
+
+/// The macOS menu bar; its items also make the standard shortcuts (⌘Q, ⌘H, ⌘M…) work
+fn set_app_menus(cx: &mut App) {
+    use gpui::component::input;
+    cx.on_action(|_: &Quit, cx| cx.quit());
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    // Closing the last window quits, like other single-window macOS apps
+    cx.on_window_closed(|cx, _| {
+        if cx.windows().is_empty() {
+            cx.quit();
+        }
+    })
+    .detach();
+    cx.set_menus([
+        Menu {
+            name: "Quarry".into(),
+            items: vec![
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Hide Quarry", Hide),
+                MenuItem::action("Hide Others", HideOthers),
+                MenuItem::action("Show All", ShowAll),
+                MenuItem::separator(),
+                MenuItem::action("Quit Quarry", Quit),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Undo", input::Undo, OsAction::Undo),
+                MenuItem::os_action("Redo", input::Redo, OsAction::Redo),
+                MenuItem::separator(),
+                MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
+                MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("Zoom In", IncreaseFontSize),
+                MenuItem::action("Zoom Out", DecreaseFontSize),
+                MenuItem::separator(),
+                MenuItem::action("Actual Size", ResetFontSize),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Window".into(),
+            items: vec![
+                MenuItem::action("Minimize", Minimize),
+                MenuItem::action("Zoom", Zoom),
+                MenuItem::separator(),
+                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action("Close Window", CloseWindow),
+            ],
+            disabled: false,
+        },
+    ]);
 }
 
 fn main() {
@@ -1763,8 +2668,10 @@ fn main() {
         gpui::init(cx);
         // Quarry's own palette is dark-only for now; keep gpui-kit widgets in sync
         gpui::component::theme::Theme::change(gpui::component::theme::ThemeMode::Dark, None, cx);
+        theme::load_fonts(cx);
         bind_keys(cx);
         grid::bind_keys(cx);
+        set_app_menus(cx);
         let options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: None, // Custom unified titlebar with cross-platform OS traffic light offset
@@ -1775,10 +2682,26 @@ fn main() {
         };
 
         gpui::open_window(options, cx, |window, cx| {
-            cx.new(|cx| {
+            let entity = cx.new(|cx| {
                 // Starts with the onboarding input focused, so a pasted URL just works
                 QuarryWindow::new(window, cx)
-            })
+            });
+            let weak = entity.downgrade();
+            window.on_window_should_close(cx, move |_window, cx| {
+                weak.update(cx, |this, cx| {
+                    if this.force_close {
+                        true
+                    } else if this.has_unsaved_changes(cx) {
+                        this.confirm_close_open = true;
+                        cx.notify();
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .unwrap_or(true)
+            });
+            entity
         })
         .unwrap();
     });

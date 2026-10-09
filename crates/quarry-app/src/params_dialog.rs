@@ -6,8 +6,8 @@
 
 use crate::ui::*;
 use crate::QuarryWindow;
-use gpui::component::button::{Button, ButtonVariants};
-use gpui::component::input::{Input, InputEvent, InputState};
+use gpui::component::button::ButtonVariants;
+use gpui::component::input::{InputEvent, InputState};
 use gpui::component::{ActiveTheme, Sizable};
 use gpui::*;
 use std::collections::HashMap;
@@ -59,45 +59,26 @@ impl QuarryWindow {
         let dialog = self.params.as_ref()?;
         let t = &self.theme;
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000060))
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(120.0))
+            modal_backdrop("params-card-backdrop", dismiss_on_click)
                 .child(
-                    v_flex()
-                        .id("params-card")
-                        .w(px(420.0))
-                        .p_4()
-                        .gap_3()
-                        .rounded(px(8.0))
-                        .bg(t.bg_sidebar)
-                        .border_1()
-                        .border_color(t.border)
-                        .shadow_lg()
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child("Query parameters"))
-                        .children(dialog.inputs.iter().map(|(name, input)| {
+                    modal_card("params-card", 460.0, t)
+                        .overflow_hidden()
+                        .child(modal_header(t, "Query parameters", Some("Numbers and true/false go in as-is; anything else is quoted".into()), dismiss_on_click))
+                        .child(modal_body("params-body").gap_3().children(dialog.inputs.iter().map(|(name, input)| {
                             h_flex()
-                                .gap_2()
+                                .gap_3()
                                 .items_center()
-                                .child(div().w(px(110.0)).text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(t.text_secondary).child(name.clone()))
-                                .child(div().flex_1().child(Input::new(input).xsmall()))
-                        }))
-                        .child(div().text_xs().text_color(t.text_muted).child("Numbers and true/false go in as-is; anything else is quoted."))
+                                .child(div().w(px(120.0)).flex_shrink_0().truncate().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(t.text_secondary).child(name.clone()))
+                                .child(div().flex_1().child(form_input(input)))
+                        })))
                         .child(
-                            h_flex()
-                                .justify_end()
-                                .gap_2()
-                                .child(Button::new("params-cancel").label("Cancel").ghost().small().on_click(cx.listener(|this, _, window, cx| {
+                            modal_footer(t)
+                                .child(zbutton("params-cancel").pad_sm().label("Cancel").ghost().small().on_click(cx.listener(|this, _, window, cx| {
                                     this.params = None;
                                     this.refocus_root(window, cx);
                                     cx.notify();
                                 })))
-                                .child(Button::new("params-run").label("Run").primary().small().on_click(cx.listener(|this, _, window, cx| {
+                                .child(zbutton("params-run").pad_sm().label("Run").primary().small().on_click(cx.listener(|this, _, window, cx| {
                                     this.run_with_params(window, cx)
                                 }))),
                         ),

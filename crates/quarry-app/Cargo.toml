@@ -9,6 +9,15 @@ authors.workspace = true
 name = "quarry"
 path = "src/main.rs"
 
+# `cargo packager --release -f <format>` from the workspace root; output lands in dist/
+[package.metadata.packager]
+product-name = "Quarry"
+identifier = "ai.quarry.quarry"
+category = "DeveloperTool"
+before-packaging-command = "cargo build --release -p quarry-app"
+out-dir = "../../dist"
+binaries = [{ path = "quarry", main = true }]
+
 [dependencies]
 quarry-core = { workspace = true }
 quarry-sql = { workspace = true }

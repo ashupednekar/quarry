@@ -15,6 +15,75 @@ struct SavedTab {
     title: String,
     sql: String,
     file: Option<PathBuf>,
+    #[serde(default)]
+    connection_id: Option<String>,
+    /// A table tab: reopened once its connection is connected
+    #[serde(default)]
+    table: Option<SavedTable>,
+    #[serde(default)]
+    schema: Option<String>,
+    #[serde(default)]
+    row_limit: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SavedTable {
+    pub schema: String,
+    pub table: String,
+    pub view: crate::table_detail::TableView,
+}
+
+/// Where Save As starts, and what the sidebar's Queries section lists
+pub fn queries_dir() -> Option<PathBuf> {
+    Some(crate::connections::config_dir()?.join("queries"))
+}
+
+/// `.sql` files in the queries folder, by name. Re-read only when the folder's mtime changes
+/// (adding, removing or renaming a file bumps it), since the sidebar asks on every render.
+pub fn saved_queries() -> Vec<PathBuf> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Option<(std::time::SystemTime, Vec<PathBuf>)>> = const { std::cell::RefCell::new(None) };
+    }
+    let Some(dir) = queries_dir() else { return vec![] };
+    let Ok(mtime) = std::fs::metadata(&dir).and_then(|m| m.modified()) else { return vec![] };
+    CACHE.with_borrow_mut(|cache| {
+        if let Some((_, files)) = cache.as_ref().filter(|(at, _)| *at == mtime) {
+            return files.clone();
+        }
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|entries| entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "sql")).collect())
+            .unwrap_or_default();
+        files.sort();
+        *cache = Some((mtime, files.clone()));
+        files
+    })
+}
+
+fn recent_path() -> Option<PathBuf> {
+    Some(crate::connections::config_dir()?.join("recent_files.json"))
+}
+
+/// .sql files opened or saved outside the queries folder, newest first (shown under "Recent")
+pub fn recent_files() -> Vec<PathBuf> {
+    let list: Vec<PathBuf> = recent_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    list.into_iter().filter(|p| p.exists()).collect()
+}
+
+pub fn remember_file(path: &std::path::Path) {
+    let in_queries = queries_dir().is_some_and(|d| path.parent() == Some(d.as_path()));
+    if in_queries || path.extension().is_none_or(|e| e != "sql") {
+        return;
+    }
+    let mut list = recent_files();
+    list.retain(|p| p != path);
+    list.insert(0, path.to_path_buf());
+    list.truncate(10);
+    if let (Some(p), Ok(json)) = (recent_path(), serde_json::to_string_pretty(&list)) {
+        let _ = std::fs::write(p, json);
+    }
 }
 
 fn session_path() -> Option<PathBuf> {
@@ -53,7 +122,10 @@ impl QuarryWindow {
         match existing.filter(|_| !save_as) {
             Some(path) => self.write_query(ix, path, text, cx),
             None => {
-                let dir = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+                let dir = queries_dir()
+                    .filter(|d| std::fs::create_dir_all(d).is_ok())
+                    .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                    .unwrap_or_default();
                 let rx = cx.prompt_for_new_path(&dir, Some(&name));
                 cx.spawn_in(window, async move |this, cx| {
                     let Ok(Ok(Some(path))) = rx.await else { return };
@@ -68,6 +140,7 @@ impl QuarryWindow {
         if let Err(e) = std::fs::write(&path, &text) {
             return self.toast(format!("Couldn't save: {e}"), true, cx);
         }
+        remember_file(&path);
         if let Some(Tab::Query { file, title, saved_text, .. }) = self.state.tabs.get_mut(ix) {
             *title = path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
             *file = Some(path.clone());
@@ -87,6 +160,108 @@ impl QuarryWindow {
         cx.notify();
     }
 
+    /// Opens a saved query, or switches to its tab if it's already open
+    pub fn open_query_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.state.tabs.iter().position(|t| matches!(t, Tab::Query { file: Some(f), .. } if *f == path)) {
+            self.state.active_tab_index = ix;
+        } else {
+            match std::fs::read_to_string(&path) {
+                Ok(sql) => self.open_query_tab_with(&sql, Some(path), window, cx),
+                Err(e) => self.toast(format!("Couldn't open {}: {}", path.display(), e), true, cx),
+            }
+        }
+        cx.notify();
+    }
+
+    /// Rename… on a saved query: the sidebar row becomes a name box; Enter renames, Esc or clicking away cancels
+    pub fn rename_query_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let input = cx.new(|cx| gpui::component::input::InputState::new(window, cx).default_value(stem));
+        input.update(cx, |i, cx| {
+            i.focus(window, cx);
+            i.select_all(window, cx);
+        });
+        let sub = cx.subscribe_in(&input, window, |this, input, ev: &gpui::component::input::InputEvent, window, cx| {
+            use gpui::component::input::InputEvent;
+            match ev {
+                InputEvent::PressEnter { .. } => {
+                    let name = input.read(cx).value().trim().to_string();
+                    this.finish_rename(Some(name), window, cx)
+                }
+                InputEvent::Blur => this.finish_rename(None, window, cx),
+                _ => {}
+            }
+        });
+        self.tab_subscriptions.insert("rename-query".into(), sub);
+        self.state.renaming_query = Some((path, input));
+        cx.notify();
+    }
+
+    /// `name`: the new name without `.sql`; `None` cancels
+    pub fn finish_rename(&mut self, name: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((from, _)) = self.state.renaming_query.take() else { return };
+        self.tab_subscriptions.remove("rename-query");
+        self.refocus_root(window, cx);
+        cx.notify();
+        let Some(name) = name.filter(|n| !n.is_empty()) else { return };
+        if name.contains('/') {
+            return self.toast("A name can't contain /", true, cx);
+        }
+        let to = from.with_file_name(format!("{}.sql", name.trim_end_matches(".sql")));
+        if to == from {
+            return;
+        }
+        if to.exists() {
+            return self.toast(format!("{} already exists", to.display()), true, cx);
+        }
+        if let Err(e) = std::fs::rename(&from, &to) {
+            return self.toast(format!("Couldn't rename: {e}"), true, cx);
+        }
+        self.retarget_query_tabs(&from, Some(to), cx);
+    }
+
+    /// Duplicate: `name copy.sql`, `name copy 2.sql`, … next to the original
+    pub fn duplicate_query_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let dir = path.parent().map(PathBuf::from).unwrap_or_default();
+        let to = (1..)
+            .map(|n| dir.join(if n == 1 { format!("{stem} copy.sql") } else { format!("{stem} copy {n}.sql") }))
+            .find(|p| !p.exists())
+            .expect("unbounded");
+        if let Err(e) = std::fs::copy(path, &to) {
+            self.toast(format!("Couldn't duplicate: {e}"), true, cx);
+        }
+        cx.notify();
+    }
+
+    /// Move to Trash (via Finder, so it can be put back); an open tab keeps its text as an unsaved query
+    pub fn trash_query_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
+        let script = format!("tell application \"Finder\" to delete POSIX file {:?}", path.display().to_string());
+        match std::process::Command::new("osascript").arg("-e").arg(script).output() {
+            Ok(out) if out.status.success() => self.retarget_query_tabs(path, None, cx),
+            Ok(out) => self.toast(format!("Couldn't move to Trash: {}", String::from_utf8_lossy(&out.stderr).trim()), true, cx),
+            Err(e) => self.toast(format!("Couldn't move to Trash: {e}"), true, cx),
+        }
+    }
+
+    /// Points tabs open on `from` at `to` (rename), or detaches them (deleted)
+    fn retarget_query_tabs(&mut self, from: &std::path::Path, to: Option<PathBuf>, cx: &mut Context<Self>) {
+        for tab in &mut self.state.tabs {
+            if let Tab::Query { file, title, saved_text, .. } = tab {
+                if file.as_deref() != Some(from) {
+                    continue;
+                }
+                match &to {
+                    Some(to) => *title = to.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
+                    None => saved_text.clear(), // shows as unsaved
+                }
+                *file = to.clone();
+            }
+        }
+        self.save_session(cx);
+        cx.notify();
+    }
+
     /// ⌘O: open a .sql file in a new query tab
     pub fn open_sql_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rx = cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: true, prompt: Some("Open".into()) });
@@ -94,8 +269,17 @@ impl QuarryWindow {
             let Ok(Ok(Some(paths))) = rx.await else { return };
             this.update_in(cx, |this, window, cx| {
                 for path in paths {
+                    // A SQLite database opens as a connection, not as text
+                    if is_sqlite_db(&path) {
+                        let profile = crate::guess_profile(&path.to_string_lossy());
+                        this.connect_profile(profile, window, cx);
+                        continue;
+                    }
                     match std::fs::read_to_string(&path) {
-                        Ok(sql) => this.open_query_tab_with(&sql, Some(path), window, cx),
+                        Ok(sql) => {
+                            remember_file(&path);
+                            this.open_query_tab_with(&sql, Some(path), window, cx)
+                        }
                         Err(e) => this.toast(format!("Couldn't open {}: {}", path.display(), e), true, cx),
                     }
                 }
@@ -119,17 +303,60 @@ impl QuarryWindow {
             .tabs
             .iter()
             .filter_map(|t| match t {
-                Tab::Query { title, editor, file, .. } => {
-                    Some(SavedTab { title: title.clone(), sql: editor.read(cx).value().to_string(), file: file.clone() })
-                }
-                _ => None,
+                Tab::Query { title, editor, file, connection_id, schema, row_limit, .. } => Some(SavedTab {
+                    title: title.clone(),
+                    sql: editor.read(cx).value().to_string(),
+                    file: file.clone(),
+                    connection_id: connection_id.clone(),
+                    table: None,
+                    schema: schema.clone(),
+                    row_limit: *row_limit,
+                }),
+                Tab::Table { schema_name, table_name, connection, view, .. } => Some(SavedTab {
+                    title: table_name.clone(),
+                    sql: String::new(),
+                    file: None,
+                    connection_id: connection.as_ref().map(|c| c.id.clone()),
+                    table: Some(SavedTable { schema: schema_name.clone(), table: table_name.clone(), view: *view }),
+                    schema: None,
+                    row_limit: None,
+                }),
             })
+            // Still waiting for their connection: keep them for next time
+            .chain(self.pending_table_tabs.iter().map(|(conn, t)| SavedTab {
+                title: t.table.clone(),
+                sql: String::new(),
+                file: None,
+                connection_id: Some(conn.clone()),
+                table: Some(t.clone()),
+                schema: None,
+                row_limit: None,
+            }))
             .collect();
         let Some(path) = session_path() else { return };
         let _ = std::fs::create_dir_all(path.parent().expect("has parent"));
         if let Ok(json) = serde_json::to_string_pretty(&tabs) {
             let _ = std::fs::write(path, json);
         }
+    }
+
+    /// Table tabs from last session wait for their connection; once it's the active one, open them
+    pub fn reopen_pending_table_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(active) = self.state.active_connection.as_ref().map(|c| c.id.clone()) else { return };
+        if self.state.catalog.tables.is_empty() || !self.pending_table_tabs.iter().any(|(c, _)| *c == active) {
+            return;
+        }
+        let keep = self.state.active_tab_index;
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_table_tabs).into_iter().partition(|(c, _)| *c == active);
+        self.pending_table_tabs = later;
+        for (_, t) in now {
+            self.open_table_tab(&t.table, &t.schema, window, cx);
+            self.refresh_active_tab(window, cx);
+            if t.view != crate::table_detail::TableView::Data {
+                self.set_table_view(t.view, window, cx);
+            }
+        }
+        self.state.active_tab_index = keep.min(self.state.tabs.len().saturating_sub(1));
     }
 
     /// Reopens last session's query tabs (unsaved text included)
@@ -141,9 +368,18 @@ impl QuarryWindow {
             return;
         };
         for tab in saved {
+            if let Some(t) = tab.table {
+                if let Some(conn) = tab.connection_id {
+                    self.pending_table_tabs.push((conn, t));
+                }
+                continue;
+            }
             self.open_query_tab_with(&tab.sql, tab.file.clone(), window, cx);
-            if let Some(Tab::Query { title, saved_text, file, .. }) = self.state.tabs.last_mut() {
+            if let Some(Tab::Query { title, saved_text, file, connection_id, schema, row_limit, .. }) = self.state.tabs.last_mut() {
                 *title = tab.title;
+                *connection_id = tab.connection_id;
+                *schema = tab.schema;
+                *row_limit = tab.row_limit;
                 // A file-backed tab is "dirty" if its text differs from what's on disk
                 if let Some(disk) = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()) {
                     *saved_text = disk;
@@ -161,5 +397,26 @@ mod tests {
     #[test]
     fn formats_and_keeps_case() {
         assert_eq!(super::format_sql("select a,b from t where x=1"), "select\n  a,\n  b\nfrom\n  t\nwhere\n  x = 1");
+    }
+}
+
+/// Every SQLite 3 database starts with this 16-byte header
+fn is_sqlite_db(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut header)).is_ok() && &header == b"SQLite format 3\0"
+}
+
+#[cfg(test)]
+mod sqlite_header_tests {
+    #[test]
+    fn detects_sqlite_header() {
+        let dir = std::env::temp_dir();
+        let db = dir.join("quarry-header-test.db");
+        std::fs::write(&db, b"SQLite format 3\0rest-of-page").unwrap();
+        let sql = dir.join("quarry-header-test.sql");
+        std::fs::write(&sql, b"select 1;").unwrap();
+        assert!(super::is_sqlite_db(&db));
+        assert!(!super::is_sqlite_db(&sql));
     }
 }

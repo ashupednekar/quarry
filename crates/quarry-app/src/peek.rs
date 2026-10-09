@@ -6,7 +6,10 @@
 
 use crate::runtime::run_db;
 use crate::ui::*;
+use crate::pins::Pin;
 use crate::QuarryWindow;
+use gpui::component::button::ButtonVariants;
+use gpui::component::Sizable;
 use gpui::component::ActiveTheme;
 use gpui::*;
 use quarry_core::{QueryResult, TableSchema};
@@ -19,14 +22,24 @@ pub struct Peek {
     table: TableSchema,
     at: Point<Pixels>,
     rows: Option<Result<QueryResult, String>>,
+    /// The mouse moved onto the card: keep it open for its buttons
+    card_hovered: bool,
 }
 
 impl QuarryWindow {
     pub fn peek_hover(&mut self, schema: String, table: String, hovered: bool, window: &mut Window, cx: &mut Context<Self>) {
         if !hovered {
-            self.peek = None;
-            self.peek_task = None;
-            cx.notify();
+            // A moment's grace to move onto the card; it stays while hovered
+            self.peek_task = Some(cx.spawn_in(window, async move |this, cx| {
+                cx.background_executor().timer(std::time::Duration::from_millis(250)).await;
+                this.update(cx, |this, cx| {
+                    if !this.peek.as_ref().is_some_and(|p| p.card_hovered) {
+                        this.peek = None;
+                        cx.notify();
+                    }
+                })
+                .ok();
+            }));
             return;
         }
         let Some(tbl) = self.state.catalog.find_table(Some(&schema), &table).cloned() else { return };
@@ -37,7 +50,7 @@ impl QuarryWindow {
             this.update_in(cx, |this, window, cx| {
                 let Some(session) = this.state.session.clone() else { return };
                 let sql = format!("SELECT * FROM {} LIMIT {ROWS}", quarry_core::edits::qualified_name(&tbl.schema_name, &tbl.table_name));
-                this.peek = Some(Peek { table: tbl, at, rows: None });
+                this.peek = Some(Peek { table: tbl, at, rows: None, card_hovered: false });
                 cx.notify();
                 run_db(window, cx, async move { session.execute_quiet(&sql).await.map_err(|e| e.to_string()) }, |this, res, _, _| {
                     if let Some(p) = this.peek.as_mut() {
@@ -70,7 +83,26 @@ impl QuarryWindow {
                 }))
                 .into_any_element(),
         };
+        let (schema, table) = (p.table.schema_name.clone(), p.table.table_name.clone());
+        let action = |id: &'static str, label: &'static str, run: fn(&mut QuarryWindow, String, String, &mut Window, &mut Context<QuarryWindow>)| {
+            let (schema, table) = (schema.clone(), table.clone());
+            zbutton(id).pad_xs().label(label).ghost().xsmall().on_click(cx.listener(move |this, _, window, cx| {
+                this.peek = None;
+                this.peek_task = None;
+                run(this, schema.clone(), table.clone(), window, cx);
+                cx.notify();
+            }))
+        };
         let card = v_flex()
+            .id("peek-card")
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                match (this.peek.as_mut(), *hovered) {
+                    (Some(p), true) => p.card_hovered = true,
+                    (Some(_), false) => this.peek = None,
+                    _ => {}
+                }
+                cx.notify();
+            }))
             .w(px(520.0))
             .p_3()
             .gap_2()
@@ -109,11 +141,25 @@ impl QuarryWindow {
             )
             .child(div().h_px().bg(t.border))
             .child(rows)
-            .child(div().text_xs().text_color(t.text_muted).child(if cols.len() < p.table.columns.len() {
-                "Click to open the full table · more columns there"
-            } else {
-                "Click to open the full table"
-            }));
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(action("peek-open", "Open", |this, s, t, w, cx| this.open_pin(Pin::Table { schema: s, table: t }, w, cx)))
+                    .child(action("peek-structure", "Structure", |this, s, t, w, cx| {
+                        this.open_pin(Pin::Table { schema: s, table: t }, w, cx);
+                        this.set_table_view(crate::table_detail::TableView::Structure, w, cx);
+                    }))
+                    .child(action("peek-query", "New Query", |this, s, t, w, cx| {
+                        this.open_query_tab(&format!("SELECT * FROM {} LIMIT 100;", quarry_core::edits::qualified_name(&s, &t)), w, cx)
+                    }))
+                    .child(action("peek-copy", "Copy Name", |_, s, t, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(quarry_core::edits::qualified_name(&s, &t)))
+                    }))
+                    .child(div().flex_1())
+                    .when(cols.len() < p.table.columns.len(), |d| {
+                        d.child(div().text_xs().text_color(t.text_muted).child(format!("{} of {} columns shown", cols.len(), p.table.columns.len())))
+                    }),
+            );
         Some(deferred(anchored().position(point(p.at.x + px(200.0), p.at.y - px(12.0))).snap_to_window().child(card)).with_priority(2).into_any_element())
     }
 }

@@ -35,9 +35,10 @@ impl StatusBar {
                 .hover(|s| s.bg(theme.bg_hover))
                 .child(label)
         };
-        // Only shown once there's a result to describe
+        // Only shown once there's a result to describe; query tabs show it in their results header
         let stats = state
             .active_tab()
+            .filter(|t| !matches!(t, crate::state::Tab::Query { .. }))
             .and_then(|t| {
                 let rs = t.grid().read(cx).delegate();
                 let more = if rs.source.as_ref().is_some_and(|s| s.has_more) { "+" } else { "" };
@@ -52,6 +53,8 @@ impl StatusBar {
             .map(|(rows, time)| format!("{} · {}", rows, time));
 
         let conn_name = connection.map(|c| c.name.clone()).unwrap_or_else(|| "Not connected".to_string());
+        // Where it points, so two connections with similar names can't be confused
+        let address = connection.map(|c| crate::connections::display_address(c)).filter(|a| *a != conn_name);
         let env_tag = connection.map(|c| c.env).unwrap_or(Environment::Local);
         // Flow C: "PROD · READ-ONLY" is impossible to miss
         let env_label = match (env_tag, session.is_some_and(|s| s.is_read_only())) {
@@ -112,7 +115,8 @@ impl StatusBar {
                                     .text_xs()
                                     .text_color(theme.text_secondary)
                                     .child(conn_name),
-                            ),
+                            )
+                            .when_some(address, |d, a| d.child(div().text_xs().text_color(theme.text_muted).child(a))),
                     )
                     .when(connection.is_some(), |this| this.child(
                         // Environment Pill

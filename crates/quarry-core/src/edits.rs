@@ -189,4 +189,28 @@ mod tests {
         c.toggle_delete(key(1));
         assert!(c.is_empty());
     }
+
+    #[test]
+    fn total_count_tracks_all_mutation_types() {
+        let mut c = PendingChanges::new();
+        assert!(c.is_empty());
+        assert_eq!(c.total_count(), 0);
+
+        c.set_cell(key(1), "a", DbValue::Int(1), DbValue::Int(2));
+        assert_eq!(c.total_count(), 1);
+
+        c.row_inserts.push(PendingRowInsert {
+            temp_id: uuid::Uuid::new_v4().to_string(),
+            values: std::collections::HashMap::new(),
+        });
+        assert_eq!(c.total_count(), 2);
+
+        c.row_deletes.push(PendingRowDelete { pks: key(2) });
+        assert_eq!(c.total_count(), 3);
+        assert!(!c.is_empty());
+
+        c.clear();
+        assert!(c.is_empty());
+        assert_eq!(c.total_count(), 0);
+    }
 }

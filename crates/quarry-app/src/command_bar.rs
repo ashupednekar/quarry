@@ -24,6 +24,17 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Section the palette files this under
+    fn group(self) -> &'static str {
+        match self {
+            Kind::Sql => "Run",
+            Kind::Table | Kind::View => "Tables",
+            Kind::Recent => "Queries",
+            Kind::Connection => "Connections",
+            Kind::Command => "Commands",
+        }
+    }
+
     fn icon(self) -> IconName {
         match self {
             Kind::Sql => IconName::Play,
@@ -49,7 +60,8 @@ pub struct CommandItem {
 /// Commands: (id, title, shortcut)
 const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:new_query", "New Query", "⌘N"),
-    ("action:open_file", "Open SQL File…", "⌘O"),
+    ("action:open_file", "Open File…", "⌘O"),
+    ("action:maximize", "Maximize Editor (toggle)", "⇧⎋"),
     ("action:save_file", "Save Query", "⌘S"),
     ("action:reopen_tab", "Reopen Closed Tab", "⇧⌘T"),
     ("action:split", "Toggle Split View", "⌘\\"),
@@ -69,7 +81,10 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:toggle_sidebar", "Toggle Sidebar", "⌘B"),
     ("action:toggle_bottom", "Toggle Bottom Panel", "⌘J"),
     ("action:theme", "Toggle Light/Dark Theme", ""),
-    ("action:settings", "Open Settings", ""),
+    ("action:increase_font", "Zoom In (Increase Font Size)", "⌘+"),
+    ("action:decrease_font", "Zoom Out (Decrease Font Size)", "⌘-"),
+    ("action:reset_font", "Reset Zoom (Actual Size)", "⌘0"),
+    ("action:settings", "Settings…", "⌘,"),
     ("action:keymap", "Open Keymap", ""),
 ];
 
@@ -194,6 +209,18 @@ impl CommandBar {
                     kind: if t.is_view { Kind::View } else { Kind::Table },
                     hint: "↵",
                 });
+                // The table's other views, once its name is being typed
+                if !query.is_empty() {
+                    for (view, label) in [("structure", "Structure"), ("ddl", "DDL")] {
+                        push(fuzzy_score(query, &t.table_name), 20, CommandItem {
+                            id: format!("table-{view}:{}\u{1f}{}", t.schema_name, t.table_name),
+                            title: format!("{} · {label}", t.table_name),
+                            detail: format!("{} · {}", t.schema_name, conn),
+                            kind: if t.is_view { Kind::View } else { Kind::Table },
+                            hint: "↵",
+                        });
+                    }
+                }
             }
         }
 
@@ -207,6 +234,19 @@ impl CommandBar {
                     kind: Kind::Connection,
                     hint: "↵",
                 });
+            }
+            // Pinned queries on this connection
+            let pinned = state.active_connection.as_ref().and_then(|c| state.pins.get(&c.id)).cloned().unwrap_or_default();
+            for (i, pin) in pinned.iter().enumerate() {
+                if let crate::pins::Pin::Query { title, .. } = pin {
+                    push(if query.is_empty() { Some(800 - i as i32) } else { fuzzy_score(query, title) }, 15, CommandItem {
+                        id: format!("pin:{i}"),
+                        title: title.clone(),
+                        detail: "Pinned query".into(),
+                        kind: Kind::Recent,
+                        hint: "↵",
+                    });
+                }
             }
             // Recent queries, newest first; only once there's something typed or as the last recents
             let mut seen: Vec<&str> = Vec::new();
@@ -239,7 +279,15 @@ impl CommandBar {
         }
 
         scored.sort_by(|a, b| b.0.cmp(&a.0));
-        scored.into_iter().take(50).map(|(_, item)| item).collect()
+        // A short list reads at a glance; typing narrows it rather than scrolling
+        let limit = if query.is_empty() { 8 } else { 14 };
+        let mut items: Vec<CommandItem> = scored.into_iter().take(limit).map(|(_, item)| item).collect();
+        // Group by section, sections in order of their best match (stable, so ranking holds inside each)
+        let first_seen = |g: &str, items: &[CommandItem]| items.iter().position(|i| i.kind.group() == g).unwrap_or(usize::MAX);
+        let order: Vec<(String, usize)> = items.iter().map(|i| (i.kind.group().to_string(), first_seen(i.kind.group(), &items))).collect();
+        let mut keyed: Vec<(usize, CommandItem)> = order.into_iter().map(|(_, k)| k).zip(items.drain(..)).collect();
+        keyed.sort_by_key(|(k, _)| *k);
+        keyed.into_iter().map(|(_, i)| i).collect()
     }
 
     pub fn render<T: 'static>(
@@ -258,83 +306,74 @@ impl CommandBar {
         let items = Self::get_candidates(state, &typed);
         let selected_idx = state.command_bar_selected_index.min(items.len().saturating_sub(1));
 
-        div()
-            .id("command-bar-backdrop")
-            .absolute()
-            .inset_0()
-            .bg(rgba(0x00000060))
-            .flex()
-            .justify_center()
-            .items_start()
-            .pt(px(72.0))
-            .on_click(cx.listener(move |this, _, window, cx| on_close(this, window, cx)))
+        let kbd = |k: &'static str| {
+            div().px_1p5().h(px(18.0)).flex().items_center().rounded(px(4.0)).bg(theme.bg_surface).text_xs().text_color(theme.text_muted).child(k)
+        };
+        let mut list = v_flex().id("command-bar-scroll").overflow_y_scroll().px_2().py_2().gap_px();
+        if items.is_empty() {
+            list = list.child(div().px_3().py_6().text_sm().text_color(theme.text_muted).child("Nothing matches. Try > for commands or / for tables."));
+        }
+        let mut last_group = "";
+        for (idx, item) in items.iter().enumerate() {
+            let group = item.kind.group();
+            if group != last_group {
+                last_group = group;
+                list = list.child(div().px_3().pt(px(if idx == 0 { 4.0 } else { 12.0 })).pb_1().text_xs().font_weight(FontWeight::MEDIUM).text_color(theme.text_muted).child(group));
+            }
+            let is_selected = idx == selected_idx;
+            let item_id = item.id.clone();
+            list = list.child(
+                h_flex()
+                    .id(("cmd-item", idx))
+                    .h(px(36.0))
+                    .px_3()
+                    .gap_3()
+                    .rounded(px(6.0))
+                    .items_center()
+                    .cursor_pointer()
+                    .when(is_selected, |d| d.bg(theme.bg_selected))
+                    .when(!is_selected, |d| d.hover(|s| s.bg(theme.bg_hover)))
+                    .on_click(cx.listener(move |this, _, window, cx| on_select(this, item_id.clone(), window, cx)))
+                    .child(Icon::new(item.kind.icon()).small().text_color(if is_selected { theme.accent } else { theme.text_muted }))
+                    .child(div().max_w(px(380.0)).text_sm().text_color(theme.text_primary).truncate().child(item.title.clone()))
+                    .child(div().flex_1().min_w_0().text_xs().text_color(theme.text_muted).truncate().child(item.detail.clone()))
+                    .when(!item.hint.is_empty() && item.hint != "↵", |d| d.child(kbd(item.hint))),
+            );
+        }
+
+        modal_backdrop("command-bar-backdrop", cx.listener(move |this, _, window, cx| on_close(this, window, cx)))
             .child(
-                v_flex()
-                    .id("command-bar-card")
+                modal_card("command-bar-card", 640.0, theme)
                     .key_context("CommandBar")
-                    .w(px(620.0))
-                    .max_h(px(460.0))
-                    .rounded(px(10.0))
-                    .bg(theme.bg_sidebar)
-                    .border_1()
-                    .border_color(theme.border)
-                    .shadow_lg()
+                    .max_h(px(520.0))
                     .overflow_hidden()
-                    .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         h_flex()
-                            .h(px(44.0))
-                            .px_3()
-                            .gap_2()
+                            .h(px(52.0))
+                            .px_4()
+                            .gap_3()
                             .items_center()
                             .border_b_1()
                             .border_color(theme.border)
-                            .child(Icon::new(IconName::Search).small().text_color(theme.text_muted))
-                            .child(div().flex_1().child(Input::new(input).appearance(false))),
+                            .child(Icon::new(IconName::Search).text_color(theme.text_muted))
+                            .child(div().flex_1().text_base().child(Input::new(input).appearance(false))),
                     )
-                    .child(
-                        v_flex()
-                            .id("command-bar-scroll")
-                            .overflow_y_scroll()
-                            .p_1p5()
-                            .gap_px()
-                            .when(items.is_empty(), |this| {
-                                this.child(div().px_3().py_3().text_xs().text_color(theme.text_muted).child("Nothing matches. Try > for commands or / for tables."))
-                            })
-                            .children(items.iter().enumerate().map(|(idx, item)| {
-                                let is_selected = idx == selected_idx;
-                                let item_id = item.id.clone();
-                                h_flex()
-                                    .id(("cmd-item", idx))
-                                    .h(px(32.0))
-                                    .px_2p5()
-                                    .gap_2p5()
-                                    .rounded(px(6.0))
-                                    .items_center()
-                                    .cursor_pointer()
-                                    .when(is_selected, |d| d.bg(theme.bg_selected))
-                                    .when(!is_selected, |d| d.hover(|s| s.bg(theme.bg_hover)))
-                                    .on_click(cx.listener(move |this, _, window, cx| on_select(this, item_id.clone(), window, cx)))
-                                    .child(Icon::new(item.kind.icon()).xsmall().text_color(if is_selected { theme.accent } else { theme.text_muted }))
-                                    .child(div().max_w(px(360.0)).text_xs().text_color(theme.text_primary).truncate().child(item.title.clone()))
-                                    .child(div().flex_1().text_xs().text_color(theme.text_muted).truncate().child(item.detail.clone()))
-                                    .child(div().text_xs().text_color(theme.text_muted).child(item.hint))
-                            })),
-                    )
+                    .child(list.flex_1().min_h_0())
                     .child(
                         h_flex()
-                            .h(px(26.0))
-                            .px_3()
-                            .gap_3()
+                            .h(px(36.0))
+                            .px_4()
+                            .gap_4()
                             .items_center()
                             .border_t_1()
                             .border_color(theme.border)
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child("↑↓ to move · ↵ to open · ⌘↵ in split")
-                            .child("> commands")
-                            .child("/ tables")
-                            .child("or type SQL"),
+                            .child(h_flex().gap_1p5().items_center().child(kbd("↑↓")).child("navigate"))
+                            .child(h_flex().gap_1p5().items_center().child(kbd("↵")).child("open"))
+                            .child(h_flex().gap_1p5().items_center().child(kbd("esc")).child("close"))
+                            .child(div().flex_1())
+                            .child("> commands · / tables · or type SQL"),
                     ),
             )
             .into_any_element()

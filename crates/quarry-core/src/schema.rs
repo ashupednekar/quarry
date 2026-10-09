@@ -85,6 +85,40 @@ impl TableSchema {
     pub fn has_primary_key(&self) -> bool {
         !self.primary_keys.is_empty()
     }
+
+    /// `CREATE TABLE` rebuilt from the catalog, for databases that don't store their DDL (Postgres).
+    /// Covers columns, defaults, the primary key and foreign keys; not checks, uniques or comments.
+    pub fn create_sql(&self) -> String {
+        use crate::edits::{qualified_name, quote_ident};
+        let list = |cols: &[String]| cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+        let mut lines: Vec<String> = self
+            .columns
+            .iter()
+            .map(|c| {
+                let mut l = format!("  {} {}", quote_ident(&c.name), c.raw_type_name.to_lowercase());
+                if !c.is_nullable {
+                    l.push_str(" NOT NULL");
+                }
+                if let Some(d) = &c.default_value {
+                    l.push_str(&format!(" DEFAULT {d}"));
+                }
+                l
+            })
+            .collect();
+        if !self.primary_keys.is_empty() {
+            lines.push(format!("  PRIMARY KEY ({})", list(&self.primary_keys)));
+        }
+        for fk in &self.foreign_keys {
+            let schema = if fk.to_schema.is_empty() { &self.schema_name } else { &fk.to_schema };
+            lines.push(format!(
+                "  FOREIGN KEY ({}) REFERENCES {} ({})",
+                quote_ident(&fk.from_column),
+                qualified_name(schema, &fk.to_table),
+                quote_ident(&fk.to_column)
+            ));
+        }
+        format!("CREATE TABLE {} (\n{}\n);", qualified_name(&self.schema_name, &self.table_name), lines.join(",\n"))
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -102,5 +136,35 @@ impl SchemaCatalog {
                 t.table_name.eq_ignore_ascii_case(table_name)
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rebuilds_create_table() {
+        let col = |n: &str, nullable, default: Option<&str>| ColumnSchema {
+            name: n.into(),
+            data_type: ColumnType::Integer,
+            raw_type_name: "INTEGER".into(),
+            is_nullable: nullable,
+            is_primary_key: n == "id",
+            default_value: default.map(Into::into),
+            ordinal_position: 1,
+        };
+        let t = TableSchema {
+            schema_name: "public".into(),
+            table_name: "orders".into(),
+            is_view: false,
+            columns: vec![col("id", false, None), col("customer_id", true, Some("0"))],
+            primary_keys: vec!["id".into()],
+            foreign_keys: vec![ForeignKeyRef { from_column: "customer_id".into(), to_schema: String::new(), to_table: "customers".into(), to_column: "id".into() }],
+        };
+        assert_eq!(
+            t.create_sql(),
+            "CREATE TABLE \"public\".\"orders\" (\n  \"id\" integer NOT NULL,\n  \"customer_id\" integer DEFAULT 0,\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"customer_id\") REFERENCES \"public\".\"customers\" (\"id\")\n);"
+        );
     }
 }

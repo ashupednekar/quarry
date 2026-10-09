@@ -10,11 +10,12 @@ use crate::theme::Theme;
 use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::assets::IconName;
-use gpui::component::button::{Button, ButtonVariants};
+use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Input, InputEvent, InputState};
 use gpui::component::table::TableState;
 use gpui::component::{Disableable, Sizable};
 use gpui::*;
+use quarry_core::session::DatabaseSession;
 use quarry_core::{DbError, DbValue, QueryResult};
 use std::time::Duration;
 
@@ -24,10 +25,11 @@ pub enum ServerView {
     Statements,
     Database,
     Locks,
+    Logs,
 }
 
 impl ServerView {
-    const ALL: [ServerView; 4] = [ServerView::Activity, ServerView::Statements, ServerView::Database, ServerView::Locks];
+    const ALL: [ServerView; 5] = [ServerView::Activity, ServerView::Statements, ServerView::Database, ServerView::Locks, ServerView::Logs];
 
     fn label(self) -> &'static str {
         match self {
@@ -35,6 +37,7 @@ impl ServerView {
             ServerView::Statements => "Statements",
             ServerView::Database => "Database",
             ServerView::Locks => "Locks",
+            ServerView::Logs => "Logs",
         }
     }
 
@@ -60,12 +63,18 @@ impl ServerView {
                  left(a.query, 300) AS query FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid) \
                  WHERE l.pid <> pg_backend_pid() ORDER BY l.granted, l.pid"
             }
+            // Read in Rust (`read_logs`): the file, how far back, and the prefix all vary
+            ServerView::Logs => "",
         }
     }
 }
 
 const STATEMENTS_HELP: &str = "pg_stat_statements isn't enabled on this server. Add it to shared_preload_libraries \
 in postgresql.conf, restart Postgres, then run: CREATE EXTENSION pg_stat_statements;";
+const LOGS_OFF_HELP: &str = "This server doesn't write log files (logging_collector is off). Set logging_collector = on \
+in postgresql.conf and restart Postgres. Managed services (RDS, Cloud SQL, Supabase…) show logs in their own console.";
+const LOGS_PERMISSION_HELP: &str = "Reading server logs needs a superuser, or a role with pg_monitor and pg_read_server_files: \
+GRANT pg_monitor, pg_read_server_files TO your_role;";
 const SQLITE_HELP: &str = "SQLite runs inside Quarry, so there's no server to monitor. The Activity Log shows everything Quarry ran.";
 
 pub struct PanelState {
@@ -90,6 +99,10 @@ pub struct PanelState {
     server_raw: Option<QueryResult>,
     server_message: Option<String>,
     server_loading: bool,
+    /// Logs: files in the log directory (newest first), the one shown (`None` = newest), and how many 64 KB pages back
+    log_files: Vec<String>,
+    log_file: Option<String>,
+    log_pages: u32,
     poll: Option<Task<()>>,
     /// (pid, terminate) awaiting confirmation (L5)
     pub confirm_kill: Option<(i64, bool)>,
@@ -108,6 +121,39 @@ impl PanelState {
         let server_filter = input("Filter rows", cx);
 
         let subs = vec![
+            cx.subscribe_in(&history_grid, window, |_, grid, ev: &gpui::component::table::TableEvent, _, cx| {
+                match *ev {
+                    gpui::component::table::TableEvent::SelectCell(r, c) => {
+                        grid.update(cx, |t, _| t.delegate_mut().selected_cell = Some((r, c)));
+                    }
+                    gpui::component::table::TableEvent::ClearSelection => {
+                        grid.update(cx, |t, _| t.delegate_mut().selected_cell = None);
+                    }
+                    _ => {}
+                }
+            }),
+            cx.subscribe_in(&log_grid, window, |_, grid, ev: &gpui::component::table::TableEvent, _, cx| {
+                match *ev {
+                    gpui::component::table::TableEvent::SelectCell(r, c) => {
+                        grid.update(cx, |t, _| t.delegate_mut().selected_cell = Some((r, c)));
+                    }
+                    gpui::component::table::TableEvent::ClearSelection => {
+                        grid.update(cx, |t, _| t.delegate_mut().selected_cell = None);
+                    }
+                    _ => {}
+                }
+            }),
+            cx.subscribe_in(&server_grid, window, |_, grid, ev: &gpui::component::table::TableEvent, _, cx| {
+                match *ev {
+                    gpui::component::table::TableEvent::SelectCell(r, c) => {
+                        grid.update(cx, |t, _| t.delegate_mut().selected_cell = Some((r, c)));
+                    }
+                    gpui::component::table::TableEvent::ClearSelection => {
+                        grid.update(cx, |t, _| t.delegate_mut().selected_cell = None);
+                    }
+                    _ => {}
+                }
+            }),
             // Double-click a history entry to open it in a new query tab
             cx.subscribe_in(&history_grid, window, |this, _, ev: &gpui::component::table::TableEvent, window, cx| {
                 if let gpui::component::table::TableEvent::DoubleClickedCell(row, _) = *ev {
@@ -149,11 +195,47 @@ impl PanelState {
             server_raw: None,
             server_message: None,
             server_loading: false,
+            log_files: Vec::new(),
+            log_file: None,
+            log_pages: 1,
             poll: None,
             confirm_kill: None,
             _subs: subs,
         }
     }
+}
+
+/// The chosen (or newest) log file's last `pages` × 64 KB, newest line first, split by the server's
+/// `log_line_prefix`. Also returns the log directory's files, newest first.
+async fn read_logs(session: &dyn DatabaseSession, file: Option<String>, pages: u32) -> Result<(QueryResult, Vec<String>), DbError> {
+    let text = |r: &QueryResult| r.rows.iter().filter_map(|row| row.first().map(|v| v.to_display_string())).collect::<Vec<_>>();
+    let files = text(&session.execute_quiet("SELECT name FROM pg_ls_logdir() ORDER BY modification DESC").await?);
+    let Some(name) = file.filter(|f| files.contains(f)).or_else(|| files.first().cloned()) else {
+        return Ok((result(&["time", "pid", "level", "message"], vec![]), files));
+    };
+    let quoted = name.replace('\'', "''");
+    let bytes = 65536 * pages as i64;
+    let sql = format!(
+        "SELECT pg_read_file(current_setting('log_directory') || '/{quoted}', \
+         greatest((pg_stat_file(current_setting('log_directory') || '/{quoted}')).size - {bytes}, 0), {bytes}), \
+         current_setting('log_line_prefix')"
+    );
+    let r = session.execute_quiet(&sql).await?;
+    let row = r.rows.first();
+    let (body, prefix) = (
+        row.and_then(|r| r.first()).map(|v| v.to_display_string()).unwrap_or_default(),
+        row.and_then(|r| r.get(1)).map(|v| v.to_display_string()).unwrap_or_default(),
+    );
+    let rows = body
+        .lines()
+        .rev()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let (t, p, lvl, m) = crate::server_logs::parse_line(&prefix, l);
+            vec![DbValue::Text(t), DbValue::Text(p), DbValue::Text(lvl), DbValue::Text(m)]
+        })
+        .collect();
+    Ok((result(&["time", "pid", "level", "message"], rows), files))
 }
 
 fn result(columns: &[&str], rows: Vec<Vec<DbValue>>) -> QueryResult {
@@ -303,6 +385,7 @@ impl QuarryWindow {
         }
         self.panel.server_loading = true;
         let view = self.panel.server_view;
+        let (log_file, log_pages) = (self.panel.log_file.clone(), self.panel.log_pages);
         // L3a: say what's missing instead of failing silently
         let fut = async move {
             if view == ServerView::Statements {
@@ -311,18 +394,31 @@ impl QuarryWindow {
                     return Ok(Err(STATEMENTS_HELP));
                 }
             }
-            session.execute_quiet(view.sql()).await.map(Ok)
+            if view == ServerView::Logs {
+                let on = session.execute_quiet("SELECT current_setting('logging_collector')").await?;
+                if on.rows.first().and_then(|r| r.first()).is_some_and(|v| v.to_display_string() != "on") {
+                    return Ok(Err(LOGS_OFF_HELP));
+                }
+                return match read_logs(session.as_ref(), log_file, log_pages).await {
+                    Err(e) if e.to_string().contains("permission denied") => Ok(Err(LOGS_PERMISSION_HELP)),
+                    other => other.map(Ok),
+                };
+            }
+            session.execute_quiet(view.sql()).await.map(|r| Ok((r, Vec::new())))
         };
-        run_db(window, cx, fut, move |this, res: Result<Result<QueryResult, &'static str>, DbError>, _, cx| {
+        run_db(window, cx, fut, move |this, res: Result<Result<(QueryResult, Vec<String>), &'static str>, DbError>, _, cx| {
             let p = &mut this.panel;
             p.server_loading = false;
             if p.server_view != view {
                 return; // switched views while loading
             }
             match res {
-                Ok(Ok(r)) => {
+                Ok(Ok((r, files))) => {
                     p.server_raw = Some(r);
                     p.server_message = None;
+                    if !files.is_empty() {
+                        p.log_files = files;
+                    }
                 }
                 Ok(Err(help)) => {
                     p.server_raw = None;
@@ -348,7 +444,25 @@ impl QuarryWindow {
             r
         });
         set_grid(&p.server_grid, filtered.unwrap_or_else(|| result(&[], vec![])), cx);
+        let level = (p.server_view == ServerView::Logs).then_some(2);
+        p.server_grid.update(cx, |t, _| t.delegate_mut().level_column = level);
         cx.notify();
+    }
+
+    fn open_log_file_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.panel.log_file.clone().or_else(|| self.panel.log_files.first().cloned());
+        let choices = self.panel.log_files.iter().map(|f| (f.clone(), current.as_ref() == Some(f), f.clone())).collect();
+        self.open_choice_menu(
+            choices,
+            |this, file, _| {
+                this.panel.log_file = Some(file);
+                this.panel.log_pages = 1;
+                this.panel.server_raw = None;
+                this.panel.poll = None; // refreshes right away with the new file
+            },
+            window,
+            cx,
+        );
     }
 
     fn set_server_view(&mut self, view: ServerView, window: &mut Window, cx: &mut Context<Self>) {
@@ -433,7 +547,7 @@ impl QuarryWindow {
                 .child(label)
         };
         let toggle = |id: &'static str, label: &'static str, on: bool| {
-            Button::new(id).label(label).xsmall().map(|b| if on { b.primary() } else { b.ghost() })
+            zbutton(id).pad_xs().label(label).xsmall().map(|b| if on { b.primary() } else { b.ghost() })
         };
         let grid_view = |grid: &Entity<TableState<ResultSet>>, cx: &Context<Self>| {
             DataGrid::render(grid, theme, cx, |_, _, _| {}, |_, _, _| {}, |_, _, _| {}, |_, _, _| {}, |_, _, _, _| {})
@@ -458,8 +572,8 @@ impl QuarryWindow {
                     .min_h_0()
                     .child(
                         h_flex()
-                            .h(px(32.0))
-                            .px_2()
+                            .h(px(BAR_H))
+                            .px_3()
                             .gap_1()
                             .items_center()
                             .border_b_1()
@@ -477,12 +591,12 @@ impl QuarryWindow {
                             )
                             .child(div().flex_1())
                             .child(div().text_xs().text_color(theme.text_muted).child("Double-click to open"))
-                            .child(Button::new("hist-open").label("Open").ghost().xsmall().on_click(cx.listener(|this, _, window, cx| {
+                            .child(zbutton("hist-open").pad_xs().label("Open").ghost().xsmall().on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(row) = this.selected_history_row(cx) {
                                     this.open_history_row(row, false, window, cx);
                                 }
                             })))
-                            .child(Button::new("hist-run").icon(IconName::Play).label("Run").ghost().xsmall().on_click(cx.listener(
+                            .child(zbutton("hist-run").pad_xs().icon(IconName::Play).label("Run").ghost().xsmall().on_click(cx.listener(
                                 |this, _, window, cx| {
                                     if let Some(row) = this.selected_history_row(cx) {
                                         this.open_history_row(row, true, window, cx);
@@ -500,8 +614,8 @@ impl QuarryWindow {
                     .min_h_0()
                     .child(
                         h_flex()
-                            .h(px(32.0))
-                            .px_2()
+                            .h(px(BAR_H))
+                            .px_3()
                             .gap_1()
                             .items_center()
                             .border_b_1()
@@ -509,14 +623,14 @@ impl QuarryWindow {
                             .child(div().w(px(240.0)).child(Input::new(&p.log_filter).xsmall().cleanable(true)))
                             .child(div().flex_1())
                             .child(div().text_xs().text_color(theme.text_muted).child("Everything Quarry ran, newest first"))
-                            .child(Button::new("log-copy").icon(IconName::Copy).label("Copy").ghost().xsmall().on_click(cx.listener(
+                            .child(zbutton("log-copy").pad_xs().icon(IconName::Copy).label("Copy").ghost().xsmall().on_click(cx.listener(
                                 |this, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(this.panel.log_csv.clone()));
                                     this.state.messages.push("Copied the activity log (CSV) to the clipboard.".into());
                                 },
                             )))
                             .child(
-                                Button::new("log-export")
+                                zbutton("log-export").pad_xs()
                                     .icon(IconName::Download)
                                     .label("Export CSV")
                                     .ghost()
@@ -535,8 +649,8 @@ impl QuarryWindow {
                     .min_h_0()
                     .child(
                         h_flex()
-                            .h(px(32.0))
-                            .px_2()
+                            .h(px(BAR_H))
+                            .px_3()
                             .gap_1()
                             .items_center()
                             .border_b_1()
@@ -557,7 +671,7 @@ impl QuarryWindow {
                                     }))
                             }))
                             .child(
-                                Button::new("poll-pause")
+                                zbutton("poll-pause")
                                     .icon(if p.server_interval.is_some() { IconName::Pause } else { IconName::Play })
                                     .ghost()
                                     .xsmall()
@@ -568,22 +682,48 @@ impl QuarryWindow {
                                     })),
                             )
                             .child(
-                                Button::new("server-refresh")
+                                zbutton("server-refresh")
                                     .icon(IconName::RefreshCw)
                                     .ghost()
                                     .xsmall()
                                     .tooltip("Refresh now")
                                     .on_click(cx.listener(|this, _, window, cx| this.refresh_server(window, cx))),
                             )
+                            .when(p.server_view == ServerView::Logs, |this| {
+                                let file = p.log_file.clone().or_else(|| p.log_files.first().cloned()).unwrap_or_else(|| "Newest log".into());
+                                this.child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
+                                    .child(
+                                        zbutton("log-file")
+                                            .pad_xs()
+                                            .icon(IconName::FileCode)
+                                            .label(file)
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Pick a log file")
+                                            .on_click(cx.listener(|this, _, window, cx| this.open_log_file_menu(window, cx))),
+                                    )
+                                    .child(
+                                        zbutton("log-older")
+                                            .pad_xs()
+                                            .label(format!("Load older ({} KB)", p.log_pages * 64))
+                                            .ghost()
+                                            .xsmall()
+                                            .tooltip("Read another 64 KB further back")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.panel.log_pages += 1;
+                                                this.refresh_server(window, cx);
+                                            })),
+                                    )
+                            })
                             .when(p.server_view == ServerView::Activity, |this| {
                                 this.child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
-                                    .child(Button::new("kill-cancel").label("Cancel query").ghost().xsmall().disabled(pid.is_none()).on_click(
+                                    .child(zbutton("kill-cancel").pad_xs().label("Cancel query").ghost().xsmall().disabled(pid.is_none()).on_click(
                                         cx.listener(move |this, _, _, cx| {
                                             this.panel.confirm_kill = pid.map(|p| (p, false));
                                             cx.notify();
                                         }),
                                     ))
-                                    .child(Button::new("kill-terminate").label("Terminate").ghost().xsmall().disabled(pid.is_none()).on_click(
+                                    .child(zbutton("kill-terminate").pad_xs().label("Terminate").ghost().xsmall().disabled(pid.is_none()).on_click(
                                         cx.listener(move |this, _, _, cx| {
                                             this.panel.confirm_kill = pid.map(|p| (p, true));
                                             cx.notify();
@@ -606,8 +746,8 @@ impl QuarryWindow {
             .border_color(theme.border)
             .child(
                 h_flex()
-                    .h(px(30.0))
-                    .px_2()
+                    .h(px(BAR_H))
+                    .px_3()
                     .gap_1()
                     .items_center()
                     .border_b_1()
@@ -618,7 +758,7 @@ impl QuarryWindow {
                     .child(tab("Server", BottomPanelTab::Server))
                     .child(div().flex_1())
                     .child(
-                        Button::new("close-bottom-panel")
+                        zbutton("close-bottom-panel")
                             .icon(IconName::X)
                             .ghost()
                             .xsmall()
@@ -643,40 +783,22 @@ impl QuarryWindow {
             ("Cancel query?", format!("The query running on backend {pid} will be stopped. The session stays connected."), "Cancel query")
         };
         Some(
-            div()
-                .id("kill-backdrop")
-                .absolute()
-                .inset_0()
-                .bg(rgba(0x00000080))
-                .flex()
-                .justify_center()
-                .items_center()
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.panel.confirm_kill = None;
-                    cx.notify();
-                }))
+            modal_backdrop("kill-backdrop", dismiss_on_click)
                 .child(
-                    v_flex()
-                        .id("kill-card")
-                        .w(px(380.0))
+                    modal_card("kill-card", 380.0, theme)
                         .p_4()
                         .gap_3()
-                        .rounded(px(8.0))
-                        .bg(theme.bg_sidebar)
-                        .border_1()
-                        .border_color(theme.border)
-                        .on_click(|_, _, cx| cx.stop_propagation())
                         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(theme.text_primary).child(title))
                         .child(div().text_xs().text_color(theme.text_secondary).child(detail))
                         .child(
                             h_flex()
                                 .justify_end()
                                 .gap_2()
-                                .child(Button::new("kill-no").label("Keep it").ghost().small().on_click(cx.listener(|this, _, _, cx| {
+                                .child(zbutton("kill-no").pad_sm().label("Keep it").ghost().small().on_click(cx.listener(|this, _, _, cx| {
                                     this.panel.confirm_kill = None;
                                     cx.notify();
                                 })))
-                                .child(Button::new("kill-yes").label(action).danger().small().on_click(cx.listener(
+                                .child(zbutton("kill-yes").pad_sm().label(action).danger().small().on_click(cx.listener(
                                     |this, _, window, cx| this.kill_backend(window, cx),
                                 ))),
                         ),
