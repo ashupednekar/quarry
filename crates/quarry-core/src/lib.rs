@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+pub mod conformance;
 pub mod dialect;
 pub mod driver;
 pub mod dump;

@@ -137,3 +137,12 @@ fn postgres_driver_extras() {
     }
     rt.block_on(s.execute("DROP TABLE extras_t")).unwrap();
 }
+
+/// The shared driver contract (quarry_core::conformance)
+#[test]
+fn postgres_conforms() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    rt.block_on(quarry_core::conformance::check(&s, "public"));
+}

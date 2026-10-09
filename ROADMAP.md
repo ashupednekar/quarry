@@ -60,15 +60,15 @@ pub fn drivers() -> &'static [&'static dyn Driver] { &[
 
 Saved profiles change from `kind + path_or_url` to `driver: String, params: BTreeMap<String, String>`. A one-time migration in `connections.rs` converts old profiles. Passwords stay in the keychain under any field marked `secret`.
 
-### Steps (one PR each; the app keeps working after every step)
-1. **Dialect.** Add the trait and implement it for Postgres and SQLite. Route `quote_ident`, `to_sql_literal`, `with_limit`, EXPLAIN, `search_path`, timeout, and the import types through `session.dialect()`.
-2. **Optional sub-traits.** Move the `pg_*` SQL out of `bottom_panel.rs`, `table_detail.rs` and `export_dialog.rs` into the drivers. The UI checks `session.monitor().is_some()` instead of the database type.
-3. **Registry and profiles.** Build the connect form from `fields()`, write the profile migration, make SSH generic through `tunnel_target`, and remove `ConnectionTargetKind`.
-4. **Dialect-aware SQL text.** Parameterise the splitter, params parser and completer with `SplitRules` and the dialect keywords.
-5. **Conformance suite.** Generalise `test_sqlite_in_memory_flow` into `driver::conformance(session)`, covering the type round-trip, edit conflicts and transactions. CI runs it against Docker images.
-6. **`DRIVERS.md`.** Write the contributor guide plus a capability table.
+### Status
+- [x] `Dialect`: SQL built through `session.dialect()`
+- [x] Optional capabilities: `Monitor`, `Dumper`, `table_info`
+- [x] Driver registry; profiles store a driver id (old files still load); drivers are cargo features
+- [ ] Dialect-aware splitter/params/completer: built with the first driver that needs it (MySQL backticks, Oracle `/`)
+- [x] Conformance suite: `quarry_core::conformance::check`, passing for Postgres and SQLite
+- [x] `DRIVERS.md`
 
-**Done when:** `grep -rn 'postgres\|sqlite' crates/quarry-app/src` finds only the demo database seed.
+Left in the app by design: the SQLite demo playground, and treating a dropped `.db` file as SQLite.
 
 ## 2. Databases
 
