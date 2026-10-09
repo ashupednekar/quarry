@@ -7,7 +7,6 @@ use crate::pins::Pin;
 use crate::QuarryWindow;
 use gpui::component::menu::{PopupMenu, PopupMenuItem};
 use gpui::*;
-use quarry_core::edits::qualified_name;
 
 #[derive(Clone)]
 pub enum DbObject {
@@ -109,7 +108,7 @@ impl QuarryWindow {
                 }));
                 items.push(("New Query on Table", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_query_tab(&format!("SELECT * FROM {} LIMIT 100;", qualified_name(schema, table)), w, cx)
+                        this.open_query_tab(&format!("{};", this.state.select_rows_sql(schema, table, 100)), w, cx)
                     }
                 }));
                 items.push(("Export…", |this, o, w, cx| {
@@ -121,12 +120,12 @@ impl QuarryWindow {
                 // Destructive statements open in a query tab to review and run, so the prod check still applies
                 items.push(("Truncate…", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_query_tab(&format!("-- Deletes every row\nTRUNCATE TABLE {};", qualified_name(schema, table)), w, cx)
+                        this.open_query_tab(&format!("-- Deletes every row\nTRUNCATE TABLE {};", this.state.dialect().qualified(schema, table)), w, cx)
                     }
                 }));
                 items.push(("Drop…", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_query_tab(&format!("-- Deletes the table and its data\nDROP TABLE {};", qualified_name(schema, table)), w, cx)
+                        this.open_query_tab(&format!("-- Deletes the table and its data\nDROP TABLE {};", this.state.dialect().qualified(schema, table)), w, cx)
                     }
                 }));
                 items.push((if pinned { "Unpin" } else { "Pin" }, |this, o, _, cx| {
@@ -163,11 +162,11 @@ impl QuarryWindow {
                 }));
             }
         }
-        items.push((if matches!(obj, DbObject::Query(_)) { "Copy Path" } else { "Copy Name" }, |_, o, _, cx| {
+        items.push((if matches!(obj, DbObject::Query(_)) { "Copy Path" } else { "Copy Name" }, |this, o, _, cx| {
             let text = match o {
                 DbObject::Connection { name, .. } => name.clone(),
                 DbObject::Schema(s) => s.clone(),
-                DbObject::Table { schema, table } => qualified_name(schema, table),
+                DbObject::Table { schema, table } => this.state.dialect().qualified(schema, table),
                 DbObject::Query(p) => p.display().to_string(),
             };
             cx.write_to_clipboard(ClipboardItem::new_string(text));

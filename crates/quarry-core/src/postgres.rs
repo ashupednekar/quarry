@@ -223,7 +223,7 @@ impl DatabaseSession for PostgresSession {
         if self.read_only {
             return Err(DbError::ReadOnlyViolation);
         }
-        let statements = changes.generate_sql(table_name);
+        let statements = changes.generate_sql(table_name, self.dialect());
         if statements.is_empty() {
             return Ok(0);
         }
@@ -273,6 +273,10 @@ impl DatabaseSession for PostgresSession {
 
     fn tx(&self) -> &TxState {
         &self.tx
+    }
+
+    fn dialect(&self) -> &'static dyn crate::Dialect {
+        &crate::dialect::Postgres
     }
 }
 

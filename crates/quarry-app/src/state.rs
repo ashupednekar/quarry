@@ -149,6 +149,8 @@ pub struct AppState {
     pub catalog: SchemaCatalog,
     /// The same catalog, shared with the editors' autocomplete
     pub completion_catalog: crate::completion::SharedCatalog,
+    /// The active session's dialect, read by editor code actions
+    pub completion_dialect: crate::completion::SharedDialect,
     /// Bumped on every catalog change; editors are re-linted when it moves past `linted_gen`
     pub catalog_gen: u64,
     pub linted_gen: u64,
@@ -216,6 +218,7 @@ impl AppState {
             tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
             completion_catalog: Default::default(),
+            completion_dialect: std::rc::Rc::new(std::cell::Cell::new(&quarry_core::dialect::Ansi)),
             catalog_gen: 0,
             linted_gen: 0,
             expanded_schemas: HashSet::new(),
@@ -329,7 +332,7 @@ impl AppState {
             }
 
             self.open_sessions.insert(profile.id.clone(), (session.clone(), self.catalog.clone()));
-            self.session = Some(session);
+            self.set_session(Some(session));
             self.active_connection = Some(profile);
 
             self.messages.push("Connected to local SQLite playground. Seeded users, products, orders.".to_string());
@@ -356,7 +359,7 @@ impl AppState {
         self.open_sessions.remove(id);
         self.tunnels.remove(id);
         if self.active_connection.as_ref().is_some_and(|c| c.id == id) {
-            self.session = None;
+            self.set_session(None);
             self.active_connection = None;
             self.set_catalog(SchemaCatalog::default());
         }
@@ -376,7 +379,7 @@ impl AppState {
     pub fn activate_open_session(&mut self, id: &str) -> bool {
         let Some((session, catalog)) = self.open_sessions.get(id).cloned() else { return false };
         let Some(profile) = self.saved_connections.iter().find(|c| c.id == id).cloned() else { return false };
-        self.session = Some(session);
+        self.set_session(Some(session));
         self.set_catalog(catalog);
         self.active_connection = Some(profile);
         true
@@ -395,6 +398,22 @@ impl AppState {
         };
         crate::history::append(&item);
         self.history.push(item);
+    }
+
+    pub fn set_session(&mut self, session: Option<Arc<dyn DatabaseSession>>) {
+        self.completion_dialect.set(session.as_ref().map_or(&quarry_core::dialect::Ansi, |s| s.dialect()));
+        self.session = session;
+    }
+
+    /// The SQL dialect of the active connection (ANSI when disconnected)
+    pub fn dialect(&self) -> &'static dyn quarry_core::Dialect {
+        self.completion_dialect.get()
+    }
+
+    /// `SELECT * FROM <table>` limited to `rows`, in the active connection's dialect
+    pub fn select_rows_sql(&self, schema: &str, table: &str, rows: u64) -> String {
+        let d = self.dialect();
+        format!("SELECT * FROM {} {}", d.qualified(schema, table), d.limit_clause(rows, 0))
     }
 
     pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
@@ -449,7 +468,7 @@ impl AppState {
         if let Some(t) = tunnel {
             self.tunnels.insert(profile.id.clone(), t);
         }
-        self.session = Some(session);
+        self.set_session(Some(session));
         self.set_catalog(catalog);
         if !self.saved_connections.iter().any(|c| c.id == profile.id) {
             self.saved_connections.push(profile.clone());
@@ -493,12 +512,9 @@ pub async fn open_session(
     };
     let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(session, profile.name.clone(), log));
     if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
-        let sql = match profile.kind {
-            ConnectionTargetKind::Postgres => format!("SET statement_timeout = {}", secs * 1000),
-            // SQLite can't time out a single statement; the closest is how long to wait on a lock
-            _ => format!("PRAGMA busy_timeout = {}", secs * 1000),
-        };
-        session.execute(&sql).await.map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
+        if let Some(sql) = session.dialect().statement_timeout(secs) {
+            session.execute(&sql).await.map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
+        }
     }
     let catalog = session.introspect().await.map_err(|e| format!("Introspection error: {}", e))?;
     Ok((session, catalog, tunnel))

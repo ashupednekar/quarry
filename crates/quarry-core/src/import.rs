@@ -4,7 +4,8 @@
 
 //! CSV / JSON import (X4-X8): decode, parse, infer types, and load in one transaction.
 
-use crate::edits::quote_ident;
+use crate::dialect::Dialect;
+use crate::schema::ColumnType;
 use crate::session::DatabaseSession;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -128,26 +129,26 @@ pub fn parse_json(text: &str) -> Result<ImportData, String> {
     Ok(ImportData { headers, rows })
 }
 
-/// Guesses a column type from its values (X6)
-pub fn infer_types(data: &ImportData, postgres: bool) -> Vec<String> {
+/// Guesses a column type from its values (X6), named in the target database's dialect
+pub fn infer_types(data: &ImportData, d: &dyn Dialect) -> Vec<String> {
     (0..data.headers.len())
         .map(|i| {
             let values: Vec<&str> = data.rows.iter().filter_map(|r| r.get(i)?.as_deref()).collect();
             let all = |f: fn(&str) -> bool| !values.is_empty() && values.iter().all(|v| f(v));
             let ty = if all(|v| v.parse::<i64>().is_ok() && numeric(v)) {
-                if postgres { "BIGINT" } else { "INTEGER" }
+                ColumnType::BigInt
             } else if all(|v| v.parse::<f64>().is_ok() && numeric(v)) {
-                if postgres { "DOUBLE PRECISION" } else { "REAL" }
+                ColumnType::Float
             } else if all(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "false")) {
-                "BOOLEAN"
-            } else if postgres && all(is_date) {
-                "DATE"
-            } else if postgres && all(is_timestamp) {
-                "TIMESTAMP"
+                ColumnType::Boolean
+            } else if all(is_date) {
+                ColumnType::Date
+            } else if all(is_timestamp) {
+                ColumnType::Timestamp
             } else {
-                "TEXT"
+                ColumnType::Text
             };
-            ty.to_string()
+            d.type_name(&ty).or_else(|| d.type_name(&ColumnType::Text)).unwrap_or("TEXT").to_string()
         })
         .collect()
 }
@@ -208,21 +209,25 @@ pub async fn run(
     progress: &AtomicUsize,
     cancel: &AtomicBool,
 ) -> Result<ImportReport, String> {
+    let d = session.dialect();
     let exec = |sql: String| async move { session.execute_quiet(&sql).await.map_err(|e| e.to_string()) };
     let nested = session.in_transaction();
     exec(if nested { "SAVEPOINT quarry_import".into() } else { "BEGIN".into() }).await?;
     let abort = |nested: bool| exec(if nested { "ROLLBACK TO SAVEPOINT quarry_import".into() } else { "ROLLBACK".into() });
 
     if let Some(columns) = &plan.create {
-        let defs: Vec<String> = columns.iter().map(|(c, t)| format!("{} {}", quote_ident(c), t)).collect();
+        let defs: Vec<String> = columns.iter().map(|(c, t)| format!("{} {}", d.quote_ident(c), t)).collect();
         if let Err(e) = exec(format!("CREATE TABLE {} ({})", plan.table, defs.join(", "))).await {
             abort(nested).await.ok();
             return Err(e);
         }
     }
 
-    let cols: Vec<String> = plan.mapping.iter().map(|(_, c)| quote_ident(c)).collect();
-    let suffix = if plan.on_conflict == OnConflict::SkipDuplicates { " ON CONFLICT DO NOTHING" } else { "" };
+    let cols: Vec<String> = plan.mapping.iter().map(|(_, c)| d.quote_ident(c)).collect();
+    let suffix = match plan.on_conflict {
+        OnConflict::SkipDuplicates => d.insert_ignore_suffix().ok_or("This database can't skip duplicate rows")?,
+        _ => "",
+    };
     let mut report = ImportReport::default();
     for (i, row) in data.rows.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -289,7 +294,8 @@ mod tests {
     #[test]
     fn infers_types_and_keeps_leading_zeros_as_text() {
         let d = parse_csv("n,f,b,zip,when\n1,1.5,true,01234,2026-01-02\n22,2,false,99999,2026-03-04\n", ',', true, true);
-        assert_eq!(infer_types(&d, true), vec!["BIGINT", "DOUBLE PRECISION", "BOOLEAN", "TEXT", "DATE"]);
+        assert_eq!(infer_types(&d, &crate::dialect::Postgres), vec!["BIGINT", "DOUBLE PRECISION", "BOOLEAN", "TEXT", "DATE"]);
+        assert_eq!(infer_types(&d, &crate::dialect::Sqlite), vec!["INTEGER", "REAL", "BOOLEAN", "TEXT", "TEXT"]);
     }
 
     #[test]

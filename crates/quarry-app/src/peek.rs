@@ -49,7 +49,7 @@ impl QuarryWindow {
             cx.background_executor().timer(std::time::Duration::from_millis(DELAY_MS)).await;
             this.update_in(cx, |this, window, cx| {
                 let Some(session) = this.state.session.clone() else { return };
-                let sql = format!("SELECT * FROM {} LIMIT {ROWS}", quarry_core::edits::qualified_name(&tbl.schema_name, &tbl.table_name));
+                let sql = this.state.select_rows_sql(&tbl.schema_name, &tbl.table_name, ROWS as u64);
                 this.peek = Some(Peek { table: tbl, at, rows: None, card_hovered: false });
                 cx.notify();
                 run_db(window, cx, async move { session.execute_quiet(&sql).await.map_err(|e| e.to_string()) }, |this, res, _, _| {
@@ -150,10 +150,10 @@ impl QuarryWindow {
                         this.set_table_view(crate::table_detail::TableView::Structure, w, cx);
                     }))
                     .child(action("peek-query", "New Query", |this, s, t, w, cx| {
-                        this.open_query_tab(&format!("SELECT * FROM {} LIMIT 100;", quarry_core::edits::qualified_name(&s, &t)), w, cx)
+                        this.open_query_tab(&format!("{};", this.state.select_rows_sql(&s, &t, 100)), w, cx)
                     }))
-                    .child(action("peek-copy", "Copy Name", |_, s, t, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(quarry_core::edits::qualified_name(&s, &t)))
+                    .child(action("peek-copy", "Copy Name", |this, s, t, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(this.state.dialect().qualified(&s, &t)))
                     }))
                     .child(div().flex_1())
                     .when(cols.len() < p.table.columns.len(), |d| {

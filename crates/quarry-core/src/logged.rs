@@ -101,21 +101,21 @@ impl DatabaseSession for LoggedSession {
     async fn apply_edits(&self, table: &str, changes: &PendingChanges) -> Result<usize, DbError> {
         let start = Instant::now();
         let res = self.inner.apply_edits(table, changes).await;
-        self.record(changes.generate_sql(table).join("\n"), start, &res, |n| *n as u64);
+        self.record(changes.generate_sql(table, self.dialect()).join("\n"), start, &res, |n| *n as u64);
         res
     }
 
     async fn cancel_backend(&self, pid: i64) -> Result<(), DbError> {
         let start = Instant::now();
         let res = self.inner.cancel_backend(pid).await;
-        self.record(format!("SELECT pg_cancel_backend({pid})"), start, &res, |_| 0);
+        self.record(format!("-- cancel backend {pid}"), start, &res, |_| 0);
         res
     }
 
     async fn terminate_backend(&self, pid: i64) -> Result<(), DbError> {
         let start = Instant::now();
         let res = self.inner.terminate_backend(pid).await;
-        self.record(format!("SELECT pg_terminate_backend({pid})"), start, &res, |_| 0);
+        self.record(format!("-- terminate backend {pid}"), start, &res, |_| 0);
         res
     }
 
@@ -125,6 +125,10 @@ impl DatabaseSession for LoggedSession {
 
     fn tx(&self) -> &TxState {
         self.inner.tx()
+    }
+
+    fn dialect(&self) -> &'static dyn crate::Dialect {
+        self.inner.dialect()
     }
 }
 

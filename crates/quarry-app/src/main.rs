@@ -513,8 +513,8 @@ impl QuarryWindow {
             // Editor over results, with a draggable divider. Until the first run the editor gets the whole tab.
             Tab::Query { editor, is_running, error_message, grid: results, schema, row_limit, .. } => {
                 let conn = self.state.active_connection.as_ref().map(|c| (c.name.as_str(), c.env));
-                let is_pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
-                let schema_label = is_pg.then(|| schema.clone().unwrap_or_else(|| "default schema".into()));
+                let switches_schema = self.state.dialect().set_schema(None).is_some();
+                let schema_label = switches_schema.then(|| schema.clone().unwrap_or_else(|| "default schema".into()));
                 let editor = QueryEditor::render(
                     editor,
                     *is_running,
@@ -977,7 +977,7 @@ impl QuarryWindow {
         editor.update(cx, |e, cx| {
             e.lsp_mut().completion_provider = self.settings.autocomplete.then_some(completions);
             e.lsp_mut().hover_provider = Some(std::rc::Rc::new(completion::SchemaHover(self.state.completion_catalog.clone())));
-            e.lsp_mut().code_action_providers.push(std::rc::Rc::new(completion::SqlActions(self.state.completion_catalog.clone())));
+            e.lsp_mut().code_action_providers.push(std::rc::Rc::new(completion::SqlActions(self.state.completion_catalog.clone(), self.state.completion_dialect.clone())));
             e.lsp_mut().definition_provider = Some(std::rc::Rc::new(completion::TableDefinitions(self.state.completion_catalog.clone())));
             // ⌘-click lands here: open the table instead of following a URL. Deferred, since the editor is mid-update.
             let me = me.clone();
@@ -1061,7 +1061,6 @@ impl QuarryWindow {
                 read_only_reason,
                 foreign_keys,
                 page_size: self.settings.rows_per_page,
-                default_keyword: self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres),
                 filter: String::new(),
                 order_by: None,
                 has_more: false,
@@ -1228,18 +1227,15 @@ impl QuarryWindow {
             return;
         }
         if matches!(mode, RunMode::Explain | RunMode::ExplainAnalyze) {
-            let pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
             let sql = statements.swap_remove(0);
             if mode == RunMode::ExplainAnalyze && quarry_core::session::is_mutation(&sql) {
                 self.toast("EXPLAIN ANALYZE runs the statement, which would change data. Use Explain instead.", true, cx);
                 return;
             }
-            statements = vec![match (pg, mode) {
-                (true, RunMode::ExplainAnalyze) => format!("EXPLAIN (ANALYZE, BUFFERS) {sql}"),
-                (true, _) => format!("EXPLAIN {sql}"),
-                // SQLite has no ANALYZE variant; the query plan is the useful view
-                (false, _) => format!("EXPLAIN QUERY PLAN {sql}"),
-            }];
+            let Some(explain) = self.state.dialect().explain(&sql, mode == RunMode::ExplainAnalyze) else {
+                return self.toast("This database can't show a query plan", true, cx);
+            };
+            statements = vec![explain];
         }
         let mut params: Vec<String> = Vec::new();
         for p in statements.iter().flat_map(|s| quarry_sql::find_params(s)) {
@@ -1269,7 +1265,7 @@ impl QuarryWindow {
         let Some(session) = self.state.session.clone() else {
             return self.toast("Connect to a database first", true, cx);
         };
-        let is_pg = self.state.active_connection.as_ref().is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
+        let dialect = session.dialect();
         let Some(Tab::Query { id, grid, is_running, error_message, schema, row_limit, .. }) = self.state.tabs.get_mut(self.state.active_tab_index) else {
             return;
         };
@@ -1277,14 +1273,11 @@ impl QuarryWindow {
         *error_message = None;
         let (tab_id, grid) = (id.clone(), grid.clone());
         let statements: Vec<String> = match *row_limit {
-            Some(n) => statements.iter().map(|s| quarry_sql::with_limit(s, n)).collect(),
+            Some(n) => statements.iter().map(|s| quarry_sql::with_limit(s, n, dialect)).collect(),
             None => statements,
         };
         // The session is shared by every tab on this connection, so each run sets the tab's own schema
-        let search_path = is_pg.then(|| match schema {
-            Some(s) => format!("SET search_path TO {}", quarry_core::edits::quote_ident(s)),
-            None => "SET search_path TO DEFAULT".to_string(),
-        });
+        let search_path = dialect.set_schema(schema.as_deref());
         cx.notify();
 
         let stmts = statements.clone();
@@ -1400,8 +1393,10 @@ impl QuarryWindow {
         let review_data = match self.state.active_tab() {
             Some(Tab::Table { table_name, grid, .. }) => {
                 let rs = grid.read(cx).delegate();
-                let name = rs.source.as_ref().map(|s| s.qualified_name()).unwrap_or_default();
-                (!rs.pending.is_empty()).then(|| (table_name.clone(), rs.pending.generate_sql(&name)))
+                rs.source
+                    .as_ref()
+                    .filter(|_| !rs.pending.is_empty())
+                    .map(|src| (table_name.clone(), rs.pending.generate_sql(&src.qualified_name(), src.dialect())))
             }
             _ => None,
         };
@@ -1972,7 +1967,7 @@ impl QuarryWindow {
     fn open_schema_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Tab::Query { schema: current, .. }) = self.state.active_tab() else { return };
         let current = current.clone();
-        let mut choices = vec![("Default (search_path)".to_string(), current.is_none(), None)];
+        let mut choices = vec![("Default schema".to_string(), current.is_none(), None)];
         choices.extend(self.state.catalog.schemas.iter().map(|s| (s.clone(), current.as_ref() == Some(s), Some(s.clone()))));
         self.open_choice_menu(
             choices,

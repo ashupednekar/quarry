@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 /// Shared with every editor; replaced whenever the active connection's schema changes
 pub type SharedCatalog = Rc<RefCell<SchemaCatalog>>;
+pub type SharedDialect = Rc<std::cell::Cell<&'static dyn quarry_core::Dialect>>;
 
 pub struct SchemaCompletions(pub SharedCatalog);
 
@@ -98,7 +99,7 @@ fn error_range(stmt: &str, at: Option<usize>) -> std::ops::Range<usize> {
 }
 
 /// ⌥↵ / ⌘. on a statement: format, expand `*`, add LIMIT, EXPLAIN, wrap in a transaction
-pub struct SqlActions(pub SharedCatalog);
+pub struct SqlActions(pub SharedCatalog, pub SharedDialect);
 
 impl SqlActions {
     /// The statement at `offset` and every (title, rewrite) that applies to it
@@ -106,7 +107,7 @@ impl SqlActions {
         let span = quarry_sql::find_statement_at_offset(sql, offset.min(sql.len()))?;
         let stmt = &sql[span.start..span.end];
         let mut actions = vec![("Format statement".to_string(), crate::files::format_sql(stmt))];
-        actions.extend(quarry_sql::rewrites(stmt, &self.0.borrow()).into_iter().map(|(t, s)| (t.to_string(), s)));
+        actions.extend(quarry_sql::rewrites(stmt, &self.0.borrow(), self.1.get()).into_iter().map(|(t, s)| (t.to_string(), s)));
         actions.retain(|(_, s)| s != stmt);
         Some((span.start..span.end, actions))
     }
@@ -126,11 +127,11 @@ impl gpui::component::input::CodeActionProvider for SqlActions {
 
     // Called inside the editor's update: edit it on the next tick, not now
     fn perform_code_action(&self, state: gpui::Entity<gpui::component::input::EditorState>, action: lsp_types::CodeAction, _: bool, window: &mut Window, cx: &mut App) -> Task<anyhow::Result<()>> {
-        let catalog = self.0.clone();
+        let (catalog, dialect) = (self.0.clone(), self.1.clone());
         window.defer(cx, move |window, cx| {
             state.update(cx, |e, cx| {
                 let sql = e.value().to_string();
-                let Some((range, actions)) = SqlActions(catalog).for_statement(&sql, e.cursor()) else { return };
+                let Some((range, actions)) = SqlActions(catalog, dialect).for_statement(&sql, e.cursor()) else { return };
                 let Some((_, text)) = actions.into_iter().find(|(t, _)| *t == action.title) else { return };
                 e.set_selected_range(range, cx);
                 e.replace(text, window, cx); // one undo step

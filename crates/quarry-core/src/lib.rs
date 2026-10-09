@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+pub mod dialect;
 pub mod dump;
 pub mod edits;
 pub mod export;
@@ -12,6 +13,7 @@ pub mod session;
 pub mod sqlite;
 pub mod value;
 
+pub use dialect::Dialect;
 pub use logged::{ActivityLog, LogEntry, LoggedSession};
 pub use edits::{PendingCellEdit, PendingChanges, PendingRowDelete, PendingRowInsert, RowKey};
 pub use postgres::PostgresSession;

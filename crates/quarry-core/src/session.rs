@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+use crate::dialect::Dialect;
 use crate::edits::PendingChanges;
 use crate::schema::SchemaCatalog;
 use crate::value::DbValue;
@@ -139,6 +140,9 @@ pub trait DatabaseSession: Send + Sync {
 
     /// Returns whether this connection is operating in read-only mode
     fn is_read_only(&self) -> bool;
+
+    /// The SQL this database speaks; the app builds statements through it
+    fn dialect(&self) -> &'static dyn Dialect;
 }
 
 #[cfg(test)]

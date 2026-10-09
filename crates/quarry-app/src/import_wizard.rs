@@ -13,7 +13,6 @@ use gpui::component::select::{Select, SelectState};
 use gpui::component::table::TableState;
 use gpui::component::{Disableable, IndexPath, Sizable};
 use gpui::*;
-use quarry_core::edits::qualified_name;
 use quarry_core::import::{self, Encoding, ImportData, ImportPlan, ImportReport, OnConflict};
 use quarry_core::{DbValue, LogEntry, QueryResult};
 use std::path::PathBuf;
@@ -144,7 +143,7 @@ impl QuarryWindow {
 
     /// Re-reads the file with the current source options and rebuilds preview, mapping and types
     fn reparse_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let postgres = self.current_connection(cx).1.is_some_and(|c| c.kind == ConnectionTargetKind::Postgres);
+        let dialect = self.current_connection(cx).0.map_or(&quarry_core::dialect::Ansi as &dyn quarry_core::Dialect, |s| s.dialect());
         let st = &mut self.import;
         let (text, _) = import::decode(&st.bytes, Some(st.encoding));
         let parsed = if st.is_json { import::parse_json(&text) } else { Ok(import::parse_csv(&text, st.delimiter, st.header, st.empty_is_null)) };
@@ -190,7 +189,7 @@ impl QuarryWindow {
                 cx.new(|cx| SelectState::new(options, Some(IndexPath::new(pick)), window, cx))
             })
             .collect();
-        st.types = import::infer_types(&st.data, postgres)
+        st.types = import::infer_types(&st.data, dialect)
             .into_iter()
             .map(|ty| cx.new(|cx| InputState::new(window, cx).default_value(ty)))
             .collect();
@@ -211,7 +210,7 @@ impl QuarryWindow {
                 .map(|(h, ty)| (sanitize(h), ty.read(cx).value().trim().to_string()))
                 .collect();
             let mapping = cols.iter().enumerate().map(|(i, (c, _))| (i, c.clone())).collect();
-            (qualified_name(default_schema, &name), Some(cols), mapping)
+            (session.dialect().qualified(default_schema, &name), Some(cols), mapping)
         } else {
             let Some((schema, name, _)) = &st.existing else { return };
             let mapping: Vec<(usize, String)> = st
@@ -220,7 +219,7 @@ impl QuarryWindow {
                 .enumerate()
                 .filter_map(|(i, sel)| sel.read(cx).selected_value().filter(|v| *v != SKIP).map(|v| (i, v.clone())))
                 .collect();
-            (qualified_name(schema, name), None, mapping)
+            (session.dialect().qualified(schema, name), None, mapping)
         };
         if mapping.is_empty() {
             self.toast("Map at least one column", true, cx);

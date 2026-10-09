@@ -12,7 +12,7 @@ use gpui::component::table::{Column, ColumnSort, DataTable, TableDelegate, Table
 use gpui::component::tooltip::Tooltip;
 use gpui::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui::*;
-use quarry_core::edits::{quote_ident, PendingChanges, PendingRowInsert, RowKey};
+use quarry_core::edits::{PendingChanges, PendingRowInsert, RowKey};
 use quarry_core::schema::{ColumnSchema, ColumnType};
 use quarry_core::session::{DatabaseSession, QueryResult};
 use quarry_core::value::DbValue;
@@ -87,8 +87,6 @@ pub struct TableSource {
     pub primary_keys: Vec<String>,
     /// Why this table can't be edited, if it can't (E1, E10)
     pub read_only_reason: Option<&'static str>,
-    /// Postgres accepts `SET col = DEFAULT`; SQLite needs the column's default expression
-    pub default_keyword: bool,
     /// Columns that reference other tables (G5)
     pub foreign_keys: Vec<quarry_core::schema::ForeignKeyRef>,
     /// Rows per page (settings: rows_per_page)
@@ -101,8 +99,12 @@ pub struct TableSource {
 }
 
 impl TableSource {
+    pub fn dialect(&self) -> &'static dyn quarry_core::Dialect {
+        self.session.dialect()
+    }
+
     pub fn qualified_name(&self) -> String {
-        quarry_core::edits::qualified_name(&self.schema, &self.table)
+        self.dialect().qualified(&self.schema, &self.table)
     }
 
     /// The tab's query (filter + sort), without paging
@@ -112,14 +114,14 @@ impl TableSource {
             sql += &format!(" WHERE {}", self.filter);
         }
         if let Some((col, desc)) = &self.order_by {
-            sql += &format!(" ORDER BY {}{}", quote_ident(col), if *desc { " DESC" } else { "" });
+            sql += &format!(" ORDER BY {}{}", self.dialect().quote_ident(col), if *desc { " DESC" } else { "" });
         }
         sql
     }
 
     fn page_sql(&self, offset: usize, limit: usize) -> String {
         // One extra row tells us whether another page exists
-        format!("{} LIMIT {} OFFSET {}", self.select_sql(), limit + 1, offset)
+        format!("{} {}", self.select_sql(), self.dialect().limit_clause(limit as u64 + 1, offset as u64))
     }
 }
 
@@ -305,9 +307,10 @@ impl ResultSet {
     pub fn foreign_key_target(&self, row: usize, display: usize) -> Option<(String, String, String)> {
         let col = self.actual(display);
         let name = self.column_name(col)?;
-        let fk = self.source.as_ref()?.foreign_keys.iter().find(|f| f.from_column == name)?;
+        let src = self.source.as_ref()?;
+        let fk = src.foreign_keys.iter().find(|f| f.from_column == name)?;
         let value = self.cell_value(row, col).0.filter(|v| !v.is_null())?;
-        let filter = format!("{} = {}", quote_ident(&fk.to_column), value.to_sql_literal());
+        let filter = format!("{} = {}", src.dialect().quote_ident(&fk.to_column), src.dialect().literal(&value));
         Some((fk.to_schema.clone(), fk.to_table.clone(), filter))
     }
 
@@ -666,7 +669,7 @@ impl ResultSet {
             }
             return;
         }
-        let expr = if self.source.as_ref().is_some_and(|s| s.default_keyword) {
+        let expr = if self.source.as_ref().is_some_and(|s| s.dialect().supports_default_keyword()) {
             Some("DEFAULT".to_string())
         } else {
             self.column_schema(col).map(|c| c.default_value.clone().unwrap_or_else(|| "NULL".into()))
