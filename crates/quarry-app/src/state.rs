@@ -6,7 +6,6 @@ use gpui::component::input::{EditorState, InputState};
 use crate::grid::ResultSet;
 use gpui::component::table::TableState;
 use gpui::Entity;
-use quarry_core::postgres::PostgresSession;
 use quarry_core::schema::{SchemaCatalog, TableSchema};
 use quarry_core::session::DatabaseSession;
 use quarry_core::{ActivityLog, LoggedSession};
@@ -32,27 +31,55 @@ impl Environment {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ConnectionTargetKind {
-    SqliteMemory,
-    SqliteFile,
-    Postgres,
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConnectionProfile {
     pub id: String,
     pub name: String,
-    pub kind: ConnectionTargetKind,
+    /// Driver id (`quarry_core::drivers()`). Older files stored `"kind": "Postgres"` etc.
+    #[serde(alias = "kind", deserialize_with = "driver_id")]
+    pub driver: String,
+    /// The connection string, without its password (that's in the keychain)
     pub path_or_url: String,
     pub env: Environment,
     pub read_only: bool,
-    /// Reach the database through an SSH tunnel (Postgres)
+    /// Reach the database through an SSH tunnel (drivers with a host and port)
     #[serde(default)]
     pub ssh: Option<crate::ssh::SshConfig>,
-    /// Cancel statements running longer than this (Q10). Postgres: statement_timeout; SQLite: lock wait.
+    /// Cancel statements running longer than this (Q10), via the dialect's statement timeout
     #[serde(default)]
     pub statement_timeout_secs: Option<u64>,
+}
+
+impl ConnectionProfile {
+    pub fn driver(&self) -> Option<&'static dyn quarry_core::Driver> {
+        quarry_core::driver(&self.driver)
+    }
+
+    /// A new profile for a pasted connection string, if a driver recognizes it
+    pub fn from_address(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let driver = quarry_core::detect(text)?;
+        Some(ConnectionProfile {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: driver.display_address(text),
+            driver: driver.id().to_string(),
+            path_or_url: text.to_string(),
+            env: Environment::Local,
+            read_only: false,
+            ssh: None,
+            statement_timeout_secs: None,
+        })
+    }
+}
+
+/// Reads a driver id, mapping the old `kind` values
+fn driver_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let id = <String as serde::Deserialize>::deserialize(d)?;
+    Ok(match id.as_str() {
+        "Postgres" => "postgres".into(),
+        "SqliteFile" | "SqliteMemory" => "sqlite".into(),
+        _ => id,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -182,7 +209,8 @@ pub struct AppState {
     pub review_modal_table: String,
 
     pub add_conn_modal_open: bool,
-    pub add_conn_kind: ConnectionTargetKind,
+    /// Driver id picked in the add-connection form
+    pub add_conn_driver: &'static str,
     pub add_conn_env: Environment,
     pub add_conn_read_only: bool,
     pub add_conn_ssh: bool,
@@ -243,7 +271,7 @@ impl AppState {
             review_modal_table: String::new(),
 
             add_conn_modal_open: false,
-            add_conn_kind: ConnectionTargetKind::SqliteMemory,
+            add_conn_driver: "sqlite",
             add_conn_env: Environment::Local,
             add_conn_read_only: false,
             add_conn_ssh: false,
@@ -267,7 +295,7 @@ impl AppState {
         let profile = ConnectionProfile {
             id: "local-sqlite".to_string(),
             name: "local-sqlite".to_string(),
-            kind: ConnectionTargetKind::SqliteMemory,
+            driver: "sqlite".to_string(),
             path_or_url: ":memory:".to_string(),
             env: Environment::Local,
             read_only: false,
@@ -459,9 +487,9 @@ impl AppState {
         tunnel: Option<crate::ssh::Tunnel>,
     ) {
         let mut profile = profile;
-        let bare = |p: &ConnectionProfile| crate::connections::split_password(&p.path_or_url).0;
+        let bare = |p: &ConnectionProfile| p.driver().map_or_else(|| p.path_or_url.clone(), |d| d.take_secret(&p.path_or_url).0);
         // Same address as a saved connection: reuse it (name, environment, read-only) instead of duplicating
-        if let Some(existing) = self.saved_connections.iter().find(|c| c.kind == profile.kind && bare(c) == bare(&profile)) {
+        if let Some(existing) = self.saved_connections.iter().find(|c| c.driver == profile.driver && bare(c) == bare(&profile)) {
             profile = ConnectionProfile { path_or_url: profile.path_or_url, ..existing.clone() };
         }
         self.open_sessions.insert(profile.id.clone(), (session.clone(), catalog.clone()));
@@ -490,26 +518,19 @@ pub async fn open_session(
     profile: &ConnectionProfile,
     log: ActivityLog,
 ) -> Result<(Arc<dyn DatabaseSession>, SchemaCatalog, Option<crate::ssh::Tunnel>), String> {
+    let driver = profile.driver().ok_or_else(|| format!("This build of Quarry doesn't include the {} driver", profile.driver))?;
+    let mut conn = crate::connections::with_secret(profile);
     let mut tunnel = None;
-    let session: Arc<dyn DatabaseSession> = match profile.kind {
-        ConnectionTargetKind::SqliteMemory => Arc::new(SqliteSession::open_in_memory().map_err(|e| e.to_string())?),
-        ConnectionTargetKind::SqliteFile => {
-            Arc::new(SqliteSession::open_file(&profile.path_or_url, profile.read_only).map_err(|e| e.to_string())?)
-        }
-        ConnectionTargetKind::Postgres => {
-            let mut url = crate::connections::with_secret(profile);
-            if let Some(ssh) = &profile.ssh {
-                let (host, port) = crate::ssh::target(&url);
-                let cfg = ssh.clone();
-                let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
-                    .await
-                    .map_err(|e| e.to_string())??;
-                url = crate::ssh::retarget(&url, t.local_port);
-                tunnel = Some(t);
-            }
-            Arc::new(PostgresSession::connect(&url, profile.read_only).await.map_err(|e| e.to_string())?)
-        }
-    };
+    if let Some(ssh) = &profile.ssh {
+        let (host, port) = driver.tunnel_target(&conn).ok_or_else(|| format!("{} connections can't use an SSH tunnel", driver.name()))?;
+        let cfg = ssh.clone();
+        let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
+            .await
+            .map_err(|e| e.to_string())??;
+        conn = driver.through_tunnel(&conn, t.local_port);
+        tunnel = Some(t);
+    }
+    let session = driver.connect(&conn, profile.read_only).await.map_err(|e| e.to_string())?;
     let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(session, profile.name.clone(), log));
     if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
         if let Some(sql) = session.dialect().statement_timeout(secs) {

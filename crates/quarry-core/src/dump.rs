@@ -17,6 +17,7 @@ pub trait Dumper: Send + Sync {
     async fn dump(&self, out: &Path) -> Result<String, String>;
 }
 
+#[cfg(feature = "sqlite")]
 #[async_trait]
 impl Dumper for crate::SqliteSession {
     async fn dump(&self, out: &Path) -> Result<String, String> {
@@ -58,7 +59,7 @@ pub async fn sqlite_dump(session: &dyn DatabaseSession, out: &mut impl Write) ->
     Ok(rows)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use crate::SqliteSession;

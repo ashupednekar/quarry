@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+#![cfg(feature = "postgres")]
+
 use quarry_core::{DatabaseSession, PostgresSession};
 
 /// Session must survive across separate runtime calls (connection driver lifetime).

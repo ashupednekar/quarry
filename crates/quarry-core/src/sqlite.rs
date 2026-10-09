@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
 use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState};
@@ -12,6 +13,66 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+
+pub struct SqliteDriver;
+pub static DRIVER: SqliteDriver = SqliteDriver;
+
+#[async_trait]
+impl Driver for SqliteDriver {
+    fn id(&self) -> &'static str {
+        "sqlite"
+    }
+
+    fn name(&self) -> &'static str {
+        "SQLite"
+    }
+
+    fn sample(&self) -> &'static str {
+        ":memory:"
+    }
+
+    /// A file path or `:memory:`; anything with a scheme belongs to another driver
+    fn recognizes(&self, conn: &str) -> bool {
+        !conn.is_empty() && !conn.contains("://") && !conn.contains('=')
+    }
+
+    fn fields(&self) -> &'static [Field] {
+        &[Field { label: "File", placeholder: "~/data/app.db, or :memory:", secret: false, row: 0, width: None }]
+    }
+
+    fn split(&self, conn: &str) -> Vec<String> {
+        vec![conn.to_string()]
+    }
+
+    fn join(&self, values: &[String], _previous: &str) -> String {
+        values.first().cloned().unwrap_or_default()
+    }
+
+    fn is_ephemeral(&self, conn: &str) -> bool {
+        conn.trim() == ":memory:"
+    }
+
+    fn display_address(&self, conn: &str) -> String {
+        if conn == ":memory:" {
+            return conn.to_string();
+        }
+        std::path::Path::new(conn).file_name().map_or_else(|| conn.to_string(), |f| f.to_string_lossy().into_owned())
+    }
+
+    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+        Ok(Arc::new(match conn.trim() {
+            ":memory:" => SqliteSession::open_in_memory()?,
+            path => SqliteSession::open_file(expand_home(path), read_only)?,
+        }))
+    }
+}
+
+fn expand_home(path: &str) -> String {
+    match (path.strip_prefix("~/"), std::env::var("HOME")) {
+        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+        _ => path.to_string(),
+    }
+}
 
 pub struct SqliteSession {
     conn: Arc<Mutex<Connection>>,

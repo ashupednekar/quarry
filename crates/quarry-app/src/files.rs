@@ -271,8 +271,7 @@ impl QuarryWindow {
                 for path in paths {
                     // A SQLite database opens as a connection, not as text
                     if is_sqlite_db(&path) {
-                        let profile = crate::guess_profile(&path.to_string_lossy());
-                        this.connect_profile(profile, window, cx);
+                        this.connect_address(&path.to_string_lossy(), window, cx);
                         continue;
                     }
                     match std::fs::read_to_string(&path) {

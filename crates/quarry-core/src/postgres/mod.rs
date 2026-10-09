@@ -4,9 +4,11 @@
 mod dump;
 mod logs;
 mod monitor;
+mod url;
 
-pub use dump::split_password;
+pub use url::split_password;
 
+use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
 use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb};
@@ -16,6 +18,84 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
+
+pub struct PostgresDriver;
+pub static DRIVER: PostgresDriver = PostgresDriver;
+
+const fn field(label: &'static str, placeholder: &'static str, secret: bool, row: u8, width: Option<f32>) -> Field {
+    Field { label, placeholder, secret, row, width }
+}
+
+#[async_trait]
+impl Driver for PostgresDriver {
+    fn id(&self) -> &'static str {
+        "postgres"
+    }
+
+    fn name(&self) -> &'static str {
+        "PostgreSQL"
+    }
+
+    fn sample(&self) -> &'static str {
+        "postgres://postgres:postgres@localhost:5432/postgres"
+    }
+
+    fn recognizes(&self, conn: &str) -> bool {
+        conn.starts_with("postgres://") || conn.starts_with("postgresql://") || conn.contains("host=")
+    }
+
+    fn fields(&self) -> &'static [Field] {
+        const FIELDS: [Field; 5] = [
+            field("Host", "localhost", false, 0, None),
+            field("Port", "5432", false, 0, Some(120.0)),
+            field("User", "postgres", false, 1, None),
+            field("Password", "", true, 1, None),
+            field("Database", "postgres", false, 2, None),
+        ];
+        &FIELDS
+    }
+
+    fn split(&self, conn: &str) -> Vec<String> {
+        url::parse_pg_url(conn).map_or_else(|| url::parse_kv(conn), |(f, _)| f).to_vec()
+    }
+
+    fn join(&self, values: &[String], previous: &str) -> String {
+        let query = url::parse_pg_url(previous).map(|(_, q)| q).unwrap_or_default();
+        let fields: url::PgFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
+        url::build_pg_url(&fields, &query)
+    }
+
+    fn take_secret(&self, conn: &str) -> (String, Option<String>) {
+        url::split_password(conn)
+    }
+
+    fn put_secret(&self, conn: &str, secret: &str) -> String {
+        url::insert_password(conn, secret)
+    }
+
+    /// `host:port/db`, without user or password
+    fn display_address(&self, conn: &str) -> String {
+        let [host, port, _, _, db] = <[String; 5]>::try_from(self.split(conn)).unwrap_or_default();
+        let host = if host.is_empty() { "localhost".to_string() } else { host };
+        let mut out = if port.is_empty() { host } else { format!("{host}:{port}") };
+        if !db.is_empty() {
+            out += &format!("/{db}");
+        }
+        out
+    }
+
+    fn tunnel_target(&self, conn: &str) -> Option<(String, u16)> {
+        Some(url::target(conn))
+    }
+
+    fn through_tunnel(&self, conn: &str, local_port: u16) -> String {
+        url::retarget(conn, local_port)
+    }
+
+    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+        Ok(Arc::new(PostgresSession::connect(conn, read_only).await?))
+    }
+}
 
 pub struct PostgresSession {
     client: Arc<Client>,
@@ -64,7 +144,7 @@ impl PostgresSession {
     }
 }
 
-/// Keeps Postgres' error position (1-based character in the statement) so the editor can point at it
+/// Keeps Postgres' error position (1-based character in the statement) so the editor can point at it; see `session::error_position`
 fn statement_err(e: tokio_postgres::Error) -> DbError {
     use tokio_postgres::error::ErrorPosition;
     match e.as_db_error().and_then(|d| d.position()) {
@@ -77,11 +157,6 @@ fn sql_string(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-/// Reads back the position `statement_err` appended
-pub fn error_position(message: &str) -> Option<usize> {
-    let (_, tail) = message.rsplit_once("(at character ")?;
-    tail.strip_suffix(')')?.parse().ok()
-}
 
 #[async_trait]
 impl DatabaseSession for PostgresSession {
@@ -398,7 +473,8 @@ mod tests {
 
     #[test]
     fn reads_back_error_position() {
-        assert_eq!(super::error_position("db error: ERROR: syntax error at or near \"form\" (at character 10)"), Some(10));
-        assert_eq!(super::error_position("db error: ERROR: relation \"x\" does not exist"), None);
+        use crate::session::error_position;
+        assert_eq!(error_position("db error: ERROR: syntax error at or near \"form\" (at character 10)"), Some(10));
+        assert_eq!(error_position("db error: ERROR: relation \"x\" does not exist"), None);
     }
 }

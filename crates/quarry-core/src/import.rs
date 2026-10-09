@@ -271,7 +271,7 @@ pub async fn run(
     Ok(report)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use crate::{DbValue, SqliteSession};

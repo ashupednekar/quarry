@@ -5,10 +5,16 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+# One feature per driver; the app enables the ones it ships
+[features]
+default = ["postgres", "sqlite"]
+postgres = ["dep:tokio-postgres"]
+sqlite = ["dep:rusqlite"]
+
 [dependencies]
 tokio = { workspace = true }
-rusqlite = { workspace = true }
-tokio-postgres = { workspace = true }
+rusqlite = { workspace = true, optional = true }
+tokio-postgres = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

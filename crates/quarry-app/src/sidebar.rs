@@ -3,7 +3,7 @@
 
 
 use crate::object_menu::DbObject;
-use crate::state::{AppState, ConnectionTargetKind, Environment};
+use crate::state::{AppState, Environment};
 use crate::theme::Theme;
 use crate::ui::*;
 use gpui::assets::IconName;
@@ -94,10 +94,7 @@ impl Sidebar {
             }
             let is_active = active_id.as_deref() == Some(conn.id.as_str());
             let expanded = is_active && !state.collapsed_connections.contains(&conn.id);
-            let kind = match conn.kind {
-                ConnectionTargetKind::Postgres => "postgres",
-                _ => "sqlite",
-            };
+            let kind = conn.driver.as_str();
             let conn_id = conn.id.clone();
             tree = tree.child(
                 row(("conn", conn_ix).into(), 0.0)

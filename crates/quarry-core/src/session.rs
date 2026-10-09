@@ -69,6 +69,13 @@ impl TxState {
     }
 }
 
+/// Where in the statement an error is, when the driver knows: drivers append `(at character N)`
+/// (1-based) to the message, and the editor underlines from there
+pub fn error_position(message: &str) -> Option<usize> {
+    let (_, tail) = message.rsplit_once("(at character ")?;
+    tail.strip_suffix(')')?.parse().ok()
+}
+
 #[derive(Debug, PartialEq)]
 pub enum TxVerb {
     Begin,

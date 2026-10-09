@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-use crate::state::{AppState, ConnectionTargetKind, Environment};
+use crate::state::{AppState, Environment};
 use crate::theme::Theme;
 use crate::ui::*;
 use gpui::component::{Icon, Sizable};
@@ -20,10 +20,10 @@ impl AddConnModal {
         name_input: &Entity<InputState>,
         path_input: &Entity<InputState>,
         ssh_inputs: [&Entity<InputState>; 3],
-        pg_inputs: [&Entity<InputState>; 5],
+        field_inputs: &[Entity<InputState>],
         timeout_input: &Entity<InputState>,
         on_toggle_ssh: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_kind: impl Fn(&mut T, ConnectionTargetKind, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_pick_driver: impl Fn(&mut T, &'static str, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_env: impl Fn(&mut T, Environment, &mut Window, &mut Context<T>) + Copy + 'static,
         on_connect: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_test: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -35,12 +35,13 @@ impl AddConnModal {
             return div().into_any_element();
         }
         let t = theme;
-        let is_sqlite = state.add_conn_kind != ConnectionTargetKind::Postgres;
+        let driver = quarry_core::driver(state.add_conn_driver).unwrap_or(quarry_core::drivers()[0]);
+        let fields = driver.fields();
+        let tunnels = driver.tunnel_target(driver.sample()).is_some();
         let editing = state.editing_conn.is_some();
         let tab = state.add_conn_tab;
 
         // General: what and where
-        let kinds = [(ConnectionTargetKind::SqliteFile, "SQLite"), (ConnectionTargetKind::Postgres, "PostgreSQL")];
         let envs = [(Environment::Local, "Local", t.success), (Environment::Staging, "Staging", t.warning), (Environment::Prod, "Production", t.danger)];
         let general = v_flex()
             .gap_6()
@@ -48,33 +49,17 @@ impl AddConnModal {
                 t,
                 "Database",
                 None,
-                chip_group().children(kinds.into_iter().enumerate().map(|(i, (kind, label))| {
-                    let on = (kind == ConnectionTargetKind::Postgres) != is_sqlite;
-                    chip(t, ("kind", i), label, on).on_click(cx.listener(move |this, _, window, cx| on_toggle_kind(this, kind.clone(), window, cx)))
+                chip_group().children(quarry_core::drivers().iter().enumerate().map(|(i, d)| {
+                    let id = d.id();
+                    chip(t, ("kind", i), d.name(), id == driver.id()).on_click(cx.listener(move |this, _, window, cx| on_pick_driver(this, id, window, cx)))
                 })),
             ))
             .child(field(t, "Instance name", Some("Shown in the sidebar and status bar. Blank uses the address."), form_input(name_input)))
-            .when(is_sqlite, |d| d.child(field(t, "File", Some("A path to a .db / .sqlite file, or :memory:"), form_input(path_input))))
-            .when(!is_sqlite, |d| {
-                let [host, port, user, password, database] = pg_inputs;
-                let pair = |a: Div, b: Div, b_w: Option<f32>| {
-                    h_flex()
-                        .gap_3()
-                        .items_start()
-                        .child(div().flex_1().min_w_0().child(a))
-                        .child(match b_w {
-                            Some(w) => div().w(px(w)).child(b),
-                            None => div().flex_1().min_w_0().child(b),
-                        })
-                };
-                let password_input = div().child(Input::new(password).large().text_sm().px_3p5().content_type(InputContentType::Password).mask_toggle());
-                d.child(pair(field(t, "Host", None, form_input(host)), field(t, "Port", None, form_input(port)), Some(120.0)))
-                    .child(pair(
-                        field(t, "User", None, form_input(user)),
-                        field(t, "Password", Some(if editing { "Blank keeps the saved password" } else { "Stored in the keychain" }), password_input),
-                        None,
-                    ))
-                    .child(field(t, "Database", None, form_input(database)))
+            // One field is the connection string itself (a file path); typing a URL there switches driver
+            .when(fields.len() == 1, |d| d.child(field(t, fields[0].label, Some(fields[0].placeholder), form_input(path_input))))
+            // Several fields: the URL they make is shown too, and pasting one fills them
+            .when(fields.len() > 1, |d| {
+                d.children(field_rows(t, fields, field_inputs, editing))
                     .child(field(t, "URL", Some("Paste a URL to fill the fields above"), form_input(path_input)))
             })
             .child(field(
@@ -91,9 +76,9 @@ impl AddConnModal {
                 })),
             ));
 
-        // SSH: Postgres behind a bastion
-        let ssh = if is_sqlite {
-            v_flex().child(div().text_sm().text_color(t.text_muted).child("SQLite files are opened directly, so there's nothing to tunnel."))
+        // SSH: a database behind a bastion
+        let ssh = if !tunnels {
+            v_flex().child(div().text_sm().text_color(t.text_muted).child(format!("{} connections are opened directly, so there's nothing to tunnel.", driver.name())))
         } else {
             v_flex()
                 .gap_6()
@@ -194,4 +179,31 @@ impl AddConnModal {
             )
             .into_any_element()
     }
+}
+
+/// The driver's fields, laid out by row; fields sharing a row sit side by side
+fn field_rows(t: &Theme, fields: &[quarry_core::Field], inputs: &[Entity<InputState>], editing: bool) -> Vec<Div> {
+    let mut rows: Vec<(u8, Div)> = Vec::new();
+    for (f, input) in fields.iter().zip(inputs) {
+        let control = if f.secret {
+            div().child(Input::new(input).large().text_sm().px_3p5().content_type(InputContentType::Password).mask_toggle())
+        } else {
+            form_input(input)
+        };
+        let hint = match (f.secret, editing) {
+            (true, true) => Some("Blank keeps the saved password"),
+            (true, false) => Some("Stored in the keychain"),
+            _ => None,
+        };
+        let cell = match f.width {
+            Some(w) => div().w(px(w)),
+            None => div().flex_1().min_w_0(),
+        }
+        .child(field(t, f.label, hint, control));
+        match rows.last_mut() {
+            Some((row, line)) if *row == f.row => *line = std::mem::replace(line, div()).child(cell),
+            _ => rows.push((f.row, h_flex().gap_3().items_start().child(cell))),
+        }
+    }
+    rows.into_iter().map(|(_, line)| line).collect()
 }

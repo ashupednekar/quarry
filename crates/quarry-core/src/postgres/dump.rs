@@ -3,6 +3,7 @@
 
 //! Whole-database dump through pg_dump (X3)
 
+use super::url::{pct_decode, split_password};
 use super::PostgresSession;
 use crate::dump::Dumper;
 use async_trait::async_trait;
@@ -16,7 +17,8 @@ impl Dumper for PostgresSession {
         let mut cmd = std::process::Command::new("pg_dump");
         cmd.args(["--no-owner", "--dbname", &bare, "--file"]).arg(out);
         if let Some(pw) = password {
-            cmd.env("PGPASSWORD", pw);
+            // A URL carries the password percent-encoded; the environment variable wants it plain
+            cmd.env("PGPASSWORD", if bare.contains("://") { pct_decode(&pw) } else { pw });
         }
         let output = tokio::task::spawn_blocking(move || cmd.output()).await.map_err(|e| e.to_string())?;
         match output {
@@ -36,32 +38,3 @@ impl Dumper for PostgresSession {
         }
     }
 }
-
-/// Splits the password out of a Postgres URL (`postgres://user:pw@host/db`) or
-/// key/value string (`host=x password=pw`).
-pub fn split_password(conn: &str) -> (String, Option<String>) {
-    if let Some((scheme, rest)) = conn.split_once("://") {
-        let authority_end = rest.find('/').unwrap_or(rest.len());
-        let (authority, tail) = rest.split_at(authority_end);
-        if let Some((userinfo, host)) = authority.rsplit_once('@') {
-            if let Some((user, pw)) = userinfo.split_once(':') {
-                return (format!("{scheme}://{user}@{host}{tail}"), Some(pw.to_string()));
-            }
-        }
-        return (conn.to_string(), None);
-    }
-    // ponytail: whitespace-split; quoted values containing spaces aren't handled
-    let mut password = None;
-    let kept: Vec<&str> = conn
-        .split_whitespace()
-        .filter(|tok| match tok.strip_prefix("password=") {
-            Some(pw) => {
-                password = Some(pw.to_string());
-                false
-            }
-            None => true,
-        })
-        .collect();
-    (kept.join(" "), password)
-}
-

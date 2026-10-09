@@ -46,7 +46,7 @@ use runtime::{run_db, DB_RUNTIME};
 use sidebar::Sidebar;
 use quarry_core::DatabaseSession;
 use std::sync::Arc;
-use state::{open_session, AppState, ConnectionProfile, ConnectionTargetKind, Environment, Tab};
+use state::{open_session, AppState, ConnectionProfile, Environment, Tab};
 use status_bar::StatusBar;
 use theme::Theme;
 use ui::*;
@@ -192,8 +192,9 @@ struct QuarryWindow {
     onboard_input: Entity<InputState>,
     /// SSH tunnel fields in the connection form: host[:port], user, key file
     ssh_inputs: [Entity<InputState>; 3],
-    /// Postgres host, port, user, password, database; kept in sync with the URL field
-    pg_inputs: [Entity<InputState>; 5],
+    /// One input per field of the picked driver (`Driver::fields`); kept in sync with the URL field
+    conn_field_inputs: Vec<Entity<InputState>>,
+    conn_field_subs: Vec<Subscription>,
     /// Set while one side of the URL/fields sync writes the other, so it doesn't echo back
     conn_syncing: bool,
     /// Statement timeout (seconds) in the connection form
@@ -264,10 +265,7 @@ impl QuarryWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("Private key file (optional; default: ssh-agent)")),
         ];
 
-        let pg_inputs = ["localhost", "5432", "postgres", "", "postgres"]
-            .map(|ph| cx.new(|cx| InputState::new(window, cx).placeholder(ph).masked(ph.is_empty())));
-
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             cx.subscribe_in(&command_input, window, |this, _, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
                     this.state.command_bar_selected_index = 0;
@@ -280,8 +278,10 @@ impl QuarryWindow {
                 // Pasting a URL picks the database type (C1)
                 InputEvent::Change => {
                     let url = input.read(cx).value().to_string();
-                    this.state.add_conn_kind = guess_profile(&url).kind;
-                    this.fill_pg_fields(_window, cx);
+                    if let Some(d) = quarry_core::detect(&url) {
+                        this.set_conn_driver(d.id(), _window, cx);
+                    }
+                    this.fill_conn_fields(_window, cx);
                     cx.notify();
                 }
                 _ => {}
@@ -290,24 +290,11 @@ impl QuarryWindow {
                 if let InputEvent::PressEnter { .. } = ev {
                     let text = input.read(cx).value().trim().to_string();
                     if !text.is_empty() {
-                        this.connect_profile(guess_profile(&text), window, cx);
+                        this.connect_address(&text, window, cx);
                     }
                 }
             }),
         ];
-        for input in &pg_inputs {
-            subscriptions.push(cx.subscribe_in(input, window, |this, _, ev: &InputEvent, window, cx| {
-                if matches!(ev, InputEvent::Change) && !this.conn_syncing {
-                    let fields = this.pg_inputs.each_ref().map(|i| i.read(cx).value().to_string());
-                    let url = this.conn_path_input.read(cx).value().to_string();
-                    let query = connections::parse_pg_url(&url).map(|(_, q)| q).unwrap_or_default();
-                    this.conn_syncing = true;
-                    this.conn_path_input.update(cx, |i, cx| i.set_value(connections::build_pg_url(&fields, &query), window, cx));
-                    this.conn_syncing = false;
-                }
-            }));
-        }
-
         let theme = Theme::for_mode(os_is_dark(window));
         let export = export_dialog::ExportState::new(window, cx);
         let import = import_wizard::ImportState::new(&theme, window, cx);
@@ -324,7 +311,8 @@ impl QuarryWindow {
             tab_subscriptions: Default::default(),
             onboard_input,
             ssh_inputs,
-            pg_inputs,
+            conn_field_inputs: Vec::new(),
+            conn_field_subs: Vec::new(),
             conn_syncing: false,
             timeout_input,
             theme_choice: None,
@@ -1322,7 +1310,7 @@ impl QuarryWindow {
             if let Some(Tab::Query { is_running, error_message, editor, .. }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id) {
                 *is_running = false;
                 if let (Some(msg), Some(ix)) = (&failure_msg, failed_ix) {
-                    let at = quarry_core::postgres::error_position(msg);
+                    let at = quarry_core::session::error_position(msg);
                     completion::mark_run_error(editor, &statements[ix], at, msg, cx);
                 }
                 *error_message = failure_msg;
@@ -1758,12 +1746,15 @@ impl QuarryWindow {
         let Some(p) = self.state.saved_connections.iter().find(|c| c.id == id).cloned() else { return };
         self.state.editing_conn = Some(p.id.clone());
         self.state.add_conn_tab = 0;
-        self.state.add_conn_kind = p.kind.clone();
+        let driver = p.driver.clone();
         self.state.add_conn_env = p.env;
         self.state.add_conn_read_only = p.read_only;
         self.state.add_conn_ssh = p.ssh.is_some();
         self.state.add_conn_feedback = None;
-        let (path, _) = connections::split_password(&p.path_or_url);
+        let path = p.driver().map_or_else(|| p.path_or_url.clone(), |d| d.take_secret(&p.path_or_url).0);
+        if let Some(d) = quarry_core::driver(&driver) {
+            self.set_conn_driver(d.id(), window, cx);
+        }
         self.set_conn_inputs(Some(&p.name), &path, window, cx);
         let ssh = p.ssh.as_ref();
         let values = [
@@ -1788,6 +1779,7 @@ impl QuarryWindow {
         self.state.add_conn_read_only = false;
         self.state.add_conn_ssh = false;
         // A fresh form: nothing carried over from the last connection added
+        self.set_conn_driver(self.state.add_conn_driver, window, cx);
         self.set_conn_inputs(Some(""), "", window, cx);
         self.state.add_conn_modal_open = true;
         self.conn_name_input.update(cx, |i, cx| i.focus(window, cx));
@@ -1799,30 +1791,72 @@ impl QuarryWindow {
             self.conn_name_input.update(cx, |i, cx| i.set_value(name.to_string(), window, cx));
         }
         self.conn_path_input.update(cx, |i, cx| i.set_value(path.to_string(), window, cx));
-        self.fill_pg_fields(window, cx);
+        self.fill_conn_fields(window, cx);
     }
 
-    /// URL → host/port/user/password/database, unless the fields are the ones writing the URL
-    fn fill_pg_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn conn_driver(&self) -> &'static dyn quarry_core::Driver {
+        quarry_core::driver(self.state.add_conn_driver).unwrap_or(quarry_core::drivers()[0])
+    }
+
+    /// Picks the form's driver and builds one input per field it asks for
+    fn set_conn_driver(&mut self, id: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.state.add_conn_driver == id && !self.conn_field_inputs.is_empty() {
+            return;
+        }
+        self.state.add_conn_driver = id;
+        let fields = self.conn_driver().fields();
+        self.conn_field_inputs = fields
+            .iter()
+            .map(|f| cx.new(|cx| InputState::new(window, cx).placeholder(f.placeholder).masked(f.secret)))
+            .collect();
+        // Field edits write the URL, unless the URL is the one writing the fields
+        self.conn_field_subs = self
+            .conn_field_inputs
+            .iter()
+            .map(|input| {
+                cx.subscribe_in(input, window, |this, _, ev: &InputEvent, window, cx| {
+                    if matches!(ev, InputEvent::Change) && !this.conn_syncing {
+                        let values: Vec<String> = this.conn_field_inputs.iter().map(|i| i.read(cx).value().to_string()).collect();
+                        let url = this.conn_driver().join(&values, &this.conn_path_input.read(cx).value());
+                        this.conn_syncing = true;
+                        this.conn_path_input.update(cx, |i, cx| i.set_value(url, window, cx));
+                        this.conn_syncing = false;
+                    }
+                })
+            })
+            .collect();
+    }
+
+    /// URL → the driver's fields, unless the fields are the ones writing the URL
+    fn fill_conn_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.conn_syncing {
             return;
         }
         let url = self.conn_path_input.read(cx).value().to_string();
-        let fields = connections::parse_pg_url(&url).map_or_else(|| Default::default(), |(f, _)| f);
+        let values = self.conn_driver().split(&url);
         self.conn_syncing = true;
-        for (i, v) in self.pg_inputs.clone().iter().zip(fields) {
+        for (i, v) in self.conn_field_inputs.clone().iter().zip(values) {
             i.update(cx, |i, cx| i.set_value(v, window, cx));
         }
         self.conn_syncing = false;
     }
 
+    /// Connects to a pasted or dropped address, if a driver recognizes it
+    pub fn connect_address(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match ConnectionProfile::from_address(text) {
+            Some(profile) => self.connect_profile(profile, window, cx),
+            None => self.toast("No database driver recognizes that address", true, cx),
+        }
+    }
+
     fn profile_from_modal(&self, cx: &App) -> ConnectionProfile {
         let name = self.conn_name_input.read(cx).value().trim().to_string();
+        let path_or_url = self.conn_path_input.read(cx).value().trim().to_string();
         ConnectionProfile {
             id: self.state.editing_conn.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            name: if name.is_empty() { guess_profile(self.conn_path_input.read(cx).value().as_ref()).name } else { name },
-            kind: self.state.add_conn_kind.clone(),
-            path_or_url: self.conn_path_input.read(cx).value().trim().to_string(),
+            name: if name.is_empty() { self.conn_driver().display_address(&path_or_url) } else { name },
+            driver: self.state.add_conn_driver.to_string(),
+            path_or_url,
             env: self.state.add_conn_env,
             read_only: self.state.add_conn_read_only,
             ssh: self.ssh_from_modal(cx),
@@ -1831,7 +1865,7 @@ impl QuarryWindow {
     }
 
     fn ssh_from_modal(&self, cx: &App) -> Option<ssh::SshConfig> {
-        if !self.state.add_conn_ssh || self.state.add_conn_kind != ConnectionTargetKind::Postgres {
+        if !self.state.add_conn_ssh || self.conn_driver().tunnel_target(self.conn_driver().sample()).is_none() {
             return None;
         }
         let [host, user, key] = &self.ssh_inputs;
@@ -2412,7 +2446,7 @@ impl Render for QuarryWindow {
             // Drop a SQLite file anywhere to open it (C3, U11)
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {
-                    this.connect_profile(guess_profile(&path.to_string_lossy()), window, cx);
+                    this.connect_address(&path.to_string_lossy(), window, cx);
                 }
             }))
             .flex()
@@ -2547,22 +2581,21 @@ impl Render for QuarryWindow {
                     &self.conn_name_input,
                     &self.conn_path_input,
                     [&self.ssh_inputs[0], &self.ssh_inputs[1], &self.ssh_inputs[2]],
-                    self.pg_inputs.each_ref(),
+                    &self.conn_field_inputs,
                     &self.timeout_input,
                     |this, _window, cx| {
                         this.state.add_conn_ssh = !this.state.add_conn_ssh;
                         cx.notify();
                     },
-                    |this, kind, window, cx| {
-                        const PG_SAMPLE: &str = "postgres://postgres:postgres@localhost:5432/postgres";
-                        const SQLITE_SAMPLE: &str = ":memory:";
-                        // Only replace an empty field or the other type's sample, never something typed
+                    |this, id, window, cx| {
+                        // Only replace an empty field or another driver's sample, never something typed
                         let current = this.conn_path_input.read(cx).value().trim().to_string();
-                        if current.is_empty() || current == PG_SAMPLE || current == SQLITE_SAMPLE {
-                            let sample = if kind == ConnectionTargetKind::Postgres { PG_SAMPLE } else { SQLITE_SAMPLE };
-                            this.set_conn_inputs(None, sample, window, cx);
+                        this.set_conn_driver(id, window, cx);
+                        if current.is_empty() || quarry_core::drivers().iter().any(|d| d.sample() == current) {
+                            this.set_conn_inputs(None, this.conn_driver().sample(), window, cx);
+                        } else {
+                            this.fill_conn_fields(window, cx);
                         }
-                        this.state.add_conn_kind = kind;
                         cx.notify();
                     },
                     |this, env, _window, cx| {
@@ -2699,37 +2732,6 @@ fn main() {
         })
         .unwrap();
     });
-}
-
-/// Turns pasted text into a connection: Postgres URLs / key=value strings, `:memory:`, or a SQLite file path
-fn guess_profile(text: &str) -> ConnectionProfile {
-    let text = text.trim();
-    let (kind, name) = if text.starts_with("postgres://") || text.starts_with("postgresql://") || text.contains("host=") {
-        let (bare, _) = connections::split_password(text);
-        let host_db = bare.split_once('@').map(|(_, rest)| rest).unwrap_or(&bare);
-        (ConnectionTargetKind::Postgres, host_db.split('?').next().unwrap_or(host_db).to_string())
-    } else if text == ":memory:" {
-        (ConnectionTargetKind::SqliteMemory, "In-memory SQLite".to_string())
-    } else {
-        let name = std::path::Path::new(text).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_else(|| text.to_string());
-        (ConnectionTargetKind::SqliteFile, name)
-    };
-    let path = match text.strip_prefix("~/") {
-        Some(rest) if kind == ConnectionTargetKind::SqliteFile => {
-            std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_else(|_| text.to_string())
-        }
-        _ => text.to_string(),
-    };
-    ConnectionProfile {
-        id: uuid::Uuid::new_v4().to_string(),
-        name,
-        kind,
-        path_or_url: path,
-        env: Environment::Local,
-        read_only: false,
-        ssh: None,
-        statement_timeout_secs: None,
-    }
 }
 
 fn os_is_dark(window: &Window) -> bool {

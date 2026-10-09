@@ -2,28 +2,34 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 pub mod dialect;
+pub mod driver;
 pub mod dump;
 pub mod edits;
 pub mod export;
 pub mod import;
 pub mod logged;
 pub mod monitor;
+#[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod schema;
 pub mod session;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod value;
 
 pub use dialect::Dialect;
+pub use driver::{detect, driver, drivers, Driver, Field};
 pub use logged::{ActivityLog, LogEntry, LoggedSession};
 pub use edits::{PendingCellEdit, PendingChanges, PendingRowDelete, PendingRowInsert, RowKey};
+#[cfg(feature = "postgres")]
 pub use postgres::PostgresSession;
 pub use schema::{ColumnSchema, ColumnType, SchemaCatalog, TableSchema};
 pub use session::{DatabaseSession, DbError, QueryResult, TxState};
+#[cfg(feature = "sqlite")]
 pub use sqlite::SqliteSession;
 pub use value::DbValue;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
 
