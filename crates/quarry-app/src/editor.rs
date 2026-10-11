@@ -5,8 +5,8 @@ use crate::state::Environment;
 use crate::theme::Theme;
 use crate::ui::*;
 use gpui::assets::IconName;
-use gpui::component::input::{Editor, EditorState};
 use gpui::component::button::ButtonVariants;
+use gpui::component::input::{Editor, EditorState};
 use gpui::component::{Icon, Sizable};
 use gpui::*;
 
@@ -44,14 +44,23 @@ impl QueryEditor {
                 .rounded(px(4.0))
                 .cursor_pointer()
                 .text_xs()
-                .text_color(if on { theme.text_secondary } else { theme.text_muted })
+                .text_color(if on {
+                    theme.text_secondary
+                } else {
+                    theme.text_muted
+                })
                 .hover(|s| s.bg(theme.bg_hover))
                 .child(Icon::new(icon).xsmall().text_color(theme.text_muted))
                 .child(text)
-                .child(Icon::new(IconName::ChevronDown).xsmall().text_color(theme.text_muted))
+                .child(
+                    Icon::new(IconName::ChevronDown)
+                        .xsmall()
+                        .text_color(theme.text_muted),
+                )
         };
         let schema_picker = schema.map(|s| {
-            picker("btn-schema", IconName::Layers, s, true).on_click(cx.listener(move |this, _, window, cx| on_pick_schema(this, window, cx)))
+            picker("btn-schema", IconName::Layers, s, true)
+                .on_click(cx.listener(move |this, _, window, cx| on_pick_schema(this, window, cx)))
         });
         let limit_picker = picker(
             "btn-limit",
@@ -66,9 +75,25 @@ impl QueryEditor {
                 .gap_1p5()
                 .items_center()
                 .child(div().size(px(6.0)).rounded_full().bg(env_color(env, theme)))
-                .child(div().text_xs().text_color(theme.text_secondary).child(name.to_string()))
-                .child(div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(env_color(env, theme)).child(env.label())),
-            None => h_flex().child(div().text_xs().text_color(theme.text_muted).child("Choose a connection")),
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.text_secondary)
+                        .child(name.to_string()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(env_color(env, theme))
+                        .child(env.label()),
+                ),
+            None => h_flex().child(
+                div()
+                    .text_xs()
+                    .text_color(theme.text_muted)
+                    .child("Choose a connection"),
+            ),
         };
         let conn_label = conn_label
             .id("btn-connection")
@@ -80,7 +105,11 @@ impl QueryEditor {
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
             .on_click(cx.listener(move |this, _, window, cx| on_pick_connection(this, window, cx)))
-            .child(Icon::new(IconName::ChevronDown).xsmall().text_color(theme.text_muted));
+            .child(
+                Icon::new(IconName::ChevronDown)
+                    .xsmall()
+                    .text_color(theme.text_muted),
+            );
         v_flex()
             .size_full()
             .bg(theme.bg_panel)
@@ -89,7 +118,11 @@ impl QueryEditor {
                     .h(px(BAR_H))
                     .px_3()
                     // A faint red wash on prod, so it's obvious before you run anything
-                    .bg(if is_prod { Theme::tint(theme.danger, 0.08) } else { theme.bg_sidebar.into() })
+                    .bg(if is_prod {
+                        Theme::tint(theme.danger, 0.08)
+                    } else {
+                        theme.bg_sidebar.into()
+                    })
                     .border_b_1()
                     .border_color(theme.border)
                     .gap_1()
@@ -98,9 +131,27 @@ impl QueryEditor {
                     .children(schema_picker)
                     .child(limit_picker)
                     .child(div().flex_1())
-                    .child(toolbar_button("btn-save", IconName::Save, "Save", "Save (⌘S)", Box::new(crate::SaveFile)))
-                    .child(toolbar_button("btn-format", IconName::Wand, "Format", "Format (⇧⌥F)", Box::new(crate::FormatSql)))
-                    .child(toolbar_button("btn-explain", IconName::ListTree, "Explain", "Explain (⌥⌘E)", Box::new(crate::Explain)))
+                    .child(toolbar_button(
+                        "btn-save",
+                        IconName::Save,
+                        "Save",
+                        "Save (⌘S)",
+                        Box::new(crate::SaveFile),
+                    ))
+                    .child(toolbar_button(
+                        "btn-format",
+                        IconName::Wand,
+                        "Format",
+                        "Format (⇧⌥F)",
+                        Box::new(crate::FormatSql),
+                    ))
+                    .child(toolbar_button(
+                        "btn-explain",
+                        IconName::ListTree,
+                        "Explain",
+                        "Explain (⌥⌘E)",
+                        Box::new(crate::Explain),
+                    ))
                     .child(
                         zbutton("btn-run-query")
                             .h(px(24.0))
@@ -111,12 +162,23 @@ impl QueryEditor {
                             .tooltip("Run the selection, or the statement at the cursor (⌘↵)")
                             .primary()
                             .xsmall()
-                            .on_click(cx.listener(move |this, _, window, cx| on_run(this, window, cx))),
+                            .on_click(
+                                cx.listener(move |this, _, window, cx| on_run(this, window, cx)),
+                            ),
                     ),
             )
             // The left padding is the ▶ column, so the button never sits on the line numbers
-            .child(div().flex_1().min_h_0().pl(px(RUN_COL_W)).bg(theme.bg_app).child(Editor::new(editor).h_full().bordered(false)))
-            .children(run_gutter_buttons(editor, is_running, soft_wrap, rules, theme, cx, on_run))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .pl(px(RUN_COL_W))
+                    .bg(theme.bg_app)
+                    .child(Editor::new(editor).h_full().bordered(false)),
+            )
+            .children(run_gutter_buttons(
+                editor, is_running, soft_wrap, rules, theme, cx, on_run,
+            ))
     }
 }
 
@@ -142,14 +204,24 @@ fn run_gutter_buttons<T: 'static>(
     on_run: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
 ) -> Vec<AnyElement> {
     let e = editor.read(cx);
-    let Some(line_height) = e.line_height() else { return vec![] };
+    let Some(line_height) = e.line_height() else {
+        return vec![];
+    };
     let scroll_y = e.scroll_offset().y;
     let sql = e.value();
     let area = e.input_bounds();
-    let starts: Vec<usize> = quarry_sql::split_statements_with(&sql, rules).into_iter().map(|s| s.start).collect();
+    let starts: Vec<usize> = quarry_sql::split_statements_with(&sql, rules)
+        .into_iter()
+        .map(|s| s.start)
+        .collect();
     let lines: Vec<usize> = sql.split('\n').map(|l| l.chars().count()).collect();
     let wrap_cols = (area.size.width / (line_height * 0.45)).floor() as usize;
-    let fits = |line: usize| !soft_wrap || lines[..line.min(lines.len())].iter().all(|n| *n < wrap_cols);
+    let fits = |line: usize| {
+        !soft_wrap
+            || lines[..line.min(lines.len())]
+                .iter()
+                .all(|n| *n < wrap_cols)
+    };
     let x = area.origin.x - px(RUN_COL_W) + px(3.0);
     starts
         .into_iter()
@@ -174,7 +246,9 @@ fn run_gutter_buttons<T: 'static>(
                 .text_color(theme.text_muted)
                 .when(!is_running, |d| d.hover(|s| s.text_color(theme.success)))
                 .cursor_pointer()
-                .tooltip(|window, cx| gpui::component::tooltip::Tooltip::new("Run statement (⌘↵)").build(window, cx))
+                .tooltip(|window, cx| {
+                    gpui::component::tooltip::Tooltip::new("Run statement (⌘↵)").build(window, cx)
+                })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     editor.update(cx, |e, cx| e.set_selected_range(start..start, cx));
@@ -186,7 +260,13 @@ fn run_gutter_buttons<T: 'static>(
         .collect()
 }
 
-fn toolbar_button(id: &'static str, icon: IconName, label: &'static str, tip: &'static str, action: Box<dyn Action>) -> impl IntoElement {
+fn toolbar_button(
+    id: &'static str,
+    icon: IconName,
+    label: &'static str,
+    tip: &'static str,
+    action: Box<dyn Action>,
+) -> impl IntoElement {
     zbutton(id)
         .h(px(24.0))
         .px_2()

@@ -31,13 +31,24 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
 
     while i < len {
         // SQL Server: a line that's just GO ends the batch. Oracle: a line that's just / ends a block.
-        if (rules.go_batches || rules.slash_blocks) && input[..i].rsplit('\n').next().is_some_and(|l| l.trim().is_empty()) {
+        if (rules.go_batches || rules.slash_blocks)
+            && input[..i]
+                .rsplit('\n')
+                .next()
+                .is_some_and(|l| l.trim().is_empty())
+        {
             let line_end = input[i..].find('\n').map_or(len, |n| i + n);
             let line = input[i..line_end].trim();
-            if (rules.go_batches && line.eq_ignore_ascii_case("go")) || (rules.slash_blocks && line == "/") {
+            if (rules.go_batches && line.eq_ignore_ascii_case("go"))
+                || (rules.slash_blocks && line == "/")
+            {
                 let sql_part = input[stmt_start..i].trim();
                 if !sql_part.is_empty() {
-                    statements.push(StatementSpan { start: stmt_start, end: i, sql: sql_part.to_string() });
+                    statements.push(StatementSpan {
+                        start: stmt_start,
+                        end: i,
+                        sql: sql_part.to_string(),
+                    });
                 }
                 i = line_end;
                 stmt_start = i;
@@ -53,7 +64,9 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
         }
 
         // Single-line comment: -- ... (or # ... where the dialect says so)
-        if (i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-') || (rules.hash_comments && bytes[i] == b'#') {
+        if (i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-')
+            || (rules.hash_comments && bytes[i] == b'#')
+        {
             i += 2;
             while i < len && bytes[i] != b'\n' {
                 i += 1;
@@ -133,7 +146,10 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
         }
 
         // Semicolon statement boundary (not in GO-batched scripts: a procedure body is full of them)
-        if bytes[i] == b';' && !rules.go_batches && !(rules.slash_blocks && quarry_core::dialect::is_plsql_block(&input[stmt_start..i])) {
+        if bytes[i] == b';'
+            && !rules.go_batches
+            && !(rules.slash_blocks && quarry_core::dialect::is_plsql_block(&input[stmt_start..i]))
+        {
             let sql_part = input[stmt_start..i].trim();
             if !sql_part.is_empty() {
                 statements.push(StatementSpan {
@@ -194,7 +210,11 @@ pub fn find_statement_at_offset(input: &str, cursor_offset: usize) -> Option<Sta
     find_statement_at_offset_with(input, cursor_offset, SplitRules::default())
 }
 
-pub fn find_statement_at_offset_with(input: &str, cursor_offset: usize, rules: SplitRules) -> Option<StatementSpan> {
+pub fn find_statement_at_offset_with(
+    input: &str,
+    cursor_offset: usize,
+    rules: SplitRules,
+) -> Option<StatementSpan> {
     let statements = split_statements_with(input, rules);
     if statements.is_empty() {
         return None;
@@ -277,29 +297,72 @@ mod tests {
 mod dialect_tests {
     use super::*;
 
-    const MYSQL: SplitRules = SplitRules { hash_comments: true, backslash_escapes: true, go_batches: false, slash_blocks: false };
-    const MSSQL: SplitRules = SplitRules { hash_comments: false, backslash_escapes: false, go_batches: true, slash_blocks: false };
-    const ORACLE: SplitRules = SplitRules { hash_comments: false, backslash_escapes: false, go_batches: false, slash_blocks: true };
+    const MYSQL: SplitRules = SplitRules {
+        hash_comments: true,
+        backslash_escapes: true,
+        go_batches: false,
+        slash_blocks: false,
+    };
+    const MSSQL: SplitRules = SplitRules {
+        hash_comments: false,
+        backslash_escapes: false,
+        go_batches: true,
+        slash_blocks: false,
+    };
+    const ORACLE: SplitRules = SplitRules {
+        hash_comments: false,
+        backslash_escapes: false,
+        go_batches: false,
+        slash_blocks: true,
+    };
 
     #[test]
     fn oracle_blocks_end_at_slash_and_plain_sql_at_semicolon() {
         let sql = "select 1 from dual;\nCREATE OR REPLACE PROCEDURE p AS\nBEGIN\n  NULL;\nEND;\n/\nselect 2 from dual";
-        let parts: Vec<String> = split_statements_with(sql, ORACLE).into_iter().map(|s| s.sql).collect();
-        assert_eq!(parts, vec!["select 1 from dual", "CREATE OR REPLACE PROCEDURE p AS\nBEGIN\n  NULL;\nEND;", "select 2 from dual"]);
+        let parts: Vec<String> = split_statements_with(sql, ORACLE)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            parts,
+            vec![
+                "select 1 from dual",
+                "CREATE OR REPLACE PROCEDURE p AS\nBEGIN\n  NULL;\nEND;",
+                "select 2 from dual"
+            ]
+        );
     }
 
     #[test]
     fn sql_server_batches_end_at_go() {
         let sql = "CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\n  SELECT 'GO';\nEND\n  go  \nSELECT 2;\nSELECT 3";
-        let parts: Vec<String> = split_statements_with(sql, MSSQL).into_iter().map(|s| s.sql).collect();
-        assert_eq!(parts, vec!["CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\n  SELECT 'GO';\nEND", "SELECT 2;\nSELECT 3"]);
+        let parts: Vec<String> = split_statements_with(sql, MSSQL)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            parts,
+            vec![
+                "CREATE PROCEDURE p AS\nBEGIN\n  SELECT 1;\n  SELECT 'GO';\nEND",
+                "SELECT 2;\nSELECT 3"
+            ]
+        );
     }
 
     #[test]
     fn mysql_hash_comments_backslashes_and_backticks() {
         let sql = "select 'it\\'s; fine' from `odd;name`; # a comment; not a statement\nselect 2";
-        let parts: Vec<String> = split_statements_with(sql, MYSQL).into_iter().map(|s| s.sql).collect();
-        assert_eq!(parts, vec!["select 'it\\'s; fine' from `odd;name`", "# a comment; not a statement\nselect 2"]);
+        let parts: Vec<String> = split_statements_with(sql, MYSQL)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(
+            parts,
+            vec![
+                "select 'it\\'s; fine' from `odd;name`",
+                "# a comment; not a statement\nselect 2"
+            ]
+        );
     }
 
     #[test]

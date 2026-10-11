@@ -95,7 +95,9 @@ pub enum TxVerb {
 
 /// Recognises statements that start or end a transaction
 pub fn tx_verb(sql: &str) -> Option<TxVerb> {
-    let mut words = sql.split_whitespace().map(|w| w.trim_end_matches(';').to_ascii_uppercase());
+    let mut words = sql
+        .split_whitespace()
+        .map(|w| w.trim_end_matches(';').to_ascii_uppercase());
     match words.next()?.as_str() {
         "BEGIN" | "START" => Some(TxVerb::Begin),
         // ROLLBACK TO SAVEPOINT keeps the transaction open
@@ -107,13 +109,27 @@ pub fn tx_verb(sql: &str) -> Option<TxVerb> {
 
 /// Plain reads don't open a transaction in manual-commit mode. `WITH` can write, so it counts as a write.
 pub fn is_read(sql: &str) -> bool {
-    let verb = sql.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
-    matches!(verb.as_str(), "SELECT" | "EXPLAIN" | "SHOW" | "PRAGMA" | "VALUES" | "TABLE")
+    let verb = sql
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    matches!(
+        verb.as_str(),
+        "SELECT" | "EXPLAIN" | "SHOW" | "PRAGMA" | "VALUES" | "TABLE"
+    )
 }
 
 pub fn is_mutation(sql: &str) -> bool {
-    let verb = sql.split_whitespace().next().unwrap_or("").to_ascii_uppercase();
-    matches!(verb.as_str(), "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" | "ALTER" | "TRUNCATE")
+    let verb = sql
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    matches!(
+        verb.as_str(),
+        "INSERT" | "UPDATE" | "DELETE" | "CREATE" | "DROP" | "ALTER" | "TRUNCATE"
+    )
 }
 
 #[async_trait]
@@ -132,7 +148,13 @@ pub trait DatabaseSession: Send + Sync {
 
     /// One schema's tables
     async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
-        Ok(self.introspect().await?.tables.into_iter().filter(|t| t.schema_name.eq_ignore_ascii_case(schema)).collect())
+        Ok(self
+            .introspect()
+            .await?
+            .tables
+            .into_iter()
+            .filter(|t| t.schema_name.eq_ignore_ascii_case(schema))
+            .collect())
     }
 
     /// Executes an arbitrary SQL query or statement
@@ -150,7 +172,10 @@ pub trait DatabaseSession: Send + Sync {
     /// DDL and indexes for a table's Structure and DDL views. The default rebuilds `CREATE TABLE`
     /// from the catalog; drivers that can do better (stored DDL, indexes, constraints) override it.
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
-        Ok(TableInfo { ddl: table.create_sql(self.dialect()), indexes: Vec::new() })
+        Ok(TableInfo {
+            ddl: table.create_sql(self.dialect()),
+            indexes: Vec::new(),
+        })
     }
 
     /// Functions, sequences, triggers and types in `schema`. Fetched when the schema is expanded.
@@ -160,7 +185,10 @@ pub trait DatabaseSession: Send + Sync {
 
     /// The definition of one of `objects`, as SQL that would recreate it
     async fn object_ddl(&self, _schema: &str, obj: &SchemaObject) -> Result<String, DbError> {
-        Err(DbError::Internal(format!("no definition available for {}", obj.name)))
+        Err(DbError::Internal(format!(
+            "no definition available for {}",
+            obj.name
+        )))
     }
 
     /// Whole-database dump, when the database supports one

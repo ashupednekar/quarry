@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 use crate::state::{AppState, ConnectionProfile, Environment};
-use quarry_core::DatabaseSession;
-use std::sync::Arc;
 use crate::theme::Theme;
 use crate::ui::*;
 use gpui::*;
+use quarry_core::DatabaseSession;
+use std::sync::Arc;
 
 pub struct StatusBar;
 
@@ -23,7 +23,8 @@ impl StatusBar {
         on_commit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_rollback: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
-        let (manual, in_tx) = session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
+        let (manual, in_tx) =
+            session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
         let link = |id: &'static str, label: &'static str, color: Rgba| {
             div()
                 .id(id)
@@ -41,7 +42,11 @@ impl StatusBar {
             .filter(|t| !matches!(t, crate::state::Tab::Query { .. }))
             .and_then(|t| {
                 let rs = t.grid().read(cx).delegate();
-                let more = if rs.source.as_ref().is_some_and(|s| s.has_more) { "+" } else { "" };
+                let more = if rs.source.as_ref().is_some_and(|s| s.has_more) {
+                    "+"
+                } else {
+                    ""
+                };
                 rs.result().map(|res| (res, more))
             })
             .map(|(res, more)| {
@@ -52,9 +57,13 @@ impl StatusBar {
             })
             .map(|(rows, time)| format!("{} · {}", rows, time));
 
-        let conn_name = connection.map(|c| c.name.clone()).unwrap_or_else(|| "Not connected".to_string());
+        let conn_name = connection
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Not connected".to_string());
         // Where it points, so two connections with similar names can't be confused
-        let address = connection.map(|c| crate::connections::display_address(c)).filter(|a| *a != conn_name);
+        let address = connection
+            .map(|c| crate::connections::display_address(c))
+            .filter(|a| *a != conn_name);
         let env_tag = connection.map(|c| c.env).unwrap_or(Environment::Local);
         // Flow C: "PROD · READ-ONLY" is impossible to miss
         let env_label = match (env_tag, session.is_some_and(|s| s.is_read_only())) {
@@ -83,60 +92,75 @@ impl StatusBar {
                     .gap_3()
                     .items_center()
                     // Transaction mode (E9): click to switch; an open transaction shows Commit / Rollback
-                    .when(session.is_some(), |this| this.child(
-                        link("tx-mode", if manual { "Manual commit" } else { "Auto-commit" }, theme.text_muted)
-                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_tx(this, window, cx))),
-                    ))
+                    .when(session.is_some(), |this| {
+                        this.child(
+                            link(
+                                "tx-mode",
+                                if manual {
+                                    "Manual commit"
+                                } else {
+                                    "Auto-commit"
+                                },
+                                theme.text_muted,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| on_toggle_tx(this, window, cx),
+                            )),
+                        )
+                    })
                     .when(in_tx, |this| {
-                        this.child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.warning).child("● Transaction open"))
-                            .child(
-                                link("tx-commit", "Commit", theme.success)
-                                    .on_click(cx.listener(move |this, _, window, cx| on_commit(this, window, cx))),
-                            )
-                            .child(
-                                link("tx-rollback", "Rollback", theme.danger)
-                                    .on_click(cx.listener(move |this, _, window, cx| on_rollback(this, window, cx))),
-                            )
+                        this.child(
+                            div()
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.warning)
+                                .child("● Transaction open"),
+                        )
+                        .child(link("tx-commit", "Commit", theme.success).on_click(
+                            cx.listener(move |this, _, window, cx| on_commit(this, window, cx)),
+                        ))
+                        .child(
+                            link("tx-rollback", "Rollback", theme.danger).on_click(cx.listener(
+                                move |this, _, window, cx| on_rollback(this, window, cx),
+                            )),
+                        )
                     })
                     .child(
                         // Active connection badge
                         h_flex()
                             .gap_1p5()
                             .items_center()
-                            .child(
-                                div()
-                                    .w(px(5.0))
-                                    .h(px(5.0))
-                                    .rounded(px(2.5))
-                                    .bg(env_color),
-                            )
+                            .child(div().w(px(5.0)).h(px(5.0)).rounded(px(2.5)).bg(env_color))
                             .child(
                                 div()
                                     .text_xs()
                                     .text_color(theme.text_secondary)
                                     .child(conn_name),
                             )
-                            .when_some(address, |d, a| d.child(div().text_xs().text_color(theme.text_muted).child(a))),
+                            .when_some(address, |d, a| {
+                                d.child(div().text_xs().text_color(theme.text_muted).child(a))
+                            }),
                     )
-                    .when(connection.is_some(), |this| this.child(
-                        // Environment Pill
-                        div()
-                            .px_1p5()
-                            .py(px(0.5))
-                            .rounded(px(3.0))
-                            .bg(theme.bg_surface)
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(env_color)
-                            .child(env_label),
-                    )),
+                    .when(connection.is_some(), |this| {
+                        this.child(
+                            // Environment Pill
+                            div()
+                                .px_1p5()
+                                .py(px(0.5))
+                                .rounded(px(3.0))
+                                .bg(theme.bg_surface)
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(env_color)
+                                .child(env_label),
+                        )
+                    }),
             )
             .child(
                 // Center items: Row count & execution time
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .children(stats.map(|s| div().text_xs().text_color(theme.text_secondary).child(s))),
+                h_flex().gap_2().items_center().children(
+                    stats.map(|s| div().text_xs().text_color(theme.text_secondary).child(s)),
+                ),
             )
             .child(
                 // Right items: quiet toggles (also on ⌘B / ⌘J and in ⌘K)
@@ -144,12 +168,32 @@ impl StatusBar {
                     .gap_1()
                     .items_center()
                     .child(
-                        link("statusbar-toggle-sidebar", "Sidebar ⌘B", if state.sidebar_visible { theme.text_secondary } else { theme.text_muted })
-                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_sidebar(this, window, cx))),
+                        link(
+                            "statusbar-toggle-sidebar",
+                            "Sidebar ⌘B",
+                            if state.sidebar_visible {
+                                theme.text_secondary
+                            } else {
+                                theme.text_muted
+                            },
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| on_toggle_sidebar(this, window, cx),
+                        )),
                     )
                     .child(
-                        link("statusbar-toggle-bottom", "Panel ⌘J", if state.bottom_panel_open { theme.text_secondary } else { theme.text_muted })
-                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_bottom(this, window, cx))),
+                        link(
+                            "statusbar-toggle-bottom",
+                            "Panel ⌘J",
+                            if state.bottom_panel_open {
+                                theme.text_secondary
+                            } else {
+                                theme.text_muted
+                            },
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| on_toggle_bottom(this, window, cx),
+                        )),
                     ),
             )
     }

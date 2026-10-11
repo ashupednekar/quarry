@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! SSH tunnels (C4, UC2) via the system `ssh` client: agent or key file, no prompts.
 
 use serde::{Deserialize, Serialize};
@@ -34,16 +33,35 @@ impl Drop for Tunnel {
 impl Tunnel {
     /// Forwards a free local port to `remote_host:remote_port` as seen from the SSH server
     pub fn open(cfg: &SshConfig, remote_host: &str, remote_port: u16) -> Result<Tunnel, String> {
-        let local_port = TcpListener::bind("127.0.0.1:0").and_then(|l| l.local_addr()).map_err(|e| e.to_string())?.port();
+        let local_port = TcpListener::bind("127.0.0.1:0")
+            .and_then(|l| l.local_addr())
+            .map_err(|e| e.to_string())?
+            .port();
         let mut cmd = Command::new("ssh");
-        cmd.args(["-N", "-L", &format!("127.0.0.1:{local_port}:{remote_host}:{remote_port}")])
-            .args(["-p", &cfg.port.to_string()])
-            // Never prompt (passphrase keys must be in ssh-agent); fail fast if the forward can't be set up
-            .args(["-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=30"])
-            .args(["-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+        cmd.args([
+            "-N",
+            "-L",
+            &format!("127.0.0.1:{local_port}:{remote_host}:{remote_port}"),
+        ])
+        .args(["-p", &cfg.port.to_string()])
+        // Never prompt (passphrase keys must be in ssh-agent); fail fast if the forward can't be set up
+        .args([
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+        ])
+        .args([
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
         if let Some(key) = cfg.key_path.as_deref().filter(|k| !k.trim().is_empty()) {
             cmd.args(["-i", &expand_home(key), "-o", "IdentitiesOnly=yes"]);
         }
@@ -79,12 +97,19 @@ impl Tunnel {
 /// and exits on its own once the tunnel is closed normally.
 fn watch(app_pid: u32, ssh_pid: u32) {
     let script = format!("while kill -0 {app_pid} 2>/dev/null && kill -0 {ssh_pid} 2>/dev/null; do sleep 2; done; kill {ssh_pid} 2>/dev/null");
-    let _ = Command::new("sh").args(["-c", &script]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    let _ = Command::new("sh")
+        .args(["-c", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
 }
 
 fn expand_home(path: &str) -> String {
     match path.strip_prefix("~/") {
-        Some(rest) => std::env::var("HOME").map(|h| format!("{h}/{rest}")).unwrap_or_else(|_| path.to_string()),
+        Some(rest) => std::env::var("HOME")
+            .map(|h| format!("{h}/{rest}"))
+            .unwrap_or_else(|_| path.to_string()),
         None => path.to_string(),
     }
 }

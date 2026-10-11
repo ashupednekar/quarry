@@ -36,12 +36,15 @@ impl QuarryWindow {
         let s = self.settings.clone();
 
         // A switch bound to one bool field
-        let toggle = |id: &'static str, on: bool, set: fn(&mut Settings, bool), cx: &mut Context<Self>| {
-            Switch::new(id).checked(on).small().on_click(cx.listener(move |this, v: &bool, _, cx| {
-                let v = *v;
-                this.change_setting(|s| set(s, v), cx)
-            }))
-        };
+        let toggle =
+            |id: &'static str, on: bool, set: fn(&mut Settings, bool), cx: &mut Context<Self>| {
+                Switch::new(id).checked(on).small().on_click(cx.listener(
+                    move |this, v: &bool, _, cx| {
+                        let v = *v;
+                        this.change_setting(|s| set(s, v), cx)
+                    },
+                ))
+            };
         // Chips over a few fixed values of one field
         fn choices<V: PartialEq + Clone + 'static>(
             t: &crate::theme::Theme,
@@ -61,8 +64,17 @@ impl QuarryWindow {
         }
 
         // Stored as written (user theme files are looked up by name); matched without case
-        let themes: Vec<(String, String)> = self.settings_themes.iter().map(|n| (n.clone(), n.clone())).collect();
-        let current_theme = self.settings_themes.iter().find(|n| n.eq_ignore_ascii_case(s.theme.trim())).cloned().unwrap_or_else(|| s.theme.clone());
+        let themes: Vec<(String, String)> = self
+            .settings_themes
+            .iter()
+            .map(|n| (n.clone(), n.clone()))
+            .collect();
+        let current_theme = self
+            .settings_themes
+            .iter()
+            .find(|n| n.eq_ignore_ascii_case(s.theme.trim()))
+            .cloned()
+            .unwrap_or_else(|| s.theme.clone());
         let appearance = v_flex()
             .child(section_title(&t, "Appearance"))
             // Themes can be many (user files), so they get the full width under the label
@@ -74,15 +86,36 @@ impl QuarryWindow {
                         v_flex()
                             .gap_0p5()
                             .child(div().text_sm().text_color(t.text_primary).child("Theme"))
-                            .child(div().text_xs().text_color(t.text_muted).child("Built-ins, or drop a .json into the themes folder")),
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(t.text_muted)
+                                    .child("Built-ins, or drop a .json into the themes folder"),
+                            ),
                     )
-                    .child(choices(&t, "theme", themes, &current_theme, |s, v| s.theme = v, cx)),
+                    .child(choices(
+                        &t,
+                        "theme",
+                        themes,
+                        &current_theme,
+                        |s, v| s.theme = v,
+                        cx,
+                    )),
             )
             .child(setting_row(
                 &t,
                 "Interface size",
                 "Labels, menus and panes",
-                choices(&t, "ui-size", [12.0f32, 13.0, 14.0, 15.0, 16.0, 18.0].map(|v| (v, format!("{v}"))).to_vec(), &s.font_size, |s, v| s.font_size = v, cx),
+                choices(
+                    &t,
+                    "ui-size",
+                    [12.0f32, 13.0, 14.0, 15.0, 16.0, 18.0]
+                        .map(|v| (v, format!("{v}")))
+                        .to_vec(),
+                    &s.font_size,
+                    |s, v| s.font_size = v,
+                    cx,
+                ),
             ))
             .child(setting_row(
                 &t,
@@ -91,7 +124,15 @@ impl QuarryWindow {
                 choices(
                     &t,
                     "mono-size",
-                    [(0.0f32, "Auto".to_string()), (12.0, "12".into()), (13.0, "13".into()), (14.0, "14".into()), (15.0, "15".into()), (16.0, "16".into())].to_vec(),
+                    [
+                        (0.0f32, "Auto".to_string()),
+                        (12.0, "12".into()),
+                        (13.0, "13".into()),
+                        (14.0, "14".into()),
+                        (15.0, "15".into()),
+                        (16.0, "16".into()),
+                    ]
+                    .to_vec(),
                     &s.mono_font_size,
                     |s, v| s.mono_font_size = v,
                     cx,
@@ -100,16 +141,58 @@ impl QuarryWindow {
 
         let editor = v_flex()
             .child(section_title(&t, "Editor"))
-            .child(setting_row(&t, "Tab size", "Spaces per indent", choices(&t, "tab", vec![(2usize, "2".into()), (4, "4".into())], &s.tab_size, |s, v| s.tab_size = v, cx)))
-            .child(setting_row(&t, "Soft wrap", "Wrap long lines instead of scrolling sideways", toggle("soft-wrap", s.soft_wrap, |s, v| s.soft_wrap = v, cx)))
-            .child(setting_row(&t, "Line numbers", "In the gutter", toggle("line-numbers", s.line_numbers, |s, v| s.line_numbers = v, cx)))
+            .child(setting_row(
+                &t,
+                "Tab size",
+                "Spaces per indent",
+                choices(
+                    &t,
+                    "tab",
+                    vec![(2usize, "2".into()), (4, "4".into())],
+                    &s.tab_size,
+                    |s, v| s.tab_size = v,
+                    cx,
+                ),
+            ))
+            .child(setting_row(
+                &t,
+                "Soft wrap",
+                "Wrap long lines instead of scrolling sideways",
+                toggle("soft-wrap", s.soft_wrap, |s, v| s.soft_wrap = v, cx),
+            ))
+            .child(setting_row(
+                &t,
+                "Line numbers",
+                "In the gutter",
+                toggle(
+                    "line-numbers",
+                    s.line_numbers,
+                    |s, v| s.line_numbers = v,
+                    cx,
+                ),
+            ))
             .child(setting_row(
                 &t,
                 "Highlight current statement",
                 "Tint what ⌘↵ will run",
-                toggle("highlight", s.highlight_current_statement, |s, v| s.highlight_current_statement = v, cx),
+                toggle(
+                    "highlight",
+                    s.highlight_current_statement,
+                    |s, v| s.highlight_current_statement = v,
+                    cx,
+                ),
             ))
-            .child(setting_row(&t, "Autocomplete", "Tables, columns and joins as you type", toggle("autocomplete", s.autocomplete, |s, v| s.autocomplete = v, cx)));
+            .child(setting_row(
+                &t,
+                "Autocomplete",
+                "Tables, columns and joins as you type",
+                toggle(
+                    "autocomplete",
+                    s.autocomplete,
+                    |s, v| s.autocomplete = v,
+                    cx,
+                ),
+            ));
 
         let grid = v_flex()
             .child(section_title(&t, "Data grid"))
@@ -117,19 +200,46 @@ impl QuarryWindow {
                 &t,
                 "Rows per page",
                 "Fetched at a time in table tabs",
-                choices(&t, "rows", [100usize, 500, 1000, 5000].map(|v| (v, v.to_string())).to_vec(), &s.rows_per_page, |s, v| s.rows_per_page = v, cx),
+                choices(
+                    &t,
+                    "rows",
+                    [100usize, 500, 1000, 5000]
+                        .map(|v| (v, v.to_string()))
+                        .to_vec(),
+                    &s.rows_per_page,
+                    |s, v| s.rows_per_page = v,
+                    cx,
+                ),
             ))
             .child(setting_row(
                 &t,
                 "Show NULL as",
                 "How empty values read in cells",
-                choices(&t, "null", ["NULL", "null", "∅", "—"].map(|v| (v.to_string(), v.to_string())).to_vec(), &s.null_display, |s, v| s.null_display = v, cx),
+                choices(
+                    &t,
+                    "null",
+                    ["NULL", "null", "∅", "—"]
+                        .map(|v| (v.to_string(), v.to_string()))
+                        .to_vec(),
+                    &s.null_display,
+                    |s, v| s.null_display = v,
+                    cx,
+                ),
             ))
             .child(setting_row(
                 &t,
                 "Max column width",
                 "Longer values are cut off; the value editor shows all of it",
-                choices(&t, "colw", [240.0f32, 320.0, 420.0, 640.0].map(|v| (v, format!("{v}"))).to_vec(), &s.max_column_width, |s, v| s.max_column_width = v, cx),
+                choices(
+                    &t,
+                    "colw",
+                    [240.0f32, 320.0, 420.0, 640.0]
+                        .map(|v| (v, format!("{v}")))
+                        .to_vec(),
+                    &s.max_column_width,
+                    |s, v| s.max_column_width = v,
+                    cx,
+                ),
             ));
 
         let safety = v_flex()
@@ -144,7 +254,17 @@ impl QuarryWindow {
                 &t,
                 "Transactions",
                 "For new connections: commit each statement, or commit yourself",
-                choices(&t, "tx", vec![("auto".to_string(), "Auto-commit".into()), ("manual".to_string(), "Manual".into())], &s.default_transaction_mode, |s, v| s.default_transaction_mode = v, cx),
+                choices(
+                    &t,
+                    "tx",
+                    vec![
+                        ("auto".to_string(), "Auto-commit".into()),
+                        ("manual".to_string(), "Manual".into()),
+                    ],
+                    &s.default_transaction_mode,
+                    |s, v| s.default_transaction_mode = v,
+                    cx,
+                ),
             ))
             .child(setting_row(
                 &t,
@@ -153,7 +273,12 @@ impl QuarryWindow {
                 choices(
                     &t,
                     "timeout",
-                    vec![(0u64, "Off".into()), (30, "30s".into()), (60, "1m".into()), (300, "5m".into())],
+                    vec![
+                        (0u64, "Off".into()),
+                        (30, "30s".into()),
+                        (60, "1m".into()),
+                        (300, "5m".into()),
+                    ],
                     &s.default_statement_timeout_secs,
                     |s, v| s.default_statement_timeout_secs = v,
                     cx,
@@ -166,29 +291,45 @@ impl QuarryWindow {
                 h_flex()
                     .gap_4()
                     .child(
-                        div().id("open-settings-json").text_xs().text_color(t.text_muted).cursor_pointer().hover(|s| s.text_color(t.text_primary)).child("Edit settings.json").on_click(
-                            cx.listener(|this, _, window, cx| {
+                        div()
+                            .id("open-settings-json")
+                            .text_xs()
+                            .text_color(t.text_muted)
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(t.text_primary))
+                            .child("Edit settings.json")
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 this.settings_open = false;
                                 this.open_config_file(false, window, cx);
-                            }),
-                        ),
+                            })),
                     )
                     .child(
-                        div().id("open-themes").text_xs().text_color(t.text_muted).cursor_pointer().hover(|s| s.text_color(t.text_primary)).child("Open themes folder").on_click(
-                            cx.listener(|_, _, _, cx| {
+                        div()
+                            .id("open-themes")
+                            .text_xs()
+                            .text_color(t.text_muted)
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(t.text_primary))
+                            .child("Open themes folder")
+                            .on_click(cx.listener(|_, _, _, cx| {
                                 if let Some(dir) = crate::theme::themes_dir() {
                                     let example = dir.join("example.json");
                                     if !dir.exists() {
                                         let _ = std::fs::create_dir_all(&dir);
-                                        let _ = std::fs::write(&example, crate::theme::EXAMPLE_THEME);
+                                        let _ =
+                                            std::fs::write(&example, crate::theme::EXAMPLE_THEME);
                                     }
                                     cx.reveal_path(&dir);
                                 }
-                            }),
-                        ),
+                            })),
                     ),
             )
-            .child(div().text_xs().text_color(t.text_muted).child("Saved as you go"));
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(t.text_muted)
+                    .child("Saved as you go"),
+            );
 
         Some(
             modal_backdrop("settings-backdrop", dismiss_on_click)
@@ -196,7 +337,12 @@ impl QuarryWindow {
                     modal_card("settings-card", 640.0, &t)
                         .max_h(px(640.0))
                         .overflow_hidden()
-                        .child(modal_header(&t, "Settings", Some("Quarry · ⌘,".into()), dismiss_on_click))
+                        .child(modal_header(
+                            &t,
+                            "Settings",
+                            Some("Quarry · ⌘,".into()),
+                            dismiss_on_click,
+                        ))
                         .child(
                             modal_body("settings-body")
                                 .flex_1()

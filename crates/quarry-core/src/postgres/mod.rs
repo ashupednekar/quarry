@@ -11,8 +11,12 @@ pub use url::split_password;
 
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema, EAGER_SCHEMAS};
-use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb};
+use crate::schema::{
+    ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema, EAGER_SCHEMAS,
+};
+use crate::session::{
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb,
+};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -23,8 +27,20 @@ use tokio_postgres::{Client, NoTls, SimpleQueryMessage};
 pub struct PostgresDriver;
 pub static DRIVER: PostgresDriver = PostgresDriver;
 
-const fn field(label: &'static str, placeholder: &'static str, secret: bool, row: u8, width: Option<f32>) -> Field {
-    Field { label, placeholder, secret, row, width }
+const fn field(
+    label: &'static str,
+    placeholder: &'static str,
+    secret: bool,
+    row: u8,
+    width: Option<f32>,
+) -> Field {
+    Field {
+        label,
+        placeholder,
+        secret,
+        row,
+        width,
+    }
 }
 
 #[async_trait]
@@ -42,7 +58,9 @@ impl Driver for PostgresDriver {
     }
 
     fn recognizes(&self, conn: &str) -> bool {
-        conn.starts_with("postgres://") || conn.starts_with("postgresql://") || conn.contains("host=")
+        conn.starts_with("postgres://")
+            || conn.starts_with("postgresql://")
+            || conn.contains("host=")
     }
 
     fn fields(&self) -> &'static [Field] {
@@ -57,12 +75,17 @@ impl Driver for PostgresDriver {
     }
 
     fn split(&self, conn: &str) -> Vec<String> {
-        crate::conn_url::parse(conn, &url::SCHEMES).map_or_else(|| url::parse_kv(conn), |(f, _)| f).to_vec()
+        crate::conn_url::parse(conn, &url::SCHEMES)
+            .map_or_else(|| url::parse_kv(conn), |(f, _)| f)
+            .to_vec()
     }
 
     fn join(&self, values: &[String], previous: &str) -> String {
-        let query = crate::conn_url::parse(previous, &url::SCHEMES).map(|(_, q)| q).unwrap_or_default();
-        let fields: crate::conn_url::UrlFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
+        let query = crate::conn_url::parse(previous, &url::SCHEMES)
+            .map(|(_, q)| q)
+            .unwrap_or_default();
+        let fields: crate::conn_url::UrlFields =
+            std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
         crate::conn_url::build("postgres", &fields, &query)
     }
 
@@ -77,8 +100,16 @@ impl Driver for PostgresDriver {
     /// `host:port/db`, without user or password
     fn display_address(&self, conn: &str) -> String {
         let [host, port, _, _, db] = <[String; 5]>::try_from(self.split(conn)).unwrap_or_default();
-        let host = if host.is_empty() { "localhost".to_string() } else { host };
-        let mut out = if port.is_empty() { host } else { format!("{host}:{port}") };
+        let host = if host.is_empty() {
+            "localhost".to_string()
+        } else {
+            host
+        };
+        let mut out = if port.is_empty() {
+            host
+        } else {
+            format!("{host}:{port}")
+        };
         if !db.is_empty() {
             out += &format!("/{db}");
         }
@@ -93,7 +124,11 @@ impl Driver for PostgresDriver {
         url::retarget(conn, local_port)
     }
 
-    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+    async fn connect(
+        &self,
+        conn: &str,
+        read_only: bool,
+    ) -> Result<Arc<dyn DatabaseSession>, DbError> {
         Ok(Arc::new(PostgresSession::connect(conn, read_only).await?))
     }
 }
@@ -128,7 +163,9 @@ impl PostgresSession {
             .unwrap_or_else(|_| "postgres".to_string());
 
         if read_only {
-            let _ = client.batch_execute("SET default_transaction_read_only = TRUE;").await;
+            let _ = client
+                .batch_execute("SET default_transaction_read_only = TRUE;")
+                .await;
         }
 
         Ok(Self {
@@ -158,7 +195,6 @@ fn sql_string(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
-
 #[async_trait]
 impl DatabaseSession for PostgresSession {
     async fn ping(&self) -> Result<Duration, DbError> {
@@ -177,11 +213,18 @@ impl DatabaseSession for PostgresSession {
     /// Many schemas: only the one unqualified names resolve to, the rest when opened
     async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
         let c = self.catalog_where(Some("current_schema()")).await?;
-        if c.schemas.len() > EAGER_SCHEMAS { Ok(c.lazy()) } else { self.introspect().await }
+        if c.schemas.len() > EAGER_SCHEMAS {
+            Ok(c.lazy())
+        } else {
+            self.introspect().await
+        }
     }
 
     async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
-        Ok(self.catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into())))).await?.tables)
+        Ok(self
+            .catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into()))))
+            .await?
+            .tables)
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -191,7 +234,10 @@ impl DatabaseSession for PostgresSession {
         // Manual-commit mode: the first statement opens a transaction the user commits explicitly (E9)
         let verb = tx_verb(sql);
         if self.tx.manual() && !self.tx.open() && verb.is_none() && !is_read(sql) {
-            self.client.batch_execute("BEGIN").await.map_err(|e| DbError::SqlError(e.to_string()))?;
+            self.client
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|e| DbError::SqlError(e.to_string()))?;
             self.tx.set_open(true);
         }
         let result = self.run_statement(sql).await;
@@ -204,7 +250,11 @@ impl DatabaseSession for PostgresSession {
         result
     }
 
-    async fn apply_edits(&self, table_name: &str, changes: &PendingChanges) -> Result<usize, DbError> {
+    async fn apply_edits(
+        &self,
+        table_name: &str,
+        changes: &PendingChanges,
+    ) -> Result<usize, DbError> {
         if self.read_only {
             return Err(DbError::ReadOnlyViolation);
         }
@@ -229,10 +279,21 @@ impl DatabaseSession for PostgresSession {
                 Ok(_) => DbError::ConcurrentModification,
                 Err(e) => DbError::SqlError(e.to_string()),
             };
-            let _ = self.batch(if keep_open { "ROLLBACK TO SAVEPOINT quarry_edits" } else { "ROLLBACK" }).await;
+            let _ = self
+                .batch(if keep_open {
+                    "ROLLBACK TO SAVEPOINT quarry_edits"
+                } else {
+                    "ROLLBACK"
+                })
+                .await;
             return Err(failure);
         }
-        self.batch(if keep_open { "RELEASE SAVEPOINT quarry_edits" } else { "COMMIT" }).await?;
+        self.batch(if keep_open {
+            "RELEASE SAVEPOINT quarry_edits"
+        } else {
+            "COMMIT"
+        })
+        .await?;
         Ok(statements.len())
     }
 
@@ -248,13 +309,24 @@ impl DatabaseSession for PostgresSession {
         self.list_objects(schema).await
     }
 
-    async fn object_ddl(&self, _schema: &str, obj: &crate::schema::SchemaObject) -> Result<String, DbError> {
+    async fn object_ddl(
+        &self,
+        _schema: &str,
+        obj: &crate::schema::SchemaObject,
+    ) -> Result<String, DbError> {
         self.definition(obj).await
     }
 
     /// Postgres doesn't keep DDL: CREATE TABLE comes from the catalog, the rest from pg_catalog
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
-        let rel = format!("{}::regclass", sql_string(&self.dialect().qualified(&table.schema_name, &table.table_name)));
+        let rel = format!(
+            "{}::regclass",
+            sql_string(
+                &self
+                    .dialect()
+                    .qualified(&table.schema_name, &table.table_name)
+            )
+        );
         let extra = self.run_statement(&format!(
             "SELECT format('ALTER TABLE %s ADD CONSTRAINT %I %s', conrelid::regclass, conname, pg_get_constraintdef(oid)) \
              FROM pg_constraint WHERE conrelid = {rel} AND contype IN ('c', 'u', 'x') \
@@ -270,9 +342,20 @@ impl DatabaseSession for PostgresSession {
              FROM generate_subscripts(ix.indkey, 1) AS k ORDER BY k), ', ') \
              FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid WHERE ix.indrelid = {rel} ORDER BY i.relname"
         )).await?;
-        let mut parts = vec![format!("-- Rebuilt from the catalog\n{}", table.create_sql(self.dialect()))];
-        parts.extend(extra.rows.iter().map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';'))));
-        Ok(TableInfo { ddl: parts.join("\n\n"), indexes: crate::schema::index_rows(&indexes) })
+        let mut parts = vec![format!(
+            "-- Rebuilt from the catalog\n{}",
+            table.create_sql(self.dialect())
+        )];
+        parts.extend(
+            extra
+                .rows
+                .iter()
+                .map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';'))),
+        );
+        Ok(TableInfo {
+            ddl: parts.join("\n\n"),
+            indexes: crate::schema::index_rows(&indexes),
+        })
     }
 
     fn is_read_only(&self) -> bool {
@@ -290,7 +373,10 @@ impl DatabaseSession for PostgresSession {
 
 impl PostgresSession {
     async fn batch(&self, sql: &str) -> Result<(), DbError> {
-        self.client.batch_execute(sql).await.map_err(|e| DbError::SqlError(e.to_string()))
+        self.client
+            .batch_execute(sql)
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))
     }
 
     async fn run_statement(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -307,13 +393,20 @@ impl PostgresSession {
 
         // Streamed so rows past MAX_ROWS are counted, not kept. The stream is read to the end
         // either way, so the connection stays in step for the next statement.
-        let messages = self.client.simple_query_raw(sql).await.map_err(statement_err)?;
+        let messages = self
+            .client
+            .simple_query_raw(sql)
+            .await
+            .map_err(statement_err)?;
         futures_util::pin_mut!(messages);
 
         let mut columns = Vec::new();
         let mut rows = Vec::new();
         let mut affected = 0;
-        while let Some(msg) = futures_util::TryStreamExt::try_next(&mut messages).await.map_err(statement_err)? {
+        while let Some(msg) = futures_util::TryStreamExt::try_next(&mut messages)
+            .await
+            .map_err(statement_err)?
+        {
             match msg {
                 SimpleQueryMessage::RowDescription(cols) => {
                     columns = cols.iter().map(|c| c.name().to_string()).collect();
@@ -348,13 +441,22 @@ fn decode_text(text: Option<&str>, ty: Option<&Type>) -> DbValue {
     let Some(ty) = ty else { return text() };
     match *ty {
         Type::BOOL => DbValue::Boolean(t == "t"),
-        Type::INT2 | Type::INT4 | Type::INT8 | Type::OID => t.parse().map(DbValue::Int).unwrap_or_else(|_| text()),
+        Type::INT2 | Type::INT4 | Type::INT8 | Type::OID => {
+            t.parse().map(DbValue::Int).unwrap_or_else(|_| text())
+        }
         Type::FLOAT4 | Type::FLOAT8 => t.parse().map(DbValue::Float).unwrap_or_else(|_| text()),
         Type::NUMERIC => DbValue::Decimal(t.to_string()),
-        Type::JSON | Type::JSONB => serde_json::from_str(t).map(DbValue::Json).unwrap_or_else(|_| text()),
+        Type::JSON | Type::JSONB => serde_json::from_str(t)
+            .map(DbValue::Json)
+            .unwrap_or_else(|_| text()),
         Type::BYTEA => t
             .strip_prefix("\\x")
-            .and_then(|hex| (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok()).collect())
+            .and_then(|hex| {
+                (0..hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                    .collect()
+            })
             .map(DbValue::Blob)
             .unwrap_or_else(text),
         _ => text(),
@@ -364,7 +466,10 @@ fn decode_text(text: Option<&str>, ty: Option<&Type>) -> DbValue {
 impl PostgresSession {
     /// Everything (`only` = None) or one schema: `only` is a SQL expression for its name
     async fn catalog_where(&self, only: Option<&str>) -> Result<SchemaCatalog, DbError> {
-        let f = |col: &str| only.map(|e| format!(" AND {col} = {e}")).unwrap_or_default();
+        let f = |col: &str| {
+            only.map(|e| format!(" AND {col} = {e}"))
+                .unwrap_or_default()
+        };
         let schemas_rows = self.client.query(
             "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') ORDER BY schema_name",
             &[],
@@ -372,7 +477,8 @@ impl PostgresSession {
 
         let schemas: Vec<String> = schemas_rows.iter().map(|r| r.get(0)).collect();
 
-        let tables_query = format!(r#"
+        let tables_query = format!(
+            r#"
             SELECT 
                 table_schema, 
                 table_name, 
@@ -380,11 +486,18 @@ impl PostgresSession {
             FROM information_schema.tables 
             WHERE table_schema NOT IN ('pg_catalog', 'information_schema'){}
             ORDER BY table_schema, table_name;
-        "#, f("table_schema"));
+        "#,
+            f("table_schema")
+        );
 
-        let table_rows = self.client.query(&tables_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        let table_rows = self
+            .client
+            .query(&tables_query, &[])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
 
-        let columns_query = format!(r#"
+        let columns_query = format!(
+            r#"
             SELECT 
                 table_schema,
                 table_name,
@@ -396,12 +509,19 @@ impl PostgresSession {
             FROM information_schema.columns
             WHERE table_schema NOT IN ('pg_catalog', 'information_schema'){}
             ORDER BY table_schema, table_name, ordinal_position;
-        "#, f("table_schema"));
+        "#,
+            f("table_schema")
+        );
 
-        let col_rows = self.client.query(&columns_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        let col_rows = self
+            .client
+            .query(&columns_query, &[])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
 
         // Primary keys query
-        let pks_query = format!(r#"
+        let pks_query = format!(
+            r#"
             SELECT 
                 kcu.table_schema,
                 kcu.table_name,
@@ -411,12 +531,19 @@ impl PostgresSession {
               ON tc.constraint_name = kcu.constraint_name 
              AND tc.table_schema = kcu.table_schema
             WHERE tc.constraint_type = 'PRIMARY KEY'{};
-        "#, f("kcu.table_schema"));
+        "#,
+            f("kcu.table_schema")
+        );
 
-        let pk_rows = self.client.query(&pks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        let pk_rows = self
+            .client
+            .query(&pks_query, &[])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
 
         // Foreign keys, one row per referencing column (G5)
-        let fks_query = format!(r#"
+        let fks_query = format!(
+            r#"
             SELECT kcu.table_schema, kcu.table_name, kcu.column_name,
                    ccu.table_schema, ccu.table_name, ccu.column_name
             FROM information_schema.table_constraints tc
@@ -425,8 +552,14 @@ impl PostgresSession {
             JOIN information_schema.constraint_column_usage ccu
               ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema
             WHERE tc.constraint_type = 'FOREIGN KEY'{};
-        "#, f("kcu.table_schema"));
-        let fk_rows = self.client.query(&fks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        "#,
+            f("kcu.table_schema")
+        );
+        let fk_rows = self
+            .client
+            .query(&fks_query, &[])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
 
         let mut tables = Vec::new();
 
@@ -437,13 +570,17 @@ impl PostgresSession {
 
             let table_pks: Vec<String> = pk_rows
                 .iter()
-                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
+                .filter(|r| {
+                    r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name
+                })
                 .map(|r| r.get::<_, String>(2))
                 .collect();
 
             let columns: Vec<ColumnSchema> = col_rows
                 .iter()
-                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
+                .filter(|r| {
+                    r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name
+                })
                 .map(|r| {
                     let col_name: String = r.get(2);
                     let raw_type: String = r.get(3);
@@ -466,8 +603,15 @@ impl PostgresSession {
 
             let foreign_keys = fk_rows
                 .iter()
-                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
-                .map(|r| ForeignKeyRef { from_column: r.get(2), to_schema: r.get(3), to_table: r.get(4), to_column: r.get(5) })
+                .filter(|r| {
+                    r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name
+                })
+                .map(|r| ForeignKeyRef {
+                    from_column: r.get(2),
+                    to_schema: r.get(3),
+                    to_table: r.get(4),
+                    to_column: r.get(5),
+                })
                 .collect();
             tables.push(TableSchema {
                 schema_name,
@@ -479,8 +623,18 @@ impl PostgresSession {
             });
         }
 
-        let default_schema = self.client.query_one("SELECT current_schema()", &[]).await.ok().and_then(|r| r.get(0));
-        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
+        let default_schema = self
+            .client
+            .query_one("SELECT current_schema()", &[])
+            .await
+            .ok()
+            .and_then(|r| r.get(0));
+        Ok(SchemaCatalog {
+            schemas,
+            tables,
+            default_schema,
+            ..Default::default()
+        })
     }
 }
 
@@ -491,21 +645,42 @@ mod tests {
     #[test]
     fn decodes_text_protocol_values() {
         assert_eq!(decode_text(None, Some(&Type::INT4)), DbValue::Null);
-        assert_eq!(decode_text(Some("t"), Some(&Type::BOOL)), DbValue::Boolean(true));
-        assert_eq!(decode_text(Some("9223372036854775807"), Some(&Type::INT8)), DbValue::Int(i64::MAX));
+        assert_eq!(
+            decode_text(Some("t"), Some(&Type::BOOL)),
+            DbValue::Boolean(true)
+        );
+        assert_eq!(
+            decode_text(Some("9223372036854775807"), Some(&Type::INT8)),
+            DbValue::Int(i64::MAX)
+        );
         assert_eq!(
             decode_text(Some("12345678901234567890.123456789"), Some(&Type::NUMERIC)),
             DbValue::Decimal("12345678901234567890.123456789".into())
         );
-        assert_eq!(decode_text(Some("\\x00ff"), Some(&Type::BYTEA)), DbValue::Blob(vec![0, 255]));
-        assert_eq!(decode_text(Some("{1,2}"), Some(&Type::INT4_ARRAY)), DbValue::Text("{1,2}".into()));
-        assert_eq!(decode_text(Some(""), Some(&Type::TEXT)), DbValue::Text(String::new()));
+        assert_eq!(
+            decode_text(Some("\\x00ff"), Some(&Type::BYTEA)),
+            DbValue::Blob(vec![0, 255])
+        );
+        assert_eq!(
+            decode_text(Some("{1,2}"), Some(&Type::INT4_ARRAY)),
+            DbValue::Text("{1,2}".into())
+        );
+        assert_eq!(
+            decode_text(Some(""), Some(&Type::TEXT)),
+            DbValue::Text(String::new())
+        );
     }
 
     #[test]
     fn reads_back_error_position() {
         use crate::session::error_position;
-        assert_eq!(error_position("db error: ERROR: syntax error at or near \"form\" (at character 10)"), Some(10));
-        assert_eq!(error_position("db error: ERROR: relation \"x\" does not exist"), None);
+        assert_eq!(
+            error_position("db error: ERROR: syntax error at or near \"form\" (at character 10)"),
+            Some(10)
+        );
+        assert_eq!(
+            error_position("db error: ERROR: relation \"x\" does not exist"),
+            None
+        );
     }
 }

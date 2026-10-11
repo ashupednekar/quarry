@@ -31,7 +31,10 @@ pub fn diff(source: &SchemaCatalog, target: &SchemaCatalog, d: &dyn Dialect) -> 
         for c in &t.columns {
             let col = d.quote_ident(&c.name);
             let Some(o) = other.columns.iter().find(|o| o.name == c.name) else {
-                let mut add = format!("ALTER TABLE {name} ADD COLUMN {col} {}", c.raw_type_name.to_lowercase());
+                let mut add = format!(
+                    "ALTER TABLE {name} ADD COLUMN {col} {}",
+                    c.raw_type_name.to_lowercase()
+                );
                 if let Some(def) = &c.default_value {
                     add += &format!(" DEFAULT {def}");
                 }
@@ -42,32 +45,58 @@ pub fn diff(source: &SchemaCatalog, target: &SchemaCatalog, d: &dyn Dialect) -> 
                 continue;
             };
             if !same_type(c, o) {
-                alters.push(format!("ALTER TABLE {name} ALTER COLUMN {col} TYPE {}; -- was {}", c.raw_type_name.to_lowercase(), o.raw_type_name.to_lowercase()));
+                alters.push(format!(
+                    "ALTER TABLE {name} ALTER COLUMN {col} TYPE {}; -- was {}",
+                    c.raw_type_name.to_lowercase(),
+                    o.raw_type_name.to_lowercase()
+                ));
             }
             if c.is_nullable != o.is_nullable {
-                alters.push(format!("ALTER TABLE {name} ALTER COLUMN {col} {} NOT NULL;", if c.is_nullable { "DROP" } else { "SET" }));
+                alters.push(format!(
+                    "ALTER TABLE {name} ALTER COLUMN {col} {} NOT NULL;",
+                    if c.is_nullable { "DROP" } else { "SET" }
+                ));
             }
             if c.default_value != o.default_value {
                 alters.push(match &c.default_value {
-                    Some(def) => format!("ALTER TABLE {name} ALTER COLUMN {col} SET DEFAULT {def};"),
+                    Some(def) => {
+                        format!("ALTER TABLE {name} ALTER COLUMN {col} SET DEFAULT {def};")
+                    }
                     None => format!("ALTER TABLE {name} ALTER COLUMN {col} DROP DEFAULT;"),
                 });
             }
         }
-        for o in other.columns.iter().filter(|o| !t.columns.iter().any(|c| c.name == o.name)) {
+        for o in other
+            .columns
+            .iter()
+            .filter(|o| !t.columns.iter().any(|c| c.name == o.name))
+        {
             alters.push(format!("-- ALTER TABLE {name} DROP COLUMN {}; -- only in the target; uncomment to drop it and its data", d.quote_ident(&o.name)));
         }
         if !alters.is_empty() {
-            out.push(format!("-- {}.{}\n{}", t.schema_name, t.table_name, alters.join("\n")));
+            out.push(format!(
+                "-- {}.{}\n{}",
+                t.schema_name,
+                t.table_name,
+                alters.join("\n")
+            ));
         }
     }
     let extra: Vec<String> = dst
         .iter()
         .filter(|o| !src.iter().any(|t| key(t) == key(o)))
-        .map(|o| format!("-- DROP TABLE {};", d.qualified(&o.schema_name, &o.table_name)))
+        .map(|o| {
+            format!(
+                "-- DROP TABLE {};",
+                d.qualified(&o.schema_name, &o.table_name)
+            )
+        })
         .collect();
     if !extra.is_empty() {
-        out.push(format!("-- Only in the target; uncomment to drop them and their data\n{}", extra.join("\n")));
+        out.push(format!(
+            "-- Only in the target; uncomment to drop them and their data\n{}",
+            extra.join("\n")
+        ));
     }
     (!out.is_empty()).then(|| out.join("\n\n"))
 }
@@ -79,25 +108,59 @@ mod tests {
     use crate::schema::ColumnType;
 
     fn col(name: &str, ty: &str, nullable: bool, default: Option<&str>) -> ColumnSchema {
-        ColumnSchema { name: name.into(), data_type: ColumnType::from_sql_str(ty), raw_type_name: ty.into(), is_nullable: nullable, is_primary_key: false, default_value: default.map(String::from), ordinal_position: 0 }
+        ColumnSchema {
+            name: name.into(),
+            data_type: ColumnType::from_sql_str(ty),
+            raw_type_name: ty.into(),
+            is_nullable: nullable,
+            is_primary_key: false,
+            default_value: default.map(String::from),
+            ordinal_position: 0,
+        }
     }
 
     fn table(name: &str, columns: Vec<ColumnSchema>) -> TableSchema {
-        TableSchema { schema_name: "public".into(), table_name: name.into(), is_view: false, columns, primary_keys: vec![], foreign_keys: vec![] }
+        TableSchema {
+            schema_name: "public".into(),
+            table_name: name.into(),
+            is_view: false,
+            columns,
+            primary_keys: vec![],
+            foreign_keys: vec![],
+        }
     }
 
     fn catalog(tables: Vec<TableSchema>) -> SchemaCatalog {
-        SchemaCatalog { schemas: vec!["public".into()], tables, default_schema: None, ..Default::default() }
+        SchemaCatalog {
+            schemas: vec!["public".into()],
+            tables,
+            default_schema: None,
+            ..Default::default()
+        }
     }
 
     #[test]
     fn writes_what_turns_target_into_source() {
         let source = catalog(vec![
-            table("users", vec![col("id", "bigint", false, None), col("email", "text", false, None), col("plan", "text", true, Some("'free'"))]),
+            table(
+                "users",
+                vec![
+                    col("id", "bigint", false, None),
+                    col("email", "text", false, None),
+                    col("plan", "text", true, Some("'free'")),
+                ],
+            ),
             table("audit", vec![col("id", "bigint", false, None)]),
         ]);
         let target = catalog(vec![
-            table("users", vec![col("id", "integer", false, None), col("email", "text", true, None), col("legacy", "text", true, None)]),
+            table(
+                "users",
+                vec![
+                    col("id", "integer", false, None),
+                    col("email", "text", true, None),
+                    col("legacy", "text", true, None),
+                ],
+            ),
             table("old_stuff", vec![col("id", "integer", false, None)]),
         ]);
         let script = diff(&source, &target, &Postgres).unwrap();

@@ -55,7 +55,10 @@ pub trait Monitor: Send + Sync {
 
     /// The last `pages` × 64 KB of `file` (or the newest log)
     async fn logs(&self, _file: Option<String>, _pages: u32) -> Result<LogPage, DbError> {
-        Ok(LogPage { rows: Snapshot::Unavailable("This database doesn't expose its logs.".into()), files: Vec::new() })
+        Ok(LogPage {
+            rows: Snapshot::Unavailable("This database doesn't expose its logs.".into()),
+            files: Vec::new(),
+        })
     }
 
     /// Cancels the running query of backend `id`

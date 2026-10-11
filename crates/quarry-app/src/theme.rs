@@ -38,7 +38,11 @@ pub const BUILT_IN: [&str; 4] = ["Quarry Dark", "Quarry Light", "Graphite", "Pap
 
 impl Theme {
     pub fn for_mode(dark: bool) -> Self {
-        if dark { Self::dark() } else { Self::light() }
+        if dark {
+            Self::dark()
+        } else {
+            Self::light()
+        }
     }
 
     /// Cool, low-contrast neutrals with a periwinkle accent
@@ -132,7 +136,11 @@ impl Theme {
 
     /// Text on an accent/status fill: dark themes use their own background (white is unreadable on amber)
     pub fn on_accent(&self) -> Rgba {
-        if self.is_dark { self.bg_app } else { rgb(0xffffff) }
+        if self.is_dark {
+            self.bg_app
+        } else {
+            rgb(0xffffff)
+        }
     }
 
     /// A translucent wash of a theme colour, for error bars and row states
@@ -154,8 +162,11 @@ impl Theme {
             "graphite" => Ok(Self::graphite()),
             "paper" => Ok(Self::paper()),
             _ => {
-                let path = themes_dir().ok_or("no home directory")?.join(format!("{name}.json"));
-                let text = std::fs::read_to_string(&path).map_err(|e| format!("theme \"{name}\": {e}"))?;
+                let path = themes_dir()
+                    .ok_or("no home directory")?
+                    .join(format!("{name}.json"));
+                let text =
+                    std::fs::read_to_string(&path).map_err(|e| format!("theme \"{name}\": {e}"))?;
                 Self::from_json(name, &text).map_err(|e| format!("themes/{name}.json: {e}"))
             }
         }
@@ -163,13 +174,17 @@ impl Theme {
 
     /// `{"base": "dark", "accent": "#7c5cff", ...}`: a built-in base plus any token overrides
     pub fn from_json(name: &str, text: &str) -> Result<Self, String> {
-        let map: std::collections::BTreeMap<String, serde_json::Value> = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        let map: std::collections::BTreeMap<String, serde_json::Value> =
+            serde_json::from_str(text).map_err(|e| e.to_string())?;
         let base = map.get("base").and_then(|v| v.as_str()).unwrap_or("dark");
         let mut t = Self::named(base, true).map_err(|_| format!("unknown base \"{base}\""))?;
         t.name = name.to_string();
         for (key, value) in map.iter().filter(|(k, _)| *k != "base") {
-            let hex = value.as_str().ok_or_else(|| format!("\"{key}\" must be a colour string"))?;
-            let color = parse_hex(hex).ok_or_else(|| format!("\"{key}\": \"{hex}\" isn't #rrggbb or #rrggbbaa"))?;
+            let hex = value
+                .as_str()
+                .ok_or_else(|| format!("\"{key}\" must be a colour string"))?;
+            let color = parse_hex(hex)
+                .ok_or_else(|| format!("\"{key}\": \"{hex}\" isn't #rrggbb or #rrggbbaa"))?;
             let slot = match key.as_str() {
                 "bg_app" => &mut t.bg_app,
                 "bg_sidebar" => &mut t.bg_sidebar,
@@ -294,10 +309,17 @@ pub fn themes_dir() -> Option<std::path::PathBuf> {
 
 /// "System", the built-ins, then every themes/*.json
 pub fn available() -> Vec<String> {
-    let mut names: Vec<String> = std::iter::once("System".to_string()).chain(BUILT_IN.iter().map(|s| s.to_string())).collect();
+    let mut names: Vec<String> = std::iter::once("System".to_string())
+        .chain(BUILT_IN.iter().map(|s| s.to_string()))
+        .collect();
     if let Some(entries) = themes_dir().and_then(|d| std::fs::read_dir(d).ok()) {
         let mut user: Vec<String> = entries
-            .filter_map(|e| e.ok()?.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .filter_map(|e| {
+                e.ok()?
+                    .path()
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+            })
             .filter(|n| !names.iter().any(|b| b.eq_ignore_ascii_case(n)))
             .collect();
         user.sort();
@@ -321,11 +343,19 @@ mod tests {
 
     #[test]
     fn user_theme_overrides_a_base() {
-        let t = Theme::from_json("Grape", r##"{"base": "light", "accent": "#7c5cff", "pending_cell_bg": "#ff000033"}"##).ok().unwrap();
+        let t = Theme::from_json(
+            "Grape",
+            r##"{"base": "light", "accent": "#7c5cff", "pending_cell_bg": "#ff000033"}"##,
+        )
+        .ok()
+        .unwrap();
         assert_eq!((t.name.as_str(), t.is_dark), ("Grape", false));
         assert_eq!(t.accent, gpui::rgb(0x7c5cff));
         assert_eq!(t.bg_app, Theme::light().bg_app);
-        assert!(Theme::from_json("x", r##"{"accnet": "#fff000"}"##).err().unwrap().contains("unknown token"));
+        assert!(Theme::from_json("x", r##"{"accnet": "#fff000"}"##)
+            .err()
+            .unwrap()
+            .contains("unknown token"));
         assert!(Theme::from_json("x", r##"{"accent": "blue"}"##).is_err());
     }
 }
@@ -342,8 +372,12 @@ pub fn load_fonts(cx: &mut gpui::App) {
         Cow::Borrowed(include_bytes!("../assets/fonts/SpaceGrotesk-Regular.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/SpaceGrotesk-Medium.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/SpaceGrotesk-Bold.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf")),
-        Cow::Borrowed(include_bytes!("../assets/fonts/JetBrainsMonoNerdFont-Bold.ttf")),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/JetBrainsMonoNerdFont-Regular.ttf"
+        )),
+        Cow::Borrowed(include_bytes!(
+            "../assets/fonts/JetBrainsMonoNerdFont-Bold.ttf"
+        )),
     ];
     if let Err(e) = cx.text_system().add_fonts(fonts) {
         eprintln!("quarry: bundled fonts failed to load, using system fonts: {e}");
@@ -356,5 +390,9 @@ pub fn load_fonts(cx: &mut gpui::App) {
 pub fn apply_fonts(cx: &mut gpui::App, mono: &str) {
     let kit = gpui::component::theme::Theme::global_mut(cx);
     kit.font_family = UI_FONT.into();
-    kit.mono_font_family = if mono.trim().is_empty() { MONO_FONT.into() } else { mono.to_string().into() };
+    kit.mono_font_family = if mono.trim().is_empty() {
+        MONO_FONT.into()
+    } else {
+        mono.to_string().into()
+    };
 }

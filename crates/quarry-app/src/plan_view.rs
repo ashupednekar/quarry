@@ -43,55 +43,97 @@ pub fn summary(plan: &Plan) -> String {
 
 pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
     let root = &plan.root;
-    let rows = root.flatten().into_iter().enumerate().map(|(i, (depth, n))| {
-        let share = share(n, root);
-        let hot = share >= 0.3;
-        let rows = match (n.est_rows, n.rows) {
-            (Some(e), Some(a)) => Some(format!("{} → {}", fmt_rows(e), fmt_rows(a))),
-            (Some(e), None) => Some(fmt_rows(e)),
-            _ => None,
-        };
-        let metric = n.self_ms().map(|ms| format!("{ms:.2} ms")).or_else(|| n.cost.map(|c| format!("cost {c:.0}")));
-        div()
-            .id(("plan-row", i))
-            .flex()
-            .items_center()
-            .gap_3()
-            .h(px(28.0))
-            .px_3()
-            .border_b_1()
-            .border_color(t.border)
-            .hover(|s| s.bg(t.bg_hover))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .flex_1()
-                    .min_w_0()
-                    .pl(px(depth as f32 * 18.0))
-                    .child(div().text_color(t.text_muted).child(if depth == 0 { "" } else { "└" }))
-                    .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child(n.op.clone()))
-                    .child(div().flex_1().min_w_0().truncate().text_xs().text_color(t.text_muted).child(n.detail.clone())),
-            )
-            .children(rows.map(|r| {
-                div()
-                    .w(px(120.0))
-                    .text_xs()
-                    .text_right()
-                    .text_color(if n.misestimated() { t.warning } else { t.text_secondary })
-                    .child(r)
-            }))
-            .child(div().w(px(80.0)).text_xs().text_right().text_color(t.text_secondary).children(metric))
-            .child(
-                div()
-                    .w(px(90.0))
-                    .h(px(6.0))
-                    .rounded_full()
-                    .bg(t.border)
-                    .child(div().h_full().rounded_full().w(px(90.0 * share.clamp(0.0, 1.0))).bg(if hot { t.danger } else { t.accent })),
-            )
-    });
+    let rows = root
+        .flatten()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (depth, n))| {
+            let share = share(n, root);
+            let hot = share >= 0.3;
+            let rows = match (n.est_rows, n.rows) {
+                (Some(e), Some(a)) => Some(format!("{} → {}", fmt_rows(e), fmt_rows(a))),
+                (Some(e), None) => Some(fmt_rows(e)),
+                _ => None,
+            };
+            let metric = n
+                .self_ms()
+                .map(|ms| format!("{ms:.2} ms"))
+                .or_else(|| n.cost.map(|c| format!("cost {c:.0}")));
+            div()
+                .id(("plan-row", i))
+                .flex()
+                .items_center()
+                .gap_3()
+                .h(px(28.0))
+                .px_3()
+                .border_b_1()
+                .border_color(t.border)
+                .hover(|s| s.bg(t.bg_hover))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .flex_1()
+                        .min_w_0()
+                        .pl(px(depth as f32 * 18.0))
+                        .child(div().text_color(t.text_muted).child(if depth == 0 {
+                            ""
+                        } else {
+                            "└"
+                        }))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(t.text_primary)
+                                .child(n.op.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_xs()
+                                .text_color(t.text_muted)
+                                .child(n.detail.clone()),
+                        ),
+                )
+                .children(rows.map(|r| {
+                    div()
+                        .w(px(120.0))
+                        .text_xs()
+                        .text_right()
+                        .text_color(if n.misestimated() {
+                            t.warning
+                        } else {
+                            t.text_secondary
+                        })
+                        .child(r)
+                }))
+                .child(
+                    div()
+                        .w(px(80.0))
+                        .text_xs()
+                        .text_right()
+                        .text_color(t.text_secondary)
+                        .children(metric),
+                )
+                .child(
+                    div()
+                        .w(px(90.0))
+                        .h(px(6.0))
+                        .rounded_full()
+                        .bg(t.border)
+                        .child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .w(px(90.0 * share.clamp(0.0, 1.0)))
+                                .bg(if hot { t.danger } else { t.accent }),
+                        ),
+                )
+        });
     let legend = div()
         .flex()
         .gap_4()
@@ -102,6 +144,18 @@ pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
         .border_b_1()
         .border_color(t.border)
         .child("Rows: estimated → actual (amber when 10× off)")
-        .child(if root.ms.is_some() { "Bar: share of the run's time spent in that step" } else { "Bar: share of the estimated cost. Explain Analyze for real timings" });
-    div().id("plan-view").size_full().flex().flex_col().overflow_y_scroll().child(legend).children(rows).into_any_element()
+        .child(if root.ms.is_some() {
+            "Bar: share of the run's time spent in that step"
+        } else {
+            "Bar: share of the estimated cost. Explain Analyze for real timings"
+        });
+    div()
+        .id("plan-view")
+        .size_full()
+        .flex()
+        .flex_col()
+        .overflow_y_scroll()
+        .child(legend)
+        .children(rows)
+        .into_any_element()
 }

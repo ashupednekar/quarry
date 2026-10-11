@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! CSV / JSON import (X4-X8): decode, parse, infer types, and load in one transaction.
 
 use crate::dialect::Dialect;
@@ -41,7 +40,10 @@ pub struct ImportData {
 /// Picks the most frequent of `,` `;` tab in the first line
 pub fn guess_delimiter(text: &str) -> char {
     let first = text.lines().next().unwrap_or("");
-    [',', ';', '\t'].into_iter().max_by_key(|d| first.matches(*d).count()).unwrap_or(',')
+    [',', ';', '\t']
+        .into_iter()
+        .max_by_key(|d| first.matches(*d).count())
+        .unwrap_or(',')
 }
 
 /// RFC 4180 CSV: quoted fields, doubled quotes, embedded newlines, CRLF.
@@ -86,14 +88,32 @@ pub fn parse_csv(text: &str, delimiter: char, header: bool, empty_is_null: bool)
     let headers = if header && !records.is_empty() {
         let mut h = records.remove(0);
         h.resize_with(width, String::new);
-        h.iter().enumerate().map(|(i, n)| if n.trim().is_empty() { format!("column_{}", i + 1) } else { n.trim().to_string() }).collect()
+        h.iter()
+            .enumerate()
+            .map(|(i, n)| {
+                if n.trim().is_empty() {
+                    format!("column_{}", i + 1)
+                } else {
+                    n.trim().to_string()
+                }
+            })
+            .collect()
     } else {
         (1..=width).map(|i| format!("column_{i}")).collect()
     };
     let rows = records
         .into_iter()
         .map(|r| {
-            let mut r: Vec<Option<String>> = r.into_iter().map(|v| if empty_is_null && v.is_empty() { None } else { Some(v) }).collect();
+            let mut r: Vec<Option<String>> = r
+                .into_iter()
+                .map(|v| {
+                    if empty_is_null && v.is_empty() {
+                        None
+                    } else {
+                        Some(v)
+                    }
+                })
+                .collect();
             r.resize(width, None);
             r
         })
@@ -103,11 +123,16 @@ pub fn parse_csv(text: &str, delimiter: char, header: bool, empty_is_null: bool)
 
 /// JSON array of objects. Keys become columns in order of first appearance; nested values stay JSON text.
 pub fn parse_json(text: &str) -> Result<ImportData, String> {
-    let value: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("Not valid JSON: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("Not valid JSON: {e}"))?;
     let items = value.as_array().ok_or("Expected a JSON array of objects")?;
     let mut headers: Vec<String> = Vec::new();
     for item in items {
-        for key in item.as_object().ok_or("Every array element must be an object")?.keys() {
+        for key in item
+            .as_object()
+            .ok_or("Every array element must be an object")?
+            .keys()
+        {
             if !headers.contains(key) {
                 headers.push(key.clone());
             }
@@ -133,7 +158,11 @@ pub fn parse_json(text: &str) -> Result<ImportData, String> {
 pub fn infer_types(data: &ImportData, d: &dyn Dialect) -> Vec<String> {
     (0..data.headers.len())
         .map(|i| {
-            let values: Vec<&str> = data.rows.iter().filter_map(|r| r.get(i)?.as_deref()).collect();
+            let values: Vec<&str> = data
+                .rows
+                .iter()
+                .filter_map(|r| r.get(i)?.as_deref())
+                .collect();
             let all = |f: fn(&str) -> bool| !values.is_empty() && values.iter().all(|v| f(v));
             let ty = if all(|v| v.parse::<i64>().is_ok() && numeric(v)) {
                 ColumnType::BigInt
@@ -148,7 +177,10 @@ pub fn infer_types(data: &ImportData, d: &dyn Dialect) -> Vec<String> {
             } else {
                 ColumnType::Text
             };
-            d.type_name(&ty).or_else(|| d.type_name(&ColumnType::Text)).unwrap_or("TEXT").to_string()
+            d.type_name(&ty)
+                .or_else(|| d.type_name(&ColumnType::Text))
+                .unwrap_or("TEXT")
+                .to_string()
         })
         .collect()
 }
@@ -163,9 +195,14 @@ fn is_date(v: &str) -> bool {
 }
 
 fn is_timestamp(v: &str) -> bool {
-    ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"]
-        .iter()
-        .any(|f| chrono::NaiveDateTime::parse_from_str(v, f).is_ok())
+    [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S%.f",
+    ]
+    .iter()
+    .any(|f| chrono::NaiveDateTime::parse_from_str(v, f).is_ok())
         || chrono::DateTime::parse_from_rfc3339(v).is_ok()
 }
 
@@ -210,13 +247,28 @@ pub async fn run(
     cancel: &AtomicBool,
 ) -> Result<ImportReport, String> {
     let d = session.dialect();
-    let exec = |sql: String| async move { session.execute_quiet(&sql).await.map_err(|e| e.to_string()) };
+    let exec =
+        |sql: String| async move { session.execute_quiet(&sql).await.map_err(|e| e.to_string()) };
     let nested = session.in_transaction();
-    exec(if nested { "SAVEPOINT quarry_import".into() } else { "BEGIN".into() }).await?;
-    let abort = |nested: bool| exec(if nested { "ROLLBACK TO SAVEPOINT quarry_import".into() } else { "ROLLBACK".into() });
+    exec(if nested {
+        "SAVEPOINT quarry_import".into()
+    } else {
+        "BEGIN".into()
+    })
+    .await?;
+    let abort = |nested: bool| {
+        exec(if nested {
+            "ROLLBACK TO SAVEPOINT quarry_import".into()
+        } else {
+            "ROLLBACK".into()
+        })
+    };
 
     if let Some(columns) = &plan.create {
-        let defs: Vec<String> = columns.iter().map(|(c, t)| format!("{} {}", d.quote_ident(c), t)).collect();
+        let defs: Vec<String> = columns
+            .iter()
+            .map(|(c, t)| format!("{} {}", d.quote_ident(c), t))
+            .collect();
         if let Err(e) = exec(format!("CREATE TABLE {} ({})", plan.table, defs.join(", "))).await {
             abort(nested).await.ok();
             return Err(e);
@@ -225,7 +277,9 @@ pub async fn run(
 
     let cols: Vec<String> = plan.mapping.iter().map(|(_, c)| d.quote_ident(c)).collect();
     let suffix = match plan.on_conflict {
-        OnConflict::SkipDuplicates => d.insert_ignore_suffix().ok_or("This database can't skip duplicate rows")?,
+        OnConflict::SkipDuplicates => d
+            .insert_ignore_suffix()
+            .ok_or("This database can't skip duplicate rows")?,
         _ => "",
     };
     let mut report = ImportReport::default();
@@ -243,11 +297,21 @@ pub async fn run(
                 Some(v) => d.literal(&crate::DbValue::Text(v.to_string())),
             })
             .collect();
-        let insert = format!("INSERT INTO {} ({}) VALUES ({}){}", plan.table, cols.join(", "), values.join(", "), suffix);
+        let insert = format!(
+            "INSERT INTO {} ({}) VALUES ({}){}",
+            plan.table,
+            cols.join(", "),
+            values.join(", "),
+            suffix
+        );
         if !plan.all_or_nothing {
             exec("SAVEPOINT quarry_row".into()).await?;
         }
-        match session.execute_quiet(&insert).await.map_err(|e| e.to_string()) {
+        match session
+            .execute_quiet(&insert)
+            .await
+            .map_err(|e| e.to_string())
+        {
             // ON CONFLICT DO NOTHING reports 0 affected rows for a duplicate
             Ok(r) if r.rows_affected == 0 => report.skipped += 1,
             Ok(_) => report.inserted += 1,
@@ -267,7 +331,12 @@ pub async fn run(
         }
         progress.store(i + 1, Ordering::Relaxed);
     }
-    exec(if nested { "RELEASE SAVEPOINT quarry_import".into() } else { "COMMIT".into() }).await?;
+    exec(if nested {
+        "RELEASE SAVEPOINT quarry_import".into()
+    } else {
+        "COMMIT".into()
+    })
+    .await?;
     Ok(report)
 }
 
@@ -281,21 +350,42 @@ mod tests {
         let text = "id,name,note\r\n1,\"Smith, J\",\"says \"\"hi\"\"\nthere\"\r\n2,,x\r\n";
         let d = parse_csv(text, guess_delimiter(text), true, true);
         assert_eq!(d.headers, vec!["id", "name", "note"]);
-        assert_eq!(d.rows[0], vec![Some("1".into()), Some("Smith, J".into()), Some("says \"hi\"\nthere".into())]);
+        assert_eq!(
+            d.rows[0],
+            vec![
+                Some("1".into()),
+                Some("Smith, J".into()),
+                Some("says \"hi\"\nthere".into())
+            ]
+        );
         assert_eq!(d.rows[1], vec![Some("2".into()), None, Some("x".into())]);
     }
 
     #[test]
     fn decodes_bom_and_latin1() {
-        assert_eq!(decode(b"\xEF\xBB\xBFa,b", None), ("a,b".into(), Encoding::Utf8));
+        assert_eq!(
+            decode(b"\xEF\xBB\xBFa,b", None),
+            ("a,b".into(), Encoding::Utf8)
+        );
         assert_eq!(decode(b"caf\xE9", None), ("café".into(), Encoding::Latin1));
     }
 
     #[test]
     fn infers_types_and_keeps_leading_zeros_as_text() {
-        let d = parse_csv("n,f,b,zip,when\n1,1.5,true,01234,2026-01-02\n22,2,false,99999,2026-03-04\n", ',', true, true);
-        assert_eq!(infer_types(&d, &crate::dialect::Postgres), vec!["BIGINT", "DOUBLE PRECISION", "BOOLEAN", "TEXT", "DATE"]);
-        assert_eq!(infer_types(&d, &crate::dialect::Sqlite), vec!["INTEGER", "REAL", "BOOLEAN", "TEXT", "TEXT"]);
+        let d = parse_csv(
+            "n,f,b,zip,when\n1,1.5,true,01234,2026-01-02\n22,2,false,99999,2026-03-04\n",
+            ',',
+            true,
+            true,
+        );
+        assert_eq!(
+            infer_types(&d, &crate::dialect::Postgres),
+            vec!["BIGINT", "DOUBLE PRECISION", "BOOLEAN", "TEXT", "DATE"]
+        );
+        assert_eq!(
+            infer_types(&d, &crate::dialect::Sqlite),
+            vec!["INTEGER", "REAL", "BOOLEAN", "TEXT", "TEXT"]
+        );
     }
 
     #[test]
@@ -306,13 +396,18 @@ mod tests {
     }
 
     async fn count(s: &SqliteSession, t: &str) -> DbValue {
-        s.execute(&format!("SELECT count(*) FROM {t}")).await.map(|r| r.rows[0][0].clone()).unwrap_or(DbValue::Null)
+        s.execute(&format!("SELECT count(*) FROM {t}"))
+            .await
+            .map(|r| r.rows[0][0].clone())
+            .unwrap_or(DbValue::Null)
     }
 
     #[tokio::test]
     async fn all_or_nothing_leaves_table_untouched_and_skip_mode_reports_rows() {
         let s = SqliteSession::open_in_memory().unwrap();
-        s.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)").await.unwrap();
+        s.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT NOT NULL)")
+            .await
+            .unwrap();
         let d = parse_csv("id,v\n1,a\n2,\n3,c\n", ',', true, true); // row 2 violates NOT NULL
         let plan = ImportPlan {
             table: "\"t\"".into(),
@@ -326,12 +421,35 @@ mod tests {
         assert!(r.rolled_back && r.failures[0].0 == 2);
         assert_eq!(count(&s, "t").await, DbValue::Int(0));
 
-        let r = run(&s, &d, &ImportPlan { all_or_nothing: false, ..plan.clone() }, &p, &c).await.unwrap();
+        let r = run(
+            &s,
+            &d,
+            &ImportPlan {
+                all_or_nothing: false,
+                ..plan.clone()
+            },
+            &p,
+            &c,
+        )
+        .await
+        .unwrap();
         assert_eq!((r.inserted, r.failures.len(), r.failures[0].0), (2, 1, 2));
         assert_eq!(count(&s, "t").await, DbValue::Int(2));
 
         // Re-importing with skip-duplicates doesn't fail on the existing ids
-        let r = run(&s, &d, &ImportPlan { all_or_nothing: false, on_conflict: OnConflict::SkipDuplicates, ..plan }, &p, &c).await.unwrap();
+        let r = run(
+            &s,
+            &d,
+            &ImportPlan {
+                all_or_nothing: false,
+                on_conflict: OnConflict::SkipDuplicates,
+                ..plan
+            },
+            &p,
+            &c,
+        )
+        .await
+        .unwrap();
         assert_eq!((r.inserted, r.skipped, r.failures.len()), (0, 2, 1));
         assert_eq!(count(&s, "t").await, DbValue::Int(2));
     }
@@ -342,12 +460,17 @@ mod tests {
         let d = parse_csv("n,label\n1,a\n2,b\n", ',', true, true);
         let plan = ImportPlan {
             table: "\"fresh\"".into(),
-            create: Some(vec![("n".into(), "INTEGER".into()), ("label".into(), "TEXT".into())]),
+            create: Some(vec![
+                ("n".into(), "INTEGER".into()),
+                ("label".into(), "TEXT".into()),
+            ]),
             mapping: vec![(0, "n".into()), (1, "label".into())],
             on_conflict: OnConflict::Error,
             all_or_nothing: true,
         };
-        run(&s, &d, &plan, &AtomicUsize::new(0), &AtomicBool::new(false)).await.unwrap();
+        run(&s, &d, &plan, &AtomicUsize::new(0), &AtomicBool::new(false))
+            .await
+            .unwrap();
         assert_eq!(count(&s, "fresh").await, DbValue::Int(2));
     }
 }

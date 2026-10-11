@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! Writes result rows as CSV, JSON or SQL INSERT statements (X1, X2). Streams in chunks.
 
 use crate::edits::quote_ident;
@@ -40,7 +39,14 @@ pub struct ExportOptions {
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { format: ExportFormat::Csv, delimiter: ',', header: true, null_text: String::new(), columns: None, table: "exported".into() }
+        Self {
+            format: ExportFormat::Csv,
+            delimiter: ',',
+            header: true,
+            null_text: String::new(),
+            columns: None,
+            table: "exported".into(),
+        }
     }
 }
 
@@ -55,23 +61,40 @@ pub struct Exporter<W: Write> {
 
 impl<W: Write> Exporter<W> {
     pub fn begin(mut out: W, columns: &[String], opts: ExportOptions) -> io::Result<Self> {
-        let picked = opts.columns.clone().unwrap_or_else(|| (0..columns.len()).collect());
-        let names: Vec<String> = picked.iter().filter_map(|&i| columns.get(i).cloned()).collect();
+        let picked = opts
+            .columns
+            .clone()
+            .unwrap_or_else(|| (0..columns.len()).collect());
+        let names: Vec<String> = picked
+            .iter()
+            .filter_map(|&i| columns.get(i).cloned())
+            .collect();
         match opts.format {
             ExportFormat::Csv if opts.header => {
-                let line: Vec<String> = names.iter().map(|n| csv_field(n, opts.delimiter)).collect();
+                let line: Vec<String> =
+                    names.iter().map(|n| csv_field(n, opts.delimiter)).collect();
                 writeln!(out, "{}", line.join(&opts.delimiter.to_string()))?;
             }
             ExportFormat::Json => write!(out, "[")?,
             _ => {}
         }
-        Ok(Self { out, opts, names, picked, written: 0 })
+        Ok(Self {
+            out,
+            opts,
+            names,
+            picked,
+            written: 0,
+        })
     }
 
     pub fn rows(&mut self, rows: &[Vec<DbValue>]) -> io::Result<()> {
         let d = self.opts.delimiter.to_string();
         for row in rows {
-            let vals: Vec<&DbValue> = self.picked.iter().map(|&i| row.get(i).unwrap_or(&DbValue::Null)).collect();
+            let vals: Vec<&DbValue> = self
+                .picked
+                .iter()
+                .map(|&i| row.get(i).unwrap_or(&DbValue::Null))
+                .collect();
             match self.opts.format {
                 ExportFormat::Csv => {
                     let line: Vec<String> = vals
@@ -88,7 +111,9 @@ impl<W: Write> Exporter<W> {
                         .names
                         .iter()
                         .zip(&vals)
-                        .map(|(n, v)| format!("{}:{}", serde_json::Value::String(n.clone()), json_value(v)))
+                        .map(|(n, v)| {
+                            format!("{}:{}", serde_json::Value::String(n.clone()), json_value(v))
+                        })
                         .collect();
                     let sep = if self.written == 0 { "" } else { "," };
                     write!(self.out, "{sep}\n  {{{}}}", fields.join(","))?;
@@ -96,7 +121,13 @@ impl<W: Write> Exporter<W> {
                 ExportFormat::Sql => {
                     let cols: Vec<String> = self.names.iter().map(|n| quote_ident(n)).collect();
                     let values: Vec<String> = vals.iter().map(|v| v.to_sql_literal()).collect();
-                    writeln!(self.out, "INSERT INTO {} ({}) VALUES ({});", self.opts.table, cols.join(", "), values.join(", "))?;
+                    writeln!(
+                        self.out,
+                        "INSERT INTO {} ({}) VALUES ({});",
+                        self.opts.table,
+                        cols.join(", "),
+                        values.join(", ")
+                    )?;
                 }
             }
             self.written += 1;
@@ -121,14 +152,21 @@ impl<W: Write> Exporter<W> {
 fn plain_text(v: &DbValue) -> String {
     match v {
         DbValue::Json(j) => j.to_string(),
-        DbValue::Blob(b) => format!("\\x{}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
+        DbValue::Blob(b) => format!(
+            "\\x{}",
+            b.iter().map(|x| format!("{x:02x}")).collect::<String>()
+        ),
         DbValue::Timestamp(t) => t.to_rfc3339(),
         v => v.to_display_string(),
     }
 }
 
 fn csv_field(s: &str, delimiter: char) -> String {
-    if s.contains(delimiter) || s.contains(['"', '\n', '\r']) || s.starts_with(' ') || s.ends_with(' ') {
+    if s.contains(delimiter)
+        || s.contains(['"', '\n', '\r'])
+        || s.starts_with(' ')
+        || s.ends_with(' ')
+    {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
         s.to_string()
@@ -156,7 +194,11 @@ mod tests {
     fn export(opts: ExportOptions) -> String {
         let cols = vec!["id".to_string(), "note".to_string(), "amount".to_string()];
         let rows = vec![
-            vec![DbValue::Int(1), DbValue::Text("a, \"quoted\"\nline".into()), DbValue::Decimal("12345678901234567890.10".into())],
+            vec![
+                DbValue::Int(1),
+                DbValue::Text("a, \"quoted\"\nline".into()),
+                DbValue::Decimal("12345678901234567890.10".into()),
+            ],
             vec![DbValue::Int(2), DbValue::Null, DbValue::Text(String::new())],
         ];
         let mut buf = Vec::new();
@@ -168,13 +210,22 @@ mod tests {
 
     #[test]
     fn csv_quotes_and_keeps_null_distinct_from_empty() {
-        let out = export(ExportOptions { null_text: "NULL".into(), ..Default::default() });
-        assert_eq!(out, "id,note,amount\n1,\"a, \"\"quoted\"\"\nline\",12345678901234567890.10\n2,NULL,\n");
+        let out = export(ExportOptions {
+            null_text: "NULL".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            out,
+            "id,note,amount\n1,\"a, \"\"quoted\"\"\nline\",12345678901234567890.10\n2,NULL,\n"
+        );
     }
 
     #[test]
     fn json_keeps_types_and_exact_decimals() {
-        let out = export(ExportOptions { format: ExportFormat::Json, ..Default::default() });
+        let out = export(ExportOptions {
+            format: ExportFormat::Json,
+            ..Default::default()
+        });
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(parsed[1]["note"], serde_json::Value::Null);
         assert_eq!(parsed[1]["amount"], "");
@@ -183,7 +234,15 @@ mod tests {
 
     #[test]
     fn sql_and_column_subset() {
-        let out = export(ExportOptions { format: ExportFormat::Sql, table: "\"t\"".into(), columns: Some(vec![1, 0]), ..Default::default() });
-        assert_eq!(out.lines().last().unwrap(), r#"INSERT INTO "t" ("note", "id") VALUES (NULL, 2);"#);
+        let out = export(ExportOptions {
+            format: ExportFormat::Sql,
+            table: "\"t\"".into(),
+            columns: Some(vec![1, 0]),
+            ..Default::default()
+        });
+        assert_eq!(
+            out.lines().last().unwrap(),
+            r#"INSERT INTO "t" ("note", "id") VALUES (NULL, 2);"#
+        );
     }
 }

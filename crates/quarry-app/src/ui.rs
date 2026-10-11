@@ -15,7 +15,10 @@ pub fn v_flex() -> Div {
 }
 
 /// Dimmed layer behind every modal: blocks the UI underneath, clicking it dismisses
-pub fn modal_backdrop(id: &'static str, on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Stateful<Div> {
+pub fn modal_backdrop(
+    id: &'static str,
+    on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
     div()
         .id(id)
         .absolute()
@@ -41,7 +44,13 @@ pub fn modal_card(id: &'static str, width: f32, t: &crate::theme::Theme) -> Stat
         .border_1()
         .border_color(t.border)
         .rounded(px(10.0))
-        .shadow(vec![BoxShadow { color: hsla(0., 0., 0., 0.45), offset: point(px(0.), px(24.)), blur_radius: px(64.), spread_radius: px(0.), inset: false }])
+        .shadow(vec![BoxShadow {
+            color: hsla(0., 0., 0., 0.45),
+            offset: point(px(0.), px(24.)),
+            blur_radius: px(64.),
+            spread_radius: px(0.),
+            inset: false,
+        }])
         .on_click(|_, _, cx| cx.stop_propagation())
 }
 
@@ -59,7 +68,12 @@ pub const BAR_H: f32 = 36.0;
 pub const MODAL_BAR_H: f32 = 48.0;
 
 /// Modal title row: title (+ optional subtitle) left, close right
-pub fn modal_header(t: &crate::theme::Theme, title: impl Into<SharedString>, subtitle: Option<SharedString>, on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Div {
+pub fn modal_header(
+    t: &crate::theme::Theme,
+    title: impl Into<SharedString>,
+    subtitle: Option<SharedString>,
+    on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
     h_flex()
         .h(px(MODAL_BAR_H + 8.0))
         .px_6()
@@ -71,8 +85,16 @@ pub fn modal_header(t: &crate::theme::Theme, title: impl Into<SharedString>, sub
             v_flex()
                 .gap_0p5()
                 .min_w_0()
-                .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child(title.into()))
-                .when_some(subtitle, |d, s| d.child(div().text_xs().text_color(t.text_muted).truncate().child(s))),
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.text_primary)
+                        .child(title.into()),
+                )
+                .when_some(subtitle, |d, s| {
+                    d.child(div().text_xs().text_color(t.text_muted).truncate().child(s))
+                }),
         )
         .child(
             div()
@@ -82,7 +104,9 @@ pub fn modal_header(t: &crate::theme::Theme, title: impl Into<SharedString>, sub
                 .cursor_pointer()
                 .hover(|s| s.bg(t.bg_hover))
                 .on_click(on_close)
-                .child(gpui::component::Icon::new(gpui::assets::IconName::X).text_color(t.text_muted)),
+                .child(
+                    gpui::component::Icon::new(gpui::assets::IconName::X).text_color(t.text_muted),
+                ),
         )
 }
 
@@ -101,25 +125,54 @@ pub fn modal_footer(t: &crate::theme::Theme) -> Div {
 
 /// The scrolling middle of a modal, on the 16/24 rhythm
 pub fn modal_body(id: &'static str) -> Stateful<Div> {
-    v_flex().id(id).px_6().pt_3().pb_6().gap_6().overflow_y_scroll().min_h_0()
+    v_flex()
+        .id(id)
+        .px_6()
+        .pt_3()
+        .pb_6()
+        .gap_6()
+        .overflow_y_scroll()
+        .min_h_0()
 }
 
 /// A label above its control, with an optional hint under it
-pub fn field(t: &crate::theme::Theme, label: impl Into<SharedString>, hint: Option<&'static str>, control: impl IntoElement) -> Div {
+pub fn field(
+    t: &crate::theme::Theme,
+    label: impl Into<SharedString>,
+    hint: Option<&'static str>,
+    control: impl IntoElement,
+) -> Div {
     v_flex()
         .gap_2()
-        .child(div().text_xs().font_weight(FontWeight::MEDIUM).text_color(t.text_secondary).child(label.into()))
+        .child(
+            div()
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.text_secondary)
+                .child(label.into()),
+        )
         .child(control)
-        .when_some(hint, |d, h| d.child(div().text_xs().text_color(t.text_muted).child(h)))
+        .when_some(hint, |d, h| {
+            d.child(div().text_xs().text_color(t.text_muted).child(h))
+        })
 }
 
 /// Small caps-free section heading inside a modal
 pub fn section_title(t: &crate::theme::Theme, title: &'static str) -> Div {
-    div().text_xs().font_weight(FontWeight::SEMIBOLD).text_color(t.text_muted).child(title)
+    div()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.text_muted)
+        .child(title)
 }
 
 /// Settings row: what it is (and why) on the left, the control on the right
-pub fn setting_row(t: &crate::theme::Theme, label: &'static str, description: &'static str, control: impl IntoElement) -> Div {
+pub fn setting_row(
+    t: &crate::theme::Theme,
+    label: &'static str,
+    description: &'static str,
+    control: impl IntoElement,
+) -> Div {
     h_flex()
         .py_3()
         .gap_6()
@@ -136,7 +189,12 @@ pub fn setting_row(t: &crate::theme::Theme, label: &'static str, description: &'
 }
 
 /// One option in a segmented choice; the caller adds `.on_click`
-pub fn chip(t: &crate::theme::Theme, id: impl Into<ElementId>, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
+pub fn chip(
+    t: &crate::theme::Theme,
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    on: bool,
+) -> Stateful<Div> {
     div()
         .id(id)
         .h(px(30.0))
@@ -147,7 +205,9 @@ pub fn chip(t: &crate::theme::Theme, id: impl Into<ElementId>, label: impl Into<
         .text_xs()
         .cursor_pointer()
         .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
-        .when(!on, |d| d.text_color(t.text_secondary).hover(|s| s.bg(t.bg_hover)))
+        .when(!on, |d| {
+            d.text_color(t.text_secondary).hover(|s| s.bg(t.bg_hover))
+        })
         .child(label.into())
 }
 
@@ -157,16 +217,25 @@ pub fn chip_group() -> Div {
 }
 
 /// Underline tabs (connection modal: General / SSH / Advanced); the caller adds `.on_click`
-pub fn underline_tab(t: &crate::theme::Theme, id: impl Into<ElementId>, label: &'static str, on: bool) -> Stateful<Div> {
+pub fn underline_tab(
+    t: &crate::theme::Theme,
+    id: impl Into<ElementId>,
+    label: &'static str,
+    on: bool,
+) -> Stateful<Div> {
     div()
         .id(id)
         .h(px(36.0))
-                .flex()
+        .flex()
         .items_center()
         .text_sm()
         .cursor_pointer()
         .border_b_2()
-        .border_color(if on { t.accent } else { gpui::transparent_black().into() })
+        .border_color(if on {
+            t.accent
+        } else {
+            gpui::transparent_black().into()
+        })
         .text_color(if on { t.text_primary } else { t.text_muted })
         .when(!on, |d| d.hover(|s| s.text_color(t.text_secondary)))
         .child(label)
@@ -174,7 +243,9 @@ pub fn underline_tab(t: &crate::theme::Theme, id: impl Into<ElementId>, label: &
 
 /// Zed-style button: no border, the theme's soft corners. Labelled ones add `.pad_sm()` / `.pad_xs()`.
 pub fn zbutton(id: impl Into<ElementId>) -> gpui::component::button::Button {
-    gpui::component::button::Button::new(id).border_0().cursor_pointer()
+    gpui::component::button::Button::new(id)
+        .border_0()
+        .cursor_pointer()
 }
 
 /// Roomier padding than gpui-kit's defaults (24px / 8px), for buttons with a label
@@ -194,5 +265,10 @@ impl ButtonPadding for gpui::component::button::Button {}
 /// Form text input at a comfortable height; Input ignores `.h()`, so height comes from the large preset (44px)
 pub fn form_input(state: &Entity<gpui::component::input::InputState>) -> Div {
     use gpui::component::Sizable;
-    div().child(gpui::component::input::Input::new(state).large().text_sm().px_3p5())
+    div().child(
+        gpui::component::input::Input::new(state)
+            .large()
+            .text_sm()
+            .px_3p5(),
+    )
 }

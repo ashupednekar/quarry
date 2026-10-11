@@ -9,8 +9,13 @@ use crate::dialect::is_plsql_block;
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
 use crate::monitor::{Monitor, ServerView, Snapshot};
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema, EAGER_SCHEMAS};
-use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS};
+use crate::schema::{
+    ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject,
+    TableInfo, TableSchema, EAGER_SCHEMAS,
+};
+use crate::session::{
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS,
+};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use oracle::sql_type::OracleType;
@@ -26,8 +31,20 @@ const NO_CLIENT: &str = "Oracle Instant Client isn't installed";
 pub struct OracleDriver;
 pub static DRIVER: OracleDriver = OracleDriver;
 
-const fn field(label: &'static str, placeholder: &'static str, secret: bool, row: u8, width: Option<f32>) -> Field {
-    Field { label, placeholder, secret, row, width }
+const fn field(
+    label: &'static str,
+    placeholder: &'static str,
+    secret: bool,
+    row: u8,
+    width: Option<f32>,
+) -> Field {
+    Field {
+        label,
+        placeholder,
+        secret,
+        row,
+        width,
+    }
 }
 
 #[async_trait]
@@ -60,11 +77,15 @@ impl Driver for OracleDriver {
     }
 
     fn split(&self, conn: &str) -> Vec<String> {
-        conn_url::parse(conn, &SCHEMES).map(|(f, _)| f.to_vec()).unwrap_or_else(|| vec![String::new(); 5])
+        conn_url::parse(conn, &SCHEMES)
+            .map(|(f, _)| f.to_vec())
+            .unwrap_or_else(|| vec![String::new(); 5])
     }
 
     fn join(&self, values: &[String], previous: &str) -> String {
-        let query = conn_url::parse(previous, &SCHEMES).map(|(_, q)| q).unwrap_or_default();
+        let query = conn_url::parse(previous, &SCHEMES)
+            .map(|(_, q)| q)
+            .unwrap_or_default();
         let fields: UrlFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
         conn_url::build("oracle", &fields, &query)
     }
@@ -78,9 +99,18 @@ impl Driver for OracleDriver {
     }
 
     fn display_address(&self, conn: &str) -> String {
-        let [host, port, _, _, service] = <[String; 5]>::try_from(self.split(conn)).unwrap_or_default();
-        let host = if host.is_empty() { "localhost".to_string() } else { host };
-        let mut out = if port.is_empty() { host } else { format!("{host}:{port}") };
+        let [host, port, _, _, service] =
+            <[String; 5]>::try_from(self.split(conn)).unwrap_or_default();
+        let host = if host.is_empty() {
+            "localhost".to_string()
+        } else {
+            host
+        };
+        let mut out = if port.is_empty() {
+            host
+        } else {
+            format!("{host}:{port}")
+        };
         if !service.is_empty() {
             out += &format!("/{service}");
         }
@@ -95,7 +125,11 @@ impl Driver for OracleDriver {
         conn_url::retarget(conn, local_port)
     }
 
-    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+    async fn connect(
+        &self,
+        conn: &str,
+        read_only: bool,
+    ) -> Result<Arc<dyn DatabaseSession>, DbError> {
         Ok(Arc::new(OracleSession::connect(conn, read_only).await?))
     }
 }
@@ -113,14 +147,20 @@ fn init_client() -> Result<(), DbError> {
         return Ok(());
     }
     let res = (|| -> Result<(), String> {
-        let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("ORACLE_CLIENT_LIB_DIR").map(Into::into).into_iter().collect();
+        let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("ORACLE_CLIENT_LIB_DIR")
+            .map(Into::into)
+            .into_iter()
+            .collect();
         let globbed = |dir: std::path::PathBuf, prefix: &str| -> Vec<std::path::PathBuf> {
             let mut found: Vec<_> = std::fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(prefix)))
+                .filter(|p| {
+                    p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
+                })
                 .collect();
             found.sort();
             found.reverse(); // newest version first
@@ -133,7 +173,9 @@ fn init_client() -> Result<(), DbError> {
         candidates.extend(client::installed());
         let mut params = oracle::InitParams::new();
         if let Some(dir) = candidates.into_iter().find(|d| client::has_client_lib(d)) {
-            params.oracle_client_lib_dir(dir).map_err(|e| e.to_string())?;
+            params
+                .oracle_client_lib_dir(dir)
+                .map_err(|e| e.to_string())?;
         }
         // Nothing found: ODPI-C still tries its own search (LD_LIBRARY_PATH, ~/lib, …)
         params.init().map(|_| ()).map_err(|e| e.to_string())
@@ -171,7 +213,11 @@ fn err(e: oracle::Error) -> DbError {
 /// SQL statements reach Oracle without their `;` (it rejects them); PL/SQL blocks keep it
 fn prepare(sql: &str) -> String {
     let sql = sql.trim();
-    if is_plsql_block(sql) { sql.to_string() } else { sql.trim_end_matches(';').trim_end().to_string() }
+    if is_plsql_block(sql) {
+        sql.to_string()
+    } else {
+        sql.trim_end_matches(';').trim_end().to_string()
+    }
 }
 
 /// One statement: rows (capped at MAX_ROWS) for a query, the row count otherwise
@@ -181,36 +227,79 @@ fn run_statement(conn: &Connection, sql: &str) -> Result<QueryResult, DbError> {
     let mut stmt = conn.statement(&text).build().map_err(err)?;
     if !stmt.is_query() {
         stmt.execute(&[]).map_err(err)?;
-        return Ok(QueryResult { columns: Vec::new(), rows: Vec::new(), rows_affected: stmt.row_count().map_err(err)?, execution_time: start.elapsed(), statement: sql.to_string() });
+        return Ok(QueryResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            rows_affected: stmt.row_count().map_err(err)?,
+            execution_time: start.elapsed(),
+            statement: sql.to_string(),
+        });
     }
     let rs = stmt.query(&[]).map_err(err)?;
-    let info: Vec<(String, OracleType)> = rs.column_info().iter().map(|c| (c.name().to_string(), c.oracle_type().clone())).collect();
+    let info: Vec<(String, OracleType)> = rs
+        .column_info()
+        .iter()
+        .map(|c| (c.name().to_string(), c.oracle_type().clone()))
+        .collect();
     let (mut rows, mut count) = (Vec::new(), 0u64);
     for row in rs {
         let row = row.map_err(err)?;
         count += 1;
         if rows.len() < MAX_ROWS {
-            rows.push(row.sql_values().iter().zip(&info).map(|(v, (_, t))| decode(v, t)).collect());
+            rows.push(
+                row.sql_values()
+                    .iter()
+                    .zip(&info)
+                    .map(|(v, (_, t))| decode(v, t))
+                    .collect(),
+            );
         }
     }
-    Ok(QueryResult { columns: info.into_iter().map(|(n, _)| n).collect(), rows, rows_affected: count, execution_time: start.elapsed(), statement: sql.to_string() })
+    Ok(QueryResult {
+        columns: info.into_iter().map(|(n, _)| n).collect(),
+        rows,
+        rows_affected: count,
+        execution_time: start.elapsed(),
+        statement: sql.to_string(),
+    })
 }
 
 fn decode(v: &oracle::SqlValue, t: &OracleType) -> DbValue {
     if v.is_null().unwrap_or(true) {
         return DbValue::Null;
     }
-    let text = || v.get::<String>().map(DbValue::Text).unwrap_or(DbValue::Null);
+    let text = || {
+        v.get::<String>()
+            .map(DbValue::Text)
+            .unwrap_or(DbValue::Null)
+    };
     match t {
         // Whole numbers that fit an i64 are integers (NUMBER(10), COUNT(*)); anything else keeps its exact digits
         OracleType::Number(_, _) | OracleType::Float(_) => match v.get::<String>() {
-            Ok(s) => s.parse::<i64>().map(DbValue::Int).unwrap_or(DbValue::Decimal(s)),
+            Ok(s) => s
+                .parse::<i64>()
+                .map(DbValue::Int)
+                .unwrap_or(DbValue::Decimal(s)),
             Err(_) => DbValue::Null,
         },
-        OracleType::BinaryFloat | OracleType::BinaryDouble => v.get::<f64>().map(DbValue::Float).unwrap_or_else(|_| text()),
-        OracleType::Raw(_) | OracleType::BLOB | OracleType::LongRaw => v.get::<Vec<u8>>().map(DbValue::Blob).unwrap_or(DbValue::Null),
-        OracleType::Boolean => v.get::<bool>().map(DbValue::Boolean).unwrap_or_else(|_| text()),
-        OracleType::Json => v.get::<String>().ok().and_then(|s| serde_json::from_str(&s).ok()).map(DbValue::Json).unwrap_or_else(text),
+        OracleType::BinaryFloat | OracleType::BinaryDouble => v
+            .get::<f64>()
+            .map(DbValue::Float)
+            .unwrap_or_else(|_| text()),
+        OracleType::Raw(_) | OracleType::BLOB | OracleType::LongRaw => v
+            .get::<Vec<u8>>()
+            .map(DbValue::Blob)
+            .unwrap_or(DbValue::Null),
+        OracleType::Boolean => v
+            .get::<bool>()
+            .map(DbValue::Boolean)
+            .unwrap_or_else(|_| text()),
+        OracleType::Json => v
+            .get::<String>()
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .map(DbValue::Json)
+            .unwrap_or_else(text),
         // Dates, timestamps, intervals, text: as Oracle formats them, so nothing shifts or rounds
         _ => text(),
     }
@@ -218,9 +307,14 @@ fn decode(v: &oracle::SqlValue, t: &OracleType) -> DbValue {
 
 impl OracleSession {
     pub async fn connect(url: &str, read_only: bool) -> Result<Self, DbError> {
-        let (f, _) = conn_url::parse(url, &SCHEMES).ok_or_else(|| DbError::ConnectionFailed("Not an oracle:// address".into()))?;
+        let (f, _) = conn_url::parse(url, &SCHEMES)
+            .ok_or_else(|| DbError::ConnectionFailed("Not an oracle:// address".into()))?;
         let [host, port, user, pw, service] = f;
-        let target = format!("//{}:{}/{service}", if host.is_empty() { "localhost" } else { &host }, if port.is_empty() { "1521" } else { &port });
+        let target = format!(
+            "//{}:{}/{service}",
+            if host.is_empty() { "localhost" } else { &host },
+            if port.is_empty() { "1521" } else { &port }
+        );
         let conn = tokio::task::spawn_blocking(move || -> Result<Connection, DbError> {
             init_client()?;
             let mut conn = Connection::connect(&user, &pw, &target).map_err(|e| match err(e) {
@@ -229,24 +323,34 @@ impl OracleSession {
             })?;
             conn.set_autocommit(true);
             if read_only {
-                conn.execute("SET TRANSACTION READ ONLY", &[]).map_err(err)?;
+                conn.execute("SET TRANSACTION READ ONLY", &[])
+                    .map_err(err)?;
             }
             Ok(conn)
         })
         .await
         .map_err(|e| DbError::Internal(e.to_string()))??;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)), read_only, tx: TxState::default() })
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            read_only,
+            tx: TxState::default(),
+        })
     }
 
     /// Runs `f` with the connection on the blocking pool
-    async fn with<T: Send + 'static>(&self, f: impl FnOnce(&mut Connection) -> Result<T, DbError> + Send + 'static) -> Result<T, DbError> {
+    async fn with<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, DbError> + Send + 'static,
+    ) -> Result<T, DbError> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let mut guard = conn.lock().map_err(|_| DbError::Internal("connection poisoned".into()))?;
+            let mut guard = conn
+                .lock()
+                .map_err(|_| DbError::Internal("connection poisoned".into()))?;
             f(&mut guard)
         })
-            .await
-            .map_err(|e| DbError::Internal(e.to_string()))?
+        .await
+        .map_err(|e| DbError::Internal(e.to_string()))?
     }
 
     async fn run(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -255,7 +359,23 @@ impl OracleSession {
     }
 
     async fn rows(&self, sql: &str) -> Result<Vec<Vec<String>>, DbError> {
-        Ok(self.run(sql).await?.rows.iter().map(|r| r.iter().map(|v| if v.is_null() { String::new() } else { v.to_display_string() }).collect()).collect())
+        Ok(self
+            .run(sql)
+            .await?
+            .rows
+            .iter()
+            .map(|r| {
+                r.iter()
+                    .map(|v| {
+                        if v.is_null() {
+                            String::new()
+                        } else {
+                            v.to_display_string()
+                        }
+                    })
+                    .collect()
+            })
+            .collect())
     }
 }
 
@@ -280,12 +400,21 @@ impl DatabaseSession for OracleSession {
 
     /// Many schemas: only the session's own, the rest when opened
     async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
-        let c = self.catalog_where(Some("SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')")).await?;
-        if c.schemas.len() > EAGER_SCHEMAS { Ok(c.lazy()) } else { self.introspect().await }
+        let c = self
+            .catalog_where(Some("SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')"))
+            .await?;
+        if c.schemas.len() > EAGER_SCHEMAS {
+            Ok(c.lazy())
+        } else {
+            self.introspect().await
+        }
     }
 
     async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
-        Ok(self.catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into())))).await?.tables)
+        Ok(self
+            .catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into()))))
+            .await?
+            .tables)
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -341,7 +470,11 @@ impl DatabaseSession for OracleSession {
                         Ok(_) => DbError::ConcurrentModification,
                         Err(e) => e,
                     };
-                    let _ = if keep_open { run_statement(c, "ROLLBACK TO SAVEPOINT quarry_edits").map(|_| ()) } else { c.rollback().map_err(err) };
+                    let _ = if keep_open {
+                        run_statement(c, "ROLLBACK TO SAVEPOINT quarry_edits").map(|_| ())
+                    } else {
+                        c.rollback().map_err(err)
+                    };
                     if !keep_open {
                         c.set_autocommit(true);
                     }
@@ -375,8 +508,15 @@ impl DatabaseSession for OracleSession {
     /// DBMS_METADATA writes the full DDL: storage, constraints and all
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
         let kind = if table.is_view { "VIEW" } else { "TABLE" };
-        let (owner, name) = (sql_string(&table.schema_name), sql_string(&table.table_name));
-        let ddl = self.rows(&format!("SELECT DBMS_METADATA.GET_DDL('{kind}', {name}, {owner}) FROM dual")).await?;
+        let (owner, name) = (
+            sql_string(&table.schema_name),
+            sql_string(&table.table_name),
+        );
+        let ddl = self
+            .rows(&format!(
+                "SELECT DBMS_METADATA.GET_DDL('{kind}', {name}, {owner}) FROM dual"
+            ))
+            .await?;
         let indexes = self
             .rows(&format!(
                 "SELECT i.index_name, CASE i.uniqueness WHEN 'UNIQUE' THEN 1 ELSE 0 END, \
@@ -386,8 +526,19 @@ impl DatabaseSession for OracleSession {
             ))
             .await?;
         Ok(TableInfo {
-            ddl: ddl.into_iter().next().map(|r| format!("{};", r[0].trim())).unwrap_or_else(|| table.create_sql(self.dialect())),
-            indexes: indexes.into_iter().map(|r| IndexInfo { name: r[0].clone(), unique: r[1] == "1", columns: r[2].clone() }).collect(),
+            ddl: ddl
+                .into_iter()
+                .next()
+                .map(|r| format!("{};", r[0].trim()))
+                .unwrap_or_else(|| table.create_sql(self.dialect())),
+            indexes: indexes
+                .into_iter()
+                .map(|r| IndexInfo {
+                    name: r[0].clone(),
+                    unique: r[1] == "1",
+                    columns: r[2].clone(),
+                })
+                .collect(),
         })
     }
 
@@ -412,15 +563,30 @@ impl DatabaseSession for OracleSession {
                     "TYPE" => ObjectKind::Type,
                     _ => return None,
                 };
-                Some(SchemaObject { kind, name: r[1].clone(), detail: r[2].clone(), id: r[0].clone() })
+                Some(SchemaObject {
+                    kind,
+                    name: r[1].clone(),
+                    detail: r[2].clone(),
+                    id: r[0].clone(),
+                })
             })
             .collect())
     }
 
     async fn object_ddl(&self, schema: &str, obj: &SchemaObject) -> Result<String, DbError> {
         // `id` holds Oracle's object type, which DBMS_METADATA takes as is
-        let rows = self.rows(&format!("SELECT DBMS_METADATA.GET_DDL({}, {}, {}) FROM dual", sql_string(&obj.id), sql_string(&obj.name), sql_string(schema))).await?;
-        rows.into_iter().next().map(|r| format!("{}\n/", r[0].trim())).ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
+        let rows = self
+            .rows(&format!(
+                "SELECT DBMS_METADATA.GET_DDL({}, {}, {}) FROM dual",
+                sql_string(&obj.id),
+                sql_string(&obj.name),
+                sql_string(schema)
+            ))
+            .await?;
+        rows.into_iter()
+            .next()
+            .map(|r| format!("{}\n/", r[0].trim()))
+            .ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
     }
 
     fn monitor(&self) -> Option<&dyn Monitor> {
@@ -434,7 +600,11 @@ GRANT SELECT_CATALOG_ROLE TO your_user;";
 #[async_trait]
 impl Monitor for OracleSession {
     fn views(&self) -> &'static [ServerView] {
-        &[ServerView::Activity, ServerView::Statements, ServerView::Locks]
+        &[
+            ServerView::Activity,
+            ServerView::Statements,
+            ServerView::Locks,
+        ]
     }
 
     async fn snapshot(&self, view: ServerView) -> Result<Snapshot, DbError> {
@@ -458,30 +628,56 @@ impl Monitor for OracleSession {
             _ => return Ok(Snapshot::Unavailable("Not available for Oracle".into())),
         };
         match self.run(sql).await {
-            Err(e) if e.to_string().contains("ORA-00942") => Ok(Snapshot::Unavailable(MONITOR_HELP.into())),
+            Err(e) if e.to_string().contains("ORA-00942") => {
+                Ok(Snapshot::Unavailable(MONITOR_HELP.into()))
+            }
             other => other.map(Snapshot::Rows),
         }
     }
 
     async fn cancel(&self, sid: i64) -> Result<(), DbError> {
-        let serial = self.rows(&format!("SELECT serial# FROM v$session WHERE sid = {sid}")).await?;
-        let serial = serial.first().map(|r| r[0].clone()).ok_or_else(|| DbError::SqlError(format!("session {sid} has ended")))?;
-        self.run(&format!("ALTER SYSTEM CANCEL SQL '{sid},{serial}'")).await.map(|_| ())
+        let serial = self
+            .rows(&format!("SELECT serial# FROM v$session WHERE sid = {sid}"))
+            .await?;
+        let serial = serial
+            .first()
+            .map(|r| r[0].clone())
+            .ok_or_else(|| DbError::SqlError(format!("session {sid} has ended")))?;
+        self.run(&format!("ALTER SYSTEM CANCEL SQL '{sid},{serial}'"))
+            .await
+            .map(|_| ())
     }
 
     async fn terminate(&self, sid: i64) -> Result<(), DbError> {
-        let serial = self.rows(&format!("SELECT serial# FROM v$session WHERE sid = {sid}")).await?;
-        let serial = serial.first().map(|r| r[0].clone()).ok_or_else(|| DbError::SqlError(format!("session {sid} has ended")))?;
-        self.run(&format!("ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE")).await.map(|_| ())
+        let serial = self
+            .rows(&format!("SELECT serial# FROM v$session WHERE sid = {sid}"))
+            .await?;
+        let serial = serial
+            .first()
+            .map(|r| r[0].clone())
+            .ok_or_else(|| DbError::SqlError(format!("session {sid} has ended")))?;
+        self.run(&format!(
+            "ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE"
+        ))
+        .await
+        .map(|_| ())
     }
 }
 
 impl OracleSession {
     /// Everything (`only` = None) or one schema: `only` is a SQL expression for its name
     async fn catalog_where(&self, only: Option<&str>) -> Result<SchemaCatalog, DbError> {
-        let f = |col: &str| only.map(|e| format!(" AND {col} = {e}")).unwrap_or_default();
+        let f = |col: &str| {
+            only.map(|e| format!(" AND {col} = {e}"))
+                .unwrap_or_default()
+        };
         let (owner, c_owner) = (f("owner"), f("c.owner"));
-        let schemas: Vec<String> = self.rows(&format!("{USER_SCHEMAS} ORDER BY 1")).await?.into_iter().map(|r| r[0].clone()).collect();
+        let schemas: Vec<String> = self
+            .rows(&format!("{USER_SCHEMAS} ORDER BY 1"))
+            .await?
+            .into_iter()
+            .map(|r| r[0].clone())
+            .collect();
         let tables = self
             .rows(&format!(
                 "SELECT owner, table_name, 0 FROM all_tables WHERE owner IN ({USER_SCHEMAS}){owner} AND nested = 'NO' AND secondary = 'N' \
@@ -514,12 +710,18 @@ impl OracleSession {
                  WHERE c.constraint_type = 'R' AND c.owner IN ({USER_SCHEMAS}){c_owner}"
             ))
             .await?;
-        let default_schema = self.rows("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM dual").await?.into_iter().next().map(|r| r[0].clone());
+        let default_schema = self
+            .rows("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM dual")
+            .await?
+            .into_iter()
+            .next()
+            .map(|r| r[0].clone());
         let tables = tables
             .iter()
             .map(|t| {
                 let mine = |r: &&Vec<String>| r[0] == t[0] && r[1] == t[1];
-                let primary_keys: Vec<String> = pks.iter().filter(mine).map(|r| r[2].clone()).collect();
+                let primary_keys: Vec<String> =
+                    pks.iter().filter(mine).map(|r| r[2].clone()).collect();
                 let columns = columns
                     .iter()
                     .filter(mine)
@@ -541,13 +743,23 @@ impl OracleSession {
                     foreign_keys: fks
                         .iter()
                         .filter(mine)
-                        .map(|f| ForeignKeyRef { from_column: f[2].clone(), to_schema: f[3].clone(), to_table: f[4].clone(), to_column: f[5].clone() })
+                        .map(|f| ForeignKeyRef {
+                            from_column: f[2].clone(),
+                            to_schema: f[3].clone(),
+                            to_table: f[4].clone(),
+                            to_column: f[5].clone(),
+                        })
                         .collect(),
                     primary_keys,
                 }
             })
             .collect();
-        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
+        Ok(SchemaCatalog {
+            schemas,
+            tables,
+            default_schema,
+            ..Default::default()
+        })
     }
 }
 

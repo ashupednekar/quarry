@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! Whole-database dumps (X3). Optional: a driver offers one through `DatabaseSession::dumper`.
 
 #[cfg(feature = "sqlite")]
@@ -35,7 +34,10 @@ impl Dumper for crate::SqliteSession {
 
 #[cfg(feature = "sqlite")]
 /// Built-in SQLite dump: writes `BEGIN; CREATE TABLE …; INSERT …; CREATE INDEX/VIEW/TRIGGER …; COMMIT;`. Returns rows written.
-pub async fn sqlite_dump(session: &crate::SqliteSession, out: &mut impl Write) -> Result<usize, String> {
+pub async fn sqlite_dump(
+    session: &crate::SqliteSession,
+    out: &mut impl Write,
+) -> Result<usize, String> {
     let objects = session
         .execute("SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type = 'table' DESC, rowid")
         .await
@@ -43,7 +45,11 @@ pub async fn sqlite_dump(session: &crate::SqliteSession, out: &mut impl Write) -
     let text = |v: &DbValue| v.to_display_string();
     let io = |e: std::io::Error| e.to_string();
 
-    writeln!(out, "-- Quarry SQLite dump\nPRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;").map_err(io)?;
+    writeln!(
+        out,
+        "-- Quarry SQLite dump\nPRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;"
+    )
+    .map_err(io)?;
     let mut rows = 0;
     // Tables (with their data) first, so indexes, views and triggers can refer to them
     for obj in objects.rows.iter().filter(|o| text(&o[0]) == "table") {
@@ -55,7 +61,13 @@ pub async fn sqlite_dump(session: &crate::SqliteSession, out: &mut impl Write) -
             .for_each_row(&format!("SELECT * FROM {table}"), |cols, vals| {
                 let cols: Vec<String> = cols.iter().map(|c| quote_ident(c)).collect();
                 let values: Vec<String> = vals.iter().map(|v| v.to_sql_literal()).collect();
-                writeln!(out, "INSERT INTO {table} ({}) VALUES ({});", cols.join(","), values.join(",")).map_err(io)
+                writeln!(
+                    out,
+                    "INSERT INTO {table} ({}) VALUES ({});",
+                    cols.join(","),
+                    values.join(",")
+                )
+                .map_err(io)
             })
             .await?;
     }
@@ -87,11 +99,23 @@ mod tests {
 
         let dst = SqliteSession::open_in_memory().unwrap();
         let script = String::from_utf8(buf).unwrap();
-        for stmt in script.split(";\n").map(str::trim).filter(|s| !s.is_empty() && !s.starts_with("--")) {
-            dst.execute(stmt).await.unwrap_or_else(|e| panic!("{stmt}: {e}"));
+        for stmt in script
+            .split(";\n")
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.starts_with("--"))
+        {
+            dst.execute(stmt)
+                .await
+                .unwrap_or_else(|e| panic!("{stmt}: {e}"));
         }
         let q = "SELECT id, note, data, score FROM a ORDER BY id";
-        assert_eq!(src.execute(q).await.unwrap().rows, dst.execute(q).await.unwrap().rows);
-        assert_eq!(dst.execute("SELECT count(*) FROM v").await.unwrap().rows[0][0], DbValue::Int(2));
+        assert_eq!(
+            src.execute(q).await.unwrap().rows,
+            dst.execute(q).await.unwrap().rows
+        );
+        assert_eq!(
+            dst.execute("SELECT count(*) FROM v").await.unwrap().rows[0][0],
+            DbValue::Int(2)
+        );
     }
 }

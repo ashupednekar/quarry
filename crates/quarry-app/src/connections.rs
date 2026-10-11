@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! Saved connection profiles: JSON in ~/.config/quarry, passwords in the OS keychain.
 
 use crate::state::ConnectionProfile;
@@ -36,7 +35,10 @@ pub fn load() -> Vec<ConnectionProfile> {
 /// Renames them to their address. Returns whether anything changed.
 fn fix_default_names(profiles: &mut [ConnectionProfile]) -> bool {
     let mut changed = false;
-    for p in profiles.iter_mut().filter(|p| p.name == "Local SQLite" && p.driver != "sqlite") {
+    for p in profiles
+        .iter_mut()
+        .filter(|p| p.name == "Local SQLite" && p.driver != "sqlite")
+    {
         p.name = display_address(p);
         changed = true;
     }
@@ -60,7 +62,10 @@ pub fn save(profiles: &[ConnectionProfile]) -> Result<(), String> {
                 .and_then(|e| e.set_password(&secret))
                 .map_err(|e| format!("keychain: {e}"))?;
         }
-        stored.push(ConnectionProfile { path_or_url, ..p.clone() });
+        stored.push(ConnectionProfile {
+            path_or_url,
+            ..p.clone()
+        });
     }
     let path = config_path().ok_or("no home directory")?;
     std::fs::create_dir_all(path.parent().expect("has parent")).map_err(|e| e.to_string())?;
@@ -70,7 +75,10 @@ pub fn save(profiles: &[ConnectionProfile]) -> Result<(), String> {
 
 /// Where a connection points, without user or password (the driver decides the form)
 pub fn display_address(p: &ConnectionProfile) -> String {
-    p.driver().map_or_else(|| p.path_or_url.clone(), |d| d.display_address(&p.path_or_url))
+    p.driver().map_or_else(
+        || p.path_or_url.clone(),
+        |d| d.display_address(&p.path_or_url),
+    )
 }
 
 pub fn forget_secret(id: &str) {
@@ -81,7 +89,9 @@ pub fn forget_secret(id: &str) {
 
 /// Returns the connection string with its keychain password restored (if one is stored).
 pub fn with_secret(profile: &ConnectionProfile) -> String {
-    let Some(driver) = profile.driver() else { return profile.path_or_url.clone() };
+    let Some(driver) = profile.driver() else {
+        return profile.path_or_url.clone();
+    };
     if driver.take_secret(&profile.path_or_url).1.is_some() {
         return profile.path_or_url.clone();
     }
@@ -97,20 +107,49 @@ mod tests {
     use crate::state::{ConnectionProfile, Environment};
 
     fn p(name: &str, driver: &str, url: &str) -> ConnectionProfile {
-        ConnectionProfile { id: "x".into(), name: name.into(), driver: driver.into(), path_or_url: url.into(), env: Environment::Local, read_only: false, ssh: None, statement_timeout_secs: None }
+        ConnectionProfile {
+            id: "x".into(),
+            name: name.into(),
+            driver: driver.into(),
+            path_or_url: url.into(),
+            env: Environment::Local,
+            read_only: false,
+            ssh: None,
+            statement_timeout_secs: None,
+        }
     }
 
     #[test]
     fn shows_where_a_connection_points() {
-        assert_eq!(display_address(&p("n", "postgres", "postgres://me:secret@localhost:5432/app?sslmode=disable")), "localhost:5432/app");
-        assert_eq!(display_address(&p("n", "sqlite", "/tmp/data/app.db")), "app.db");
+        assert_eq!(
+            display_address(&p(
+                "n",
+                "postgres",
+                "postgres://me:secret@localhost:5432/app?sslmode=disable"
+            )),
+            "localhost:5432/app"
+        );
+        assert_eq!(
+            display_address(&p("n", "sqlite", "/tmp/data/app.db")),
+            "app.db"
+        );
     }
 
     #[test]
     fn renames_connections_saved_under_the_old_default() {
-        let mut list = vec![p("Local SQLite", "postgres", "postgres://postgres@localhost:5432/postgres"), p("Local SQLite", "sqlite", "/tmp/a.db")];
+        let mut list = vec![
+            p(
+                "Local SQLite",
+                "postgres",
+                "postgres://postgres@localhost:5432/postgres",
+            ),
+            p("Local SQLite", "sqlite", "/tmp/a.db"),
+        ];
         assert!(super::fix_default_names(&mut list));
-        assert_eq!((list[0].name.as_str(), list[1].name.as_str()), ("localhost:5432/postgres", "Local SQLite"));
+        assert_eq!(
+            (list[0].name.as_str(), list[1].name.as_str()),
+            ("localhost:5432/postgres", "Local SQLite")
+        );
         assert!(!super::fix_default_names(&mut list));
     }
 
@@ -119,7 +158,12 @@ mod tests {
         let old = r#"[{"id":"a","name":"n","kind":"SqliteMemory","path_or_url":":memory:","env":"Local","read_only":false},
                       {"id":"b","name":"n","kind":"Postgres","path_or_url":"postgres://h/db","env":"Local","read_only":false}]"#;
         let list: Vec<ConnectionProfile> = serde_json::from_str(old).unwrap();
-        assert_eq!((list[0].driver.as_str(), list[1].driver.as_str()), ("sqlite", "postgres"));
-        assert!(serde_json::to_string(&list[1]).unwrap().contains(r#""driver":"postgres""#));
+        assert_eq!(
+            (list[0].driver.as_str(), list[1].driver.as_str()),
+            ("sqlite", "postgres")
+        );
+        assert!(serde_json::to_string(&list[1])
+            .unwrap()
+            .contains(r#""driver":"postgres""#));
     }
 }

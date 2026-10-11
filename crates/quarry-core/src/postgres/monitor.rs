@@ -10,11 +10,13 @@ use crate::value::DbValue;
 use async_trait::async_trait;
 use std::time::Duration;
 
-const STATEMENTS_HELP: &str = "pg_stat_statements isn't enabled on this server. Add it to shared_preload_libraries \
+const STATEMENTS_HELP: &str =
+    "pg_stat_statements isn't enabled on this server. Add it to shared_preload_libraries \
 in postgresql.conf, restart Postgres, then run: CREATE EXTENSION pg_stat_statements;";
 const LOGS_OFF_HELP: &str = "This server doesn't write log files (logging_collector is off). Set logging_collector = on \
 in postgresql.conf and restart Postgres. Managed services (RDS, Cloud SQL, Supabase…) show logs in their own console.";
-const LOGS_PERMISSION_HELP: &str = "Reading server logs needs a superuser, or a role with pg_monitor and pg_read_server_files: \
+const LOGS_PERMISSION_HELP: &str =
+    "Reading server logs needs a superuser, or a role with pg_monitor and pg_read_server_files: \
 GRANT pg_monitor, pg_read_server_files TO your_role;";
 
 const LOG_COLUMNS: [&str; 4] = ["time", "pid", "level", "message"];
@@ -49,19 +51,31 @@ impl PostgresSession {
     /// First column of every row, as text
     async fn column(&self, sql: &str) -> Result<Vec<String>, DbError> {
         let r = self.run_statement(sql).await?;
-        Ok(r.rows.iter().filter_map(|row| row.first().map(|v| v.to_display_string())).collect())
+        Ok(r.rows
+            .iter()
+            .filter_map(|row| row.first().map(|v| v.to_display_string()))
+            .collect())
     }
 }
 
 #[async_trait]
 impl Monitor for PostgresSession {
     fn views(&self) -> &'static [ServerView] {
-        &[ServerView::Activity, ServerView::Statements, ServerView::Database, ServerView::Locks, ServerView::Logs]
+        &[
+            ServerView::Activity,
+            ServerView::Statements,
+            ServerView::Database,
+            ServerView::Locks,
+            ServerView::Logs,
+        ]
     }
 
     async fn snapshot(&self, view: ServerView) -> Result<Snapshot, DbError> {
         if view == ServerView::Statements
-            && self.column("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'").await?.is_empty()
+            && self
+                .column("SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'")
+                .await?
+                .is_empty()
         {
             return Ok(Snapshot::Unavailable(STATEMENTS_HELP.into()));
         }
@@ -69,23 +83,39 @@ impl Monitor for PostgresSession {
     }
 
     async fn logs(&self, file: Option<String>, pages: u32) -> Result<LogPage, DbError> {
-        let unavailable = |help: &str| LogPage { rows: Snapshot::Unavailable(help.into()), files: Vec::new() };
-        if self.column("SELECT current_setting('logging_collector')").await?.first().is_some_and(|v| v != "on") {
+        let unavailable = |help: &str| LogPage {
+            rows: Snapshot::Unavailable(help.into()),
+            files: Vec::new(),
+        };
+        if self
+            .column("SELECT current_setting('logging_collector')")
+            .await?
+            .first()
+            .is_some_and(|v| v != "on")
+        {
             return Ok(unavailable(LOGS_OFF_HELP));
         }
         match self.read_logs(file, pages).await {
-            Err(e) if e.to_string().contains("permission denied") => Ok(unavailable(LOGS_PERMISSION_HELP)),
+            Err(e) if e.to_string().contains("permission denied") => {
+                Ok(unavailable(LOGS_PERMISSION_HELP))
+            }
             other => other,
         }
     }
 
     async fn cancel(&self, pid: i64) -> Result<(), DbError> {
-        self.client.execute("SELECT pg_cancel_backend($1)", &[&(pid as i32)]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        self.client
+            .execute("SELECT pg_cancel_backend($1)", &[&(pid as i32)])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
         Ok(())
     }
 
     async fn terminate(&self, pid: i64) -> Result<(), DbError> {
-        self.client.execute("SELECT pg_terminate_backend($1)", &[&(pid as i32)]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        self.client
+            .execute("SELECT pg_terminate_backend($1)", &[&(pid as i32)])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
         Ok(())
     }
 }
@@ -93,9 +123,17 @@ impl Monitor for PostgresSession {
 impl PostgresSession {
     /// The chosen (or newest) log file's last `pages` × 64 KB, newest line first, split by the server's `log_line_prefix`
     async fn read_logs(&self, file: Option<String>, pages: u32) -> Result<LogPage, DbError> {
-        let files = self.column("SELECT name FROM pg_ls_logdir() ORDER BY modification DESC").await?;
-        let Some(name) = file.filter(|f| files.contains(f)).or_else(|| files.first().cloned()) else {
-            return Ok(LogPage { rows: Snapshot::Rows(result(Vec::new())), files });
+        let files = self
+            .column("SELECT name FROM pg_ls_logdir() ORDER BY modification DESC")
+            .await?;
+        let Some(name) = file
+            .filter(|f| files.contains(f))
+            .or_else(|| files.first().cloned())
+        else {
+            return Ok(LogPage {
+                rows: Snapshot::Rows(result(Vec::new())),
+                files,
+            });
         };
         let quoted = name.replace('\'', "''");
         let bytes = 65536 * pages as i64;
@@ -105,7 +143,13 @@ impl PostgresSession {
              current_setting('log_line_prefix')"
         );
         let r = self.run_statement(&sql).await?;
-        let cell = |i: usize| r.rows.first().and_then(|row| row.get(i)).map(|v| v.to_display_string()).unwrap_or_default();
+        let cell = |i: usize| {
+            r.rows
+                .first()
+                .and_then(|row| row.get(i))
+                .map(|v| v.to_display_string())
+                .unwrap_or_default()
+        };
         let (body, prefix) = (cell(0), cell(1));
         let rows = body
             .lines()
@@ -113,10 +157,18 @@ impl PostgresSession {
             .filter(|l| !l.is_empty())
             .map(|l| {
                 let (t, p, lvl, m) = super::logs::parse_line(&prefix, l);
-                vec![DbValue::Text(t), DbValue::Text(p), DbValue::Text(lvl), DbValue::Text(m)]
+                vec![
+                    DbValue::Text(t),
+                    DbValue::Text(p),
+                    DbValue::Text(lvl),
+                    DbValue::Text(m),
+                ]
             })
             .collect();
-        Ok(LogPage { rows: Snapshot::Rows(result(rows)), files })
+        Ok(LogPage {
+            rows: Snapshot::Rows(result(rows)),
+            files,
+        })
     }
 }
 

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! Query parameters (Q7): `:name` and `$1` placeholders, filled in before running.
 
 use std::collections::HashMap;
@@ -32,7 +31,10 @@ fn scan(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
             }
             b':' if b.get(i + 1) == Some(&b':') => i += 2, // ::cast
             b':' if i > 0 && b[i - 1] == b':' => i += 1,
-            b':' if b.get(i + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') => {
+            b':' if b
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') =>
+            {
                 let start = i;
                 i += 1;
                 while i < b.len() && word(b[i]) {
@@ -54,7 +56,9 @@ fn scan(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
                 match tag_end.filter(|&e| b[i + 1..e].iter().all(|c| word(*c))) {
                     Some(e) => {
                         let tag = &sql[i..=e];
-                        i = sql[e + 1..].find(tag).map_or(b.len(), |p| e + 1 + p + tag.len());
+                        i = sql[e + 1..]
+                            .find(tag)
+                            .map_or(b.len(), |p| e + 1 + p + tag.len());
                     }
                     None => i += 1,
                 }
@@ -81,7 +85,10 @@ pub fn literal(value: &str) -> String {
     let v = value.trim();
     if v.eq_ignore_ascii_case("null") {
         "NULL".into()
-    } else if v.parse::<f64>().is_ok() || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("false") {
+    } else if v.parse::<f64>().is_ok()
+        || v.eq_ignore_ascii_case("true")
+        || v.eq_ignore_ascii_case("false")
+    {
         v.to_string()
     } else {
         format!("'{}'", value.replace('\'', "''"))
@@ -113,9 +120,16 @@ mod tests {
 
     #[test]
     fn binds_values_as_literals() {
-        let values = HashMap::from([(":id".to_string(), "42".to_string()), (":name".to_string(), "O'Brien".to_string()), ("$1".to_string(), "null".to_string())]);
+        let values = HashMap::from([
+            (":id".to_string(), "42".to_string()),
+            (":name".to_string(), "O'Brien".to_string()),
+            ("$1".to_string(), "null".to_string()),
+        ]);
         assert_eq!(
-            bind_params("select * from t where id = :id and name = :name and x is $1 and y = ':id'", &values),
+            bind_params(
+                "select * from t where id = :id and name = :name and x is $1 and y = ':id'",
+                &values
+            ),
             "select * from t where id = 42 and name = 'O''Brien' and x is NULL and y = ':id'"
         );
     }

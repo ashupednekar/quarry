@@ -35,7 +35,11 @@ const OBJECTS_SQL: &str = "
 
 impl PostgresSession {
     pub(super) async fn list_objects(&self, schema: &str) -> Result<Vec<SchemaObject>, DbError> {
-        let rows = self.client.query(OBJECTS_SQL, &[&schema]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        let rows = self
+            .client
+            .query(OBJECTS_SQL, &[&schema])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
         Ok(rows
             .iter()
             .filter_map(|r| {
@@ -47,7 +51,12 @@ impl PostgresSession {
                     "T" => ObjectKind::Type,
                     _ => return None,
                 };
-                Some(SchemaObject { kind, name: r.get(1), detail: r.get::<_, Option<String>>(2).unwrap_or_default(), id: r.get(3) })
+                Some(SchemaObject {
+                    kind,
+                    name: r.get(1),
+                    detail: r.get::<_, Option<String>>(2).unwrap_or_default(),
+                    id: r.get(3),
+                })
             })
             .collect())
     }
@@ -75,7 +84,12 @@ impl PostgresSession {
                  FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.oid = $1::text::oid"
             }
         };
-        let row = self.client.query_opt(sql, &[&obj.id]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
-        row.and_then(|r| r.get::<_, Option<String>>(0)).ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
+        let row = self
+            .client
+            .query_opt(sql, &[&obj.id])
+            .await
+            .map_err(|e| DbError::SqlError(e.to_string()))?;
+        row.and_then(|r| r.get::<_, Option<String>>(0))
+            .ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
     }
 }

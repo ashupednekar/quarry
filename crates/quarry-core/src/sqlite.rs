@@ -3,8 +3,12 @@
 
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema};
-use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState};
+use crate::schema::{
+    ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema,
+};
+use crate::session::{
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState,
+};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use rusqlite::types::ValueRef;
@@ -37,7 +41,13 @@ impl Driver for SqliteDriver {
     }
 
     fn fields(&self) -> &'static [Field] {
-        &[Field { label: "File", placeholder: "~/data/app.db, or :memory:", secret: false, row: 0, width: None }]
+        &[Field {
+            label: "File",
+            placeholder: "~/data/app.db, or :memory:",
+            secret: false,
+            row: 0,
+            width: None,
+        }]
     }
 
     fn split(&self, conn: &str) -> Vec<String> {
@@ -56,10 +66,16 @@ impl Driver for SqliteDriver {
         if conn == ":memory:" {
             return conn.to_string();
         }
-        std::path::Path::new(conn).file_name().map_or_else(|| conn.to_string(), |f| f.to_string_lossy().into_owned())
+        std::path::Path::new(conn)
+            .file_name()
+            .map_or_else(|| conn.to_string(), |f| f.to_string_lossy().into_owned())
     }
 
-    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+    async fn connect(
+        &self,
+        conn: &str,
+        read_only: bool,
+    ) -> Result<Arc<dyn DatabaseSession>, DbError> {
         Ok(Arc::new(match conn.trim() {
             ":memory:" => SqliteSession::open_in_memory()?,
             path => SqliteSession::open_file(expand_home(path), read_only)?,
@@ -94,7 +110,8 @@ impl SqliteSession {
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_CREATE
         };
 
-        let conn = Connection::open_with_flags(&path, flags).map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
+        let conn = Connection::open_with_flags(&path, flags)
+            .map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -109,7 +126,8 @@ impl SqliteSession {
     }
 
     pub fn open_in_memory() -> Result<Self, DbError> {
-        let conn = Connection::open_in_memory().map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -189,7 +207,10 @@ impl DatabaseSession for SqliteSession {
 
             // Fetch foreign keys
             let mut fks = Vec::new();
-            let fk_pragma = format!("PRAGMA foreign_key_list(\"{}\")", table_name.replace('"', "\"\""));
+            let fk_pragma = format!(
+                "PRAGMA foreign_key_list(\"{}\")",
+                table_name.replace('"', "\"\"")
+            );
             if let Ok(mut fk_stmt) = conn.prepare(&fk_pragma) {
                 if let Ok(fk_rows) = fk_stmt.query_map([], |row| {
                     Ok(ForeignKeyRef {
@@ -239,7 +260,11 @@ impl DatabaseSession for SqliteSession {
         result
     }
 
-    async fn apply_edits(&self, table_name: &str, changes: &PendingChanges) -> Result<usize, DbError> {
+    async fn apply_edits(
+        &self,
+        table_name: &str,
+        changes: &PendingChanges,
+    ) -> Result<usize, DbError> {
         if self.read_only {
             return Err(DbError::ReadOnlyViolation);
         }
@@ -275,7 +300,11 @@ impl DatabaseSession for SqliteSession {
     /// SQLite's only schema objects besides tables and views are triggers (and indexes, shown per table)
     async fn objects(&self, _schema: &str) -> Result<Vec<crate::schema::SchemaObject>, DbError> {
         let conn = self.conn.lock().await;
-        let r = run_statement(&conn, "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name", Instant::now())?;
+        let r = run_statement(
+            &conn,
+            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+            Instant::now(),
+        )?;
         Ok(r.rows
             .iter()
             .map(|row| crate::schema::SchemaObject {
@@ -287,11 +316,22 @@ impl DatabaseSession for SqliteSession {
             .collect())
     }
 
-    async fn object_ddl(&self, _schema: &str, obj: &crate::schema::SchemaObject) -> Result<String, DbError> {
+    async fn object_ddl(
+        &self,
+        _schema: &str,
+        obj: &crate::schema::SchemaObject,
+    ) -> Result<String, DbError> {
         let conn = self.conn.lock().await;
         let name = obj.name.replace('\'', "''");
-        let r = run_statement(&conn, &format!("SELECT sql FROM sqlite_master WHERE name = '{name}'"), Instant::now())?;
-        r.rows.first().map(|row| format!("{};", row[0].to_display_string())).ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
+        let r = run_statement(
+            &conn,
+            &format!("SELECT sql FROM sqlite_master WHERE name = '{name}'"),
+            Instant::now(),
+        )?;
+        r.rows
+            .first()
+            .map(|row| format!("{};", row[0].to_display_string()))
+            .ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
     }
 
     /// SQLite keeps each object's DDL
@@ -304,8 +344,16 @@ impl DatabaseSession for SqliteSession {
             &format!("SELECT il.name, il.\"unique\", (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) FROM pragma_index_list({name}) il ORDER BY il.name"),
             Instant::now(),
         )?;
-        let ddl = ddl.rows.iter().map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';'))).collect::<Vec<_>>().join("\n\n");
-        Ok(TableInfo { ddl, indexes: crate::schema::index_rows(&indexes) })
+        let ddl = ddl
+            .rows
+            .iter()
+            .map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';')))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        Ok(TableInfo {
+            ddl,
+            indexes: crate::schema::index_rows(&indexes),
+        })
     }
 
     fn is_read_only(&self) -> bool {
@@ -337,7 +385,11 @@ fn run_statement(conn: &Connection, sql: &str, start: Instant) -> Result<QueryRe
         });
     }
 
-    let columns: Vec<String> = stmt.column_names().into_iter().map(|s| s.to_string()).collect();
+    let columns: Vec<String> = stmt
+        .column_names()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
 
     let mut rows_data = Vec::new();
     let mut rows = stmt.query([]).map_err(sql_err)?;
@@ -349,7 +401,9 @@ fn run_statement(conn: &Connection, sql: &str, start: Instant) -> Result<QueryRe
         if rows_data.len() >= crate::session::MAX_ROWS {
             continue;
         }
-        let row_vals = (0..col_count).map(|i| row.get_ref(i).map(decode).map_err(sql_err)).collect::<Result<Vec<_>, _>>()?;
+        let row_vals = (0..col_count)
+            .map(|i| row.get_ref(i).map(decode).map_err(sql_err))
+            .collect::<Result<Vec<_>, _>>()?;
         rows_data.push(row_vals);
     }
 
@@ -370,7 +424,8 @@ fn decode(v: ValueRef) -> DbValue {
         ValueRef::Text(t) => {
             let s = String::from_utf8_lossy(t).to_string();
             // Quick JSON heuristic
-            let looks_json = (s.starts_with('{') && s.ends_with('}')) || (s.starts_with('[') && s.ends_with(']'));
+            let looks_json = (s.starts_with('{') && s.ends_with('}'))
+                || (s.starts_with('[') && s.ends_with(']'));
             match looks_json.then(|| serde_json::from_str(&s).ok()).flatten() {
                 Some(j) => DbValue::Json(j),
                 None => DbValue::Text(s),
@@ -382,14 +437,21 @@ fn decode(v: ValueRef) -> DbValue {
 
 impl SqliteSession {
     /// Hands each row of `sql` to `f` as it's read, keeping none of them (dumps of any size)
-    pub async fn for_each_row(&self, sql: &str, mut f: impl FnMut(&[String], Vec<DbValue>) -> Result<(), String>) -> Result<usize, String> {
+    pub async fn for_each_row(
+        &self,
+        sql: &str,
+        mut f: impl FnMut(&[String], Vec<DbValue>) -> Result<(), String>,
+    ) -> Result<usize, String> {
         let conn = self.conn.lock().await;
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let cols: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         let mut n = 0;
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let vals = (0..cols.len()).map(|i| row.get_ref(i).map(decode)).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            let vals = (0..cols.len())
+                .map(|i| row.get_ref(i).map(decode))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
             f(&cols, vals)?;
             n += 1;
         }

@@ -28,18 +28,32 @@ impl ReviewModal {
 
         let mono = cx.theme().mono_font_family.clone();
         let close = cx.listener(move |this, _, window, cx| on_cancel(this, window, cx));
-        modal_backdrop("review-modal-backdrop", cx.listener(move |this, _, window, cx| on_cancel(this, window, cx)))
-            .child(
-                modal_card("review-modal-card", 640.0, theme)
-                    .max_h(px(560.0))
-                    .overflow_hidden()
-                    .child(modal_header(
-                        theme,
-                        "Review changes",
-                        Some(format!("{count} {} on {table_name} · applied in one transaction", if count == 1 { "statement" } else { "statements" }).into()),
-                        close,
-                    ))
-                    .child(modal_body("review-sql-scroll").flex_1().gap_2().children(sql_statements.iter().enumerate().map(|(idx, sql)| {
+        modal_backdrop(
+            "review-modal-backdrop",
+            cx.listener(move |this, _, window, cx| on_cancel(this, window, cx)),
+        )
+        .child(
+            modal_card("review-modal-card", 640.0, theme)
+                .max_h(px(560.0))
+                .overflow_hidden()
+                .child(modal_header(
+                    theme,
+                    "Review changes",
+                    Some(
+                        format!(
+                            "{count} {} on {table_name} · applied in one transaction",
+                            if count == 1 {
+                                "statement"
+                            } else {
+                                "statements"
+                            }
+                        )
+                        .into(),
+                    ),
+                    close,
+                ))
+                .child(modal_body("review-sql-scroll").flex_1().gap_2().children(
+                    sql_statements.iter().enumerate().map(|(idx, sql)| {
                         h_flex()
                             .p_3()
                             .gap_3()
@@ -48,15 +62,47 @@ impl ReviewModal {
                             .bg(theme.bg_panel)
                             .border_1()
                             .border_color(theme.border)
-                            .child(div().w(px(20.0)).flex_shrink_0().text_xs().text_color(theme.text_muted).child(format!("{}", idx + 1)))
-                            .child(div().text_xs().font_family(mono.clone()).text_color(theme.text_primary).child(sql.clone()))
-                    })))
-                    .child(
-                        modal_footer(theme)
-                            .child(zbutton("review-cancel-btn").pad_sm().label("Cancel").ghost().small().on_click(cx.listener(move |this, _, window, cx| on_cancel(this, window, cx))))
-                            .child(zbutton("review-commit-btn").pad_sm().label("Submit ⌘↵").primary().small().on_click(cx.listener(move |this, _, window, cx| on_commit(this, window, cx)))),
-                    ),
-            )
-            .into_any_element()
+                            .child(
+                                div()
+                                    .w(px(20.0))
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(theme.text_muted)
+                                    .child(format!("{}", idx + 1)),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .font_family(mono.clone())
+                                    .text_color(theme.text_primary)
+                                    .child(sql.clone()),
+                            )
+                    }),
+                ))
+                .child(
+                    modal_footer(theme)
+                        .child(
+                            zbutton("review-cancel-btn")
+                                .pad_sm()
+                                .label("Cancel")
+                                .ghost()
+                                .small()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    on_cancel(this, window, cx)
+                                })),
+                        )
+                        .child(
+                            zbutton("review-commit-btn")
+                                .pad_sm()
+                                .label("Submit ⌘↵")
+                                .primary()
+                                .small()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    on_commit(this, window, cx)
+                                })),
+                        ),
+                ),
+        )
+        .into_any_element()
     }
 }

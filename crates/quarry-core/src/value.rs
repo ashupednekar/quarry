@@ -44,7 +44,13 @@ impl DbValue {
     pub fn to_display_string(&self) -> String {
         match self {
             DbValue::Null => "NULL".to_string(),
-            DbValue::Boolean(b) => if *b { "true".to_string() } else { "false".to_string() },
+            DbValue::Boolean(b) => {
+                if *b {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
+            }
             DbValue::Int(i) => i.to_string(),
             DbValue::Float(f) => {
                 if f.fract() == 0.0 {
@@ -65,7 +71,13 @@ impl DbValue {
     pub fn to_sql_literal(&self) -> String {
         match self {
             DbValue::Null => "NULL".to_string(),
-            DbValue::Boolean(b) => if *b { "TRUE".to_string() } else { "FALSE".to_string() },
+            DbValue::Boolean(b) => {
+                if *b {
+                    "TRUE".to_string()
+                } else {
+                    "FALSE".to_string()
+                }
+            }
             DbValue::Int(i) => i.to_string(),
             DbValue::Float(f) => f.to_string(),
             DbValue::Decimal(s) => s.clone(),
@@ -83,11 +95,16 @@ impl DbValue {
             (DbValue::Null, _) => std::cmp::Ordering::Less,
             (_, DbValue::Null) => std::cmp::Ordering::Greater,
             (DbValue::Int(a), DbValue::Int(b)) => a.cmp(b),
-            (DbValue::Float(a), DbValue::Float(b)) => a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal),
+            (DbValue::Float(a), DbValue::Float(b)) => {
+                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+            }
             (DbValue::Boolean(a), DbValue::Boolean(b)) => a.cmp(b),
             (DbValue::Text(a), DbValue::Text(b)) => a.cmp(b),
             (DbValue::Decimal(a), DbValue::Decimal(b)) => {
-                let (x, y) = (a.parse::<f64>().unwrap_or(f64::NAN), b.parse::<f64>().unwrap_or(f64::NAN));
+                let (x, y) = (
+                    a.parse::<f64>().unwrap_or(f64::NAN),
+                    b.parse::<f64>().unwrap_or(f64::NAN),
+                );
                 x.partial_cmp(&y).unwrap_or_else(|| a.cmp(b))
             }
             _ => self.to_string().cmp(&other.to_string()),

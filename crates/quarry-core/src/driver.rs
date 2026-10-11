@@ -72,7 +72,11 @@ pub trait Driver: Send + Sync {
         conn.to_string()
     }
 
-    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError>;
+    async fn connect(
+        &self,
+        conn: &str,
+        read_only: bool,
+    ) -> Result<Arc<dyn DatabaseSession>, DbError>;
 }
 
 /// Every driver compiled in. SQLite is last: it takes any path, so it's the fallback for pasted text.
@@ -99,7 +103,10 @@ pub fn driver(id: &str) -> Option<&'static dyn Driver> {
 
 /// The driver a pasted connection string is for
 pub fn detect(conn: &str) -> Option<&'static dyn Driver> {
-    drivers().iter().copied().find(|d| d.recognizes(conn.trim()))
+    drivers()
+        .iter()
+        .copied()
+        .find(|d| d.recognizes(conn.trim()))
 }
 
 #[cfg(all(test, feature = "postgres", feature = "sqlite"))]
@@ -108,8 +115,14 @@ mod tests {
 
     #[test]
     fn detects_the_driver_for_pasted_text() {
-        assert_eq!(detect("postgres://u@h/db").map(|d| d.id()), Some("postgres"));
-        assert_eq!(detect("host=db port=5432").map(|d| d.id()), Some("postgres"));
+        assert_eq!(
+            detect("postgres://u@h/db").map(|d| d.id()),
+            Some("postgres")
+        );
+        assert_eq!(
+            detect("host=db port=5432").map(|d| d.id()),
+            Some("postgres")
+        );
         assert_eq!(detect("~/data/app.sqlite").map(|d| d.id()), Some("sqlite"));
         assert_eq!(detect(":memory:").map(|d| d.id()), Some("sqlite"));
     }

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! Client activity log (L1): a session wrapper that records every statement the app runs.
 
 use crate::edits::PendingChanges;
-use crate::schema::{SchemaCatalog, TableSchema};
 use crate::monitor::{LogPage, Monitor, ServerView, Snapshot};
+use crate::schema::{SchemaCatalog, TableSchema};
 use crate::session::{DatabaseSession, DbError, QueryResult, TxState};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -48,7 +47,14 @@ impl ActivityLog {
 
     /// Newest first
     pub fn snapshot(&self) -> Vec<LogEntry> {
-        self.0.lock().expect("activity log poisoned").0.iter().rev().cloned().collect()
+        self.0
+            .lock()
+            .expect("activity log poisoned")
+            .0
+            .iter()
+            .rev()
+            .cloned()
+            .collect()
     }
 }
 
@@ -59,11 +65,25 @@ pub struct LoggedSession {
 }
 
 impl LoggedSession {
-    pub fn new(inner: Arc<dyn DatabaseSession>, connection: impl Into<String>, log: ActivityLog) -> Self {
-        Self { inner, connection: connection.into(), log }
+    pub fn new(
+        inner: Arc<dyn DatabaseSession>,
+        connection: impl Into<String>,
+        log: ActivityLog,
+    ) -> Self {
+        Self {
+            inner,
+            connection: connection.into(),
+            log,
+        }
     }
 
-    fn record<T>(&self, sql: String, start: Instant, res: &Result<T, DbError>, rows: impl Fn(&T) -> u64) {
+    fn record<T>(
+        &self,
+        sql: String,
+        start: Instant,
+        res: &Result<T, DbError>,
+        rows: impl Fn(&T) -> u64,
+    ) {
         self.log.push(LogEntry {
             at: Utc::now(),
             connection: self.connection.clone(),
@@ -84,21 +104,27 @@ impl DatabaseSession for LoggedSession {
     async fn introspect(&self) -> Result<SchemaCatalog, DbError> {
         let start = Instant::now();
         let res = self.inner.introspect().await;
-        self.record("-- read schema".into(), start, &res, |c| c.tables.len() as u64);
+        self.record("-- read schema".into(), start, &res, |c| {
+            c.tables.len() as u64
+        });
         res
     }
 
     async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
         let start = Instant::now();
         let res = self.inner.load_catalog().await;
-        self.record("-- read schema".into(), start, &res, |c| c.tables.len() as u64);
+        self.record("-- read schema".into(), start, &res, |c| {
+            c.tables.len() as u64
+        });
         res
     }
 
     async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
         let start = Instant::now();
         let res = self.inner.introspect_schema(schema).await;
-        self.record(format!("-- read schema {schema}"), start, &res, |t| t.len() as u64);
+        self.record(format!("-- read schema {schema}"), start, &res, |t| {
+            t.len() as u64
+        });
         res
     }
 
@@ -116,11 +142,19 @@ impl DatabaseSession for LoggedSession {
     async fn apply_edits(&self, table: &str, changes: &PendingChanges) -> Result<usize, DbError> {
         let start = Instant::now();
         let res = self.inner.apply_edits(table, changes).await;
-        self.record(changes.generate_sql(table, self.dialect()).join("\n"), start, &res, |n| *n as u64);
+        self.record(
+            changes.generate_sql(table, self.dialect()).join("\n"),
+            start,
+            &res,
+            |n| *n as u64,
+        );
         res
     }
 
-    async fn table_info(&self, table: &crate::schema::TableSchema) -> Result<crate::schema::TableInfo, DbError> {
+    async fn table_info(
+        &self,
+        table: &crate::schema::TableSchema,
+    ) -> Result<crate::schema::TableInfo, DbError> {
         self.inner.table_info(table).await
     }
 
@@ -128,7 +162,11 @@ impl DatabaseSession for LoggedSession {
         self.inner.objects(schema).await
     }
 
-    async fn object_ddl(&self, schema: &str, obj: &crate::schema::SchemaObject) -> Result<String, DbError> {
+    async fn object_ddl(
+        &self,
+        schema: &str,
+        obj: &crate::schema::SchemaObject,
+    ) -> Result<String, DbError> {
         self.inner.object_ddl(schema, obj).await
     }
 
@@ -186,7 +224,9 @@ impl Monitor for LoggedSession {
 
 impl LoggedSession {
     fn inner_monitor(&self) -> Result<&dyn Monitor, DbError> {
-        self.inner.monitor().ok_or_else(|| DbError::Internal("no monitor".into()))
+        self.inner
+            .monitor()
+            .ok_or_else(|| DbError::Internal("no monitor".into()))
     }
 }
 
@@ -198,19 +238,28 @@ mod tests {
     #[tokio::test]
     async fn logs_successes_and_failures_newest_first() {
         let log = ActivityLog::default();
-        let s = LoggedSession::new(Arc::new(SqliteSession::open_in_memory().unwrap()), "mem", log.clone());
+        let s = LoggedSession::new(
+            Arc::new(SqliteSession::open_in_memory().unwrap()),
+            "mem",
+            log.clone(),
+        );
         s.execute("SELECT 1").await.unwrap();
         assert!(s.execute("SELECT nope FROM nowhere").await.is_err());
         let entries = log.snapshot();
         assert_eq!(entries.len(), 2);
         assert!(entries[0].error.is_some() && entries[0].sql.contains("nowhere"));
-        assert_eq!((entries[1].connection.as_str(), entries[1].rows), ("mem", 1));
+        assert_eq!(
+            (entries[1].connection.as_str(), entries[1].rows),
+            ("mem", 1)
+        );
     }
 
     #[tokio::test]
     async fn manual_mode_keeps_changes_until_commit_or_rollback() {
         let s = SqliteSession::open_in_memory().unwrap();
-        s.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)").await.unwrap();
+        s.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+            .await
+            .unwrap();
         s.tx().set_manual(true);
         s.execute("INSERT INTO t VALUES (1, 'a')").await.unwrap();
         assert!(s.in_transaction());
@@ -225,7 +274,12 @@ mod tests {
         // A failed grid submit inside the transaction only undoes itself
         s.execute("INSERT INTO t VALUES (1, 'a')").await.unwrap();
         let mut stale = PendingChanges::new();
-        stale.set_cell(vec![("id".into(), crate::DbValue::Int(1))], "v", crate::DbValue::Text("zzz".into()), crate::DbValue::Null);
+        stale.set_cell(
+            vec![("id".into(), crate::DbValue::Int(1))],
+            "v",
+            crate::DbValue::Text("zzz".into()),
+            crate::DbValue::Null,
+        );
         assert!(s.apply_edits("t", &stale).await.is_err());
         assert!(s.in_transaction());
         s.commit().await.unwrap();

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+use crate::grid::ResultSet;
 use chrono::{DateTime, Utc};
 use gpui::component::input::{EditorState, InputState};
-use crate::grid::ResultSet;
 use gpui::component::table::TableState;
 use gpui::Entity;
 use quarry_core::schema::{SchemaCatalog, TableSchema};
 use quarry_core::session::DatabaseSession;
-use quarry_core::{ActivityLog, LoggedSession};
 use quarry_core::sqlite::SqliteSession;
+use quarry_core::{ActivityLog, LoggedSession};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -234,8 +234,6 @@ pub struct AppState {
     /// Sidebar / bottom panel visibility from before ⇧⎋ maximised the editor
     pub maximized: Option<(bool, bool)>,
 
-
-
     pub toast_message: Option<(String, bool)>,
 }
 
@@ -297,8 +295,6 @@ impl AppState {
             editing_conn: None,
             add_conn_feedback: None,
 
-
-
             toast_message: None,
         };
 
@@ -323,8 +319,11 @@ impl AppState {
         self.saved_connections.insert(0, profile.clone());
 
         if let Ok(raw) = SqliteSession::open_in_memory() {
-            let session: Arc<dyn DatabaseSession> =
-                Arc::new(LoggedSession::new(Arc::new(raw), profile.name.clone(), self.activity_log.clone()));
+            let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(
+                Arc::new(raw),
+                profile.name.clone(),
+                self.activity_log.clone(),
+            ));
             let seed_sql = r#"
                 CREATE TABLE users (
                     id INTEGER PRIMARY KEY,
@@ -376,11 +375,14 @@ impl AppState {
                 self.set_catalog(cat);
             }
 
-            self.open_sessions.insert(profile.id.clone(), (session.clone(), self.catalog.clone()));
+            self.open_sessions
+                .insert(profile.id.clone(), (session.clone(), self.catalog.clone()));
             self.set_session(Some(session));
             self.active_connection = Some(profile);
 
-            self.messages.push("Connected to local SQLite playground. Seeded users, products, orders.".to_string());
+            self.messages.push(
+                "Connected to local SQLite playground. Seeded users, products, orders.".to_string(),
+            );
         }
     }
 
@@ -391,7 +393,9 @@ impl AppState {
     /// ⇧⎋: hide the sidebar and bottom panel, or bring them back as they were
     pub fn toggle_maximize(&mut self) {
         match self.maximized.take() {
-            Some((sidebar, panel)) => (self.sidebar_visible, self.bottom_panel_open) = (sidebar, panel),
+            Some((sidebar, panel)) => {
+                (self.sidebar_visible, self.bottom_panel_open) = (sidebar, panel)
+            }
             None => {
                 self.maximized = Some((self.sidebar_visible, self.bottom_panel_open));
                 (self.sidebar_visible, self.bottom_panel_open) = (false, false);
@@ -416,14 +420,19 @@ impl AppState {
         self.saved_connections.retain(|c| c.id != id);
         crate::connections::forget_secret(id);
         if let Err(e) = crate::connections::save(&self.saved_connections) {
-            self.messages.push(format!("Could not save connections: {}", e));
+            self.messages
+                .push(format!("Could not save connections: {}", e));
         }
     }
 
     /// Makes an already-open connection active again. Returns false if it isn't open.
     pub fn activate_open_session(&mut self, id: &str) -> bool {
-        let Some((session, catalog)) = self.open_sessions.get(id).cloned() else { return false };
-        let Some(profile) = self.saved_connections.iter().find(|c| c.id == id).cloned() else { return false };
+        let Some((session, catalog)) = self.open_sessions.get(id).cloned() else {
+            return false;
+        };
+        let Some(profile) = self.saved_connections.iter().find(|c| c.id == id).cloned() else {
+            return false;
+        };
         self.set_session(Some(session));
         self.set_catalog(catalog);
         self.active_connection = Some(profile);
@@ -431,10 +440,20 @@ impl AppState {
     }
 
     /// Records an editor-run statement in history (memory + disk)
-    pub fn record_history(&mut self, sql: String, execution_time: Duration, rows_affected: u64, error: Option<String>) {
+    pub fn record_history(
+        &mut self,
+        sql: String,
+        execution_time: Duration,
+        rows_affected: u64,
+        error: Option<String>,
+    ) {
         let item = QueryHistoryItem {
             id: uuid::Uuid::new_v4().to_string(),
-            connection: self.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default(),
+            connection: self
+                .active_connection
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_default(),
             sql,
             timestamp: Utc::now(),
             execution_time,
@@ -446,7 +465,11 @@ impl AppState {
     }
 
     pub fn set_session(&mut self, session: Option<Arc<dyn DatabaseSession>>) {
-        self.completion_dialect.set(session.as_ref().map_or(&quarry_core::dialect::Ansi, |s| s.dialect()));
+        self.completion_dialect.set(
+            session
+                .as_ref()
+                .map_or(&quarry_core::dialect::Ansi, |s| s.dialect()),
+        );
         self.session = session;
     }
 
@@ -458,7 +481,11 @@ impl AppState {
     /// `SELECT * FROM <table>` limited to `rows`, in the active connection's dialect
     pub fn select_rows_sql(&self, schema: &str, table: &str, rows: u64) -> String {
         let d = self.dialect();
-        d.limit(&format!("SELECT * FROM {}", d.qualified(schema, table)), rows, 0)
+        d.limit(
+            &format!("SELECT * FROM {}", d.qualified(schema, table)),
+            rows,
+            0,
+        )
     }
 
     pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
@@ -469,13 +496,17 @@ impl AppState {
     }
 
     pub fn note_recent_table(&mut self, schema: &str, table: &str) {
-        self.recent_tables.retain(|(s, t)| !(s == schema && t == table));
-        self.recent_tables.insert(0, (schema.to_string(), table.to_string()));
+        self.recent_tables
+            .retain(|(s, t)| !(s == schema && t == table));
+        self.recent_tables
+            .insert(0, (schema.to_string(), table.to_string()));
         self.recent_tables.truncate(8);
     }
 
     pub fn find_tab(&self, table_name: &str) -> Option<usize> {
-        self.tabs.iter().position(|t| matches!(t, Tab::Table { table_name: n, .. } if n == table_name))
+        self.tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Table { table_name: n, .. } if n == table_name))
     }
 
     /// Removes a tab (the last one too, which leaves the empty state) and returns it
@@ -505,12 +536,25 @@ impl AppState {
         tunnel: Option<crate::ssh::Tunnel>,
     ) {
         let mut profile = profile;
-        let bare = |p: &ConnectionProfile| p.driver().map_or_else(|| p.path_or_url.clone(), |d| d.take_secret(&p.path_or_url).0);
+        let bare = |p: &ConnectionProfile| {
+            p.driver().map_or_else(
+                || p.path_or_url.clone(),
+                |d| d.take_secret(&p.path_or_url).0,
+            )
+        };
         // Same address as a saved connection: reuse it (name, environment, read-only) instead of duplicating
-        if let Some(existing) = self.saved_connections.iter().find(|c| c.driver == profile.driver && bare(c) == bare(&profile)) {
-            profile = ConnectionProfile { path_or_url: profile.path_or_url, ..existing.clone() };
+        if let Some(existing) = self
+            .saved_connections
+            .iter()
+            .find(|c| c.driver == profile.driver && bare(c) == bare(&profile))
+        {
+            profile = ConnectionProfile {
+                path_or_url: profile.path_or_url,
+                ..existing.clone()
+            };
         }
-        self.open_sessions.insert(profile.id.clone(), (session.clone(), catalog.clone()));
+        self.open_sessions
+            .insert(profile.id.clone(), (session.clone(), catalog.clone()));
         if let Some(t) = tunnel {
             self.tunnels.insert(profile.id.clone(), t);
         }
@@ -519,15 +563,19 @@ impl AppState {
         if !self.saved_connections.iter().any(|c| c.id == profile.id) {
             self.saved_connections.push(profile.clone());
             if let Err(e) = crate::connections::save(&self.saved_connections) {
-                self.messages.push(format!("Could not save connection: {}", e));
+                self.messages
+                    .push(format!("Could not save connection: {}", e));
             }
         }
         self.active_connection = Some(profile);
     }
 
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn find_table_schema(&self, table_name: &str) -> Option<&TableSchema> {
-        self.catalog.tables.iter().find(|t| t.table_name == table_name)
+        self.catalog
+            .tables
+            .iter()
+            .find(|t| t.table_name == table_name)
     }
 }
 
@@ -535,12 +583,26 @@ impl AppState {
 pub async fn open_session(
     profile: &ConnectionProfile,
     log: ActivityLog,
-) -> Result<(Arc<dyn DatabaseSession>, SchemaCatalog, Option<crate::ssh::Tunnel>), String> {
-    let driver = profile.driver().ok_or_else(|| format!("This build of Quarry doesn't include the {} driver", profile.driver))?;
+) -> Result<
+    (
+        Arc<dyn DatabaseSession>,
+        SchemaCatalog,
+        Option<crate::ssh::Tunnel>,
+    ),
+    String,
+> {
+    let driver = profile.driver().ok_or_else(|| {
+        format!(
+            "This build of Quarry doesn't include the {} driver",
+            profile.driver
+        )
+    })?;
     let mut conn = crate::connections::with_secret(profile);
     let mut tunnel = None;
     if let Some(ssh) = &profile.ssh {
-        let (host, port) = driver.tunnel_target(&conn).ok_or_else(|| format!("{} connections can't use an SSH tunnel", driver.name()))?;
+        let (host, port) = driver
+            .tunnel_target(&conn)
+            .ok_or_else(|| format!("{} connections can't use an SSH tunnel", driver.name()))?;
         let cfg = ssh.clone();
         let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
             .await
@@ -548,14 +610,24 @@ pub async fn open_session(
         conn = driver.through_tunnel(&conn, t.local_port);
         tunnel = Some(t);
     }
-    let session = driver.connect(&conn, profile.read_only).await.map_err(|e| e.to_string())?;
-    let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(session, profile.name.clone(), log));
+    let session = driver
+        .connect(&conn, profile.read_only)
+        .await
+        .map_err(|e| e.to_string())?;
+    let session: Arc<dyn DatabaseSession> =
+        Arc::new(LoggedSession::new(session, profile.name.clone(), log));
     if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
         if let Some(sql) = session.dialect().statement_timeout(secs) {
-            session.execute(&sql).await.map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
+            session
+                .execute(&sql)
+                .await
+                .map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
         }
     }
-    let catalog = session.load_catalog().await.map_err(|e| format!("Introspection error: {}", e))?;
+    let catalog = session
+        .load_catalog()
+        .await
+        .map_err(|e| format!("Introspection error: {}", e))?;
     Ok((session, catalog, tunnel))
 }
 

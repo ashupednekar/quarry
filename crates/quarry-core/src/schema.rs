@@ -31,7 +31,12 @@ impl ColumnType {
             ColumnType::Text
         } else if upper.contains("BOOL") {
             ColumnType::Boolean
-        } else if upper.contains("FLOAT") || upper.contains("DOUBLE") || upper.contains("REAL") || upper.contains("NUMERIC") || upper.contains("DECIMAL") {
+        } else if upper.contains("FLOAT")
+            || upper.contains("DOUBLE")
+            || upper.contains("REAL")
+            || upper.contains("NUMERIC")
+            || upper.contains("DECIMAL")
+        {
             ColumnType::Float
         } else if upper.contains("TIME") || upper.contains("DATE") {
             if upper.contains("DATE") && !upper.contains("TIME") {
@@ -91,12 +96,21 @@ impl TableSchema {
     pub fn create_sql(&self, d: &dyn crate::Dialect) -> String {
         let quote_ident = |s: &str| d.quote_ident(s);
         let qualified_name = |s: &str, t: &str| d.qualified(s, t);
-        let list = |cols: &[String]| cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+        let list = |cols: &[String]| {
+            cols.iter()
+                .map(|c| quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let mut lines: Vec<String> = self
             .columns
             .iter()
             .map(|c| {
-                let mut l = format!("  {} {}", quote_ident(&c.name), c.raw_type_name.to_lowercase());
+                let mut l = format!(
+                    "  {} {}",
+                    quote_ident(&c.name),
+                    c.raw_type_name.to_lowercase()
+                );
                 if !c.is_nullable {
                     l.push_str(" NOT NULL");
                 }
@@ -110,7 +124,11 @@ impl TableSchema {
             lines.push(format!("  PRIMARY KEY ({})", list(&self.primary_keys)));
         }
         for fk in &self.foreign_keys {
-            let schema = if fk.to_schema.is_empty() { &self.schema_name } else { &fk.to_schema };
+            let schema = if fk.to_schema.is_empty() {
+                &self.schema_name
+            } else {
+                &fk.to_schema
+            };
             lines.push(format!(
                 "  FOREIGN KEY ({}) REFERENCES {} ({})",
                 quote_ident(&fk.from_column),
@@ -118,7 +136,11 @@ impl TableSchema {
                 quote_ident(&fk.to_column)
             ));
         }
-        format!("CREATE TABLE {} (\n{}\n);", qualified_name(&self.schema_name, &self.table_name), lines.join(",\n"))
+        format!(
+            "CREATE TABLE {} (\n{}\n);",
+            qualified_name(&self.schema_name, &self.table_name),
+            lines.join(",\n")
+        )
     }
 }
 
@@ -133,7 +155,14 @@ pub struct IndexInfo {
 /// Rows of (name, unique, columns) as indexes; `unique` may come back as a bool or 0/1
 pub fn index_rows(r: &crate::session::QueryResult) -> Vec<IndexInfo> {
     let truthy = |v: &crate::DbValue| matches!(v.to_display_string().as_str(), "1" | "t" | "true");
-    r.rows.iter().map(|r| IndexInfo { name: r[0].to_display_string(), unique: truthy(&r[1]), columns: r[2].to_display_string() }).collect()
+    r.rows
+        .iter()
+        .map(|r| IndexInfo {
+            name: r[0].to_display_string(),
+            unique: truthy(&r[1]),
+            columns: r[2].to_display_string(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -147,7 +176,13 @@ pub enum ObjectKind {
 }
 
 impl ObjectKind {
-    pub const ALL: [ObjectKind; 5] = [ObjectKind::Function, ObjectKind::Procedure, ObjectKind::Sequence, ObjectKind::Trigger, ObjectKind::Type];
+    pub const ALL: [ObjectKind; 5] = [
+        ObjectKind::Function,
+        ObjectKind::Procedure,
+        ObjectKind::Sequence,
+        ObjectKind::Trigger,
+        ObjectKind::Type,
+    ];
 
     pub fn plural(self) -> &'static str {
         match self {
@@ -200,21 +235,28 @@ impl SchemaCatalog {
 
     /// A catalog holding only the default schema's tables: every other schema is marked unloaded
     pub fn lazy(mut self) -> Self {
-        self.unloaded = self.schemas.iter().filter(|s| self.default_schema.as_ref() != Some(*s)).cloned().collect();
+        self.unloaded = self
+            .schemas
+            .iter()
+            .filter(|s| self.default_schema.as_ref() != Some(*s))
+            .cloned()
+            .collect();
         self
     }
 
     /// Puts a schema's freshly loaded tables in place of whatever was there
     pub fn add_schema(&mut self, schema: &str, tables: Vec<TableSchema>) {
         self.unloaded.retain(|s| !s.eq_ignore_ascii_case(schema));
-        self.tables.retain(|t| !t.schema_name.eq_ignore_ascii_case(schema));
+        self.tables
+            .retain(|t| !t.schema_name.eq_ignore_ascii_case(schema));
         self.tables.extend(tables);
     }
 
     pub fn find_table(&self, schema: Option<&str>, table_name: &str) -> Option<&TableSchema> {
         self.tables.iter().find(|t| {
             if let Some(s) = schema {
-                t.schema_name.eq_ignore_ascii_case(s) && t.table_name.eq_ignore_ascii_case(table_name)
+                t.schema_name.eq_ignore_ascii_case(s)
+                    && t.table_name.eq_ignore_ascii_case(table_name)
             } else {
                 t.table_name.eq_ignore_ascii_case(table_name)
             }
@@ -243,7 +285,12 @@ mod tests {
             is_view: false,
             columns: vec![col("id", false, None), col("customer_id", true, Some("0"))],
             primary_keys: vec!["id".into()],
-            foreign_keys: vec![ForeignKeyRef { from_column: "customer_id".into(), to_schema: String::new(), to_table: "customers".into(), to_column: "id".into() }],
+            foreign_keys: vec![ForeignKeyRef {
+                from_column: "customer_id".into(),
+                to_schema: String::new(),
+                to_table: "customers".into(),
+                to_column: "id".into(),
+            }],
         };
         assert_eq!(
             t.create_sql(&crate::dialect::Postgres),

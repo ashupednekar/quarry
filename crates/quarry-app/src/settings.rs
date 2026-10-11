@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-
 //! Settings and keymap as human-editable JSON (P2-P4) in ~/.config/quarry.
 
 use gpui::{App, KeyBinding, KeyBindingContextPredicate};
@@ -74,7 +73,11 @@ impl Settings {
     pub const MAX_FONT_SIZE: f32 = 32.0;
 
     pub fn mono_size(&self) -> f32 {
-        if self.mono_font_size > 0.0 { self.mono_font_size } else { self.font_size - 2.0 }
+        if self.mono_font_size > 0.0 {
+            self.mono_font_size
+        } else {
+            self.font_size - 2.0
+        }
     }
 
     /// Increase overall font size by 1 point, up to MAX_FONT_SIZE
@@ -160,7 +163,9 @@ pub const STARTER_KEYMAP: &str = r#"[
 
 /// Adds the user's bindings on top of the defaults (later bindings win). Returns problems found.
 pub fn apply_keymap(cx: &mut App) -> Vec<String> {
-    let Some(text) = keymap_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return Vec::new() };
+    let Some(text) = keymap_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
+        return Vec::new();
+    };
     let entries: Vec<KeymapEntry> = match serde_json::from_str(&text) {
         Ok(e) => e,
         Err(e) => return vec![format!("keymap.json: {e}")],
@@ -175,14 +180,26 @@ pub fn apply_keymap(cx: &mut App) -> Vec<String> {
                 continue;
             }
         };
-        let context = match e.context.as_deref().map(KeyBindingContextPredicate::parse).transpose() {
+        let context = match e
+            .context
+            .as_deref()
+            .map(KeyBindingContextPredicate::parse)
+            .transpose()
+        {
             Ok(c) => c.map(Into::into),
             Err(err) => {
                 errors.push(format!("keymap.json: bad context for {}: {err}", e.key));
                 continue;
             }
         };
-        match KeyBinding::load(&e.key, action, context, false, None, &gpui::DummyKeyboardMapper) {
+        match KeyBinding::load(
+            &e.key,
+            action,
+            context,
+            false,
+            None,
+            &gpui::DummyKeyboardMapper,
+        ) {
             Ok(b) => bindings.push(b),
             Err(err) => errors.push(format!("keymap.json: bad key \"{}\": {err}", e.key)),
         }
@@ -231,8 +248,8 @@ mod tests {
 
     #[test]
     fn test_zoom_key_bindings() {
+        use crate::{DecreaseFontSize, IncreaseFontSize, ResetFontSize};
         use gpui::KeyBinding;
-        use crate::{IncreaseFontSize, DecreaseFontSize, ResetFontSize};
 
         let bindings = [
             KeyBinding::new("secondary-=", IncreaseFontSize, None),
@@ -247,7 +264,11 @@ mod tests {
 
     #[test]
     fn partial_settings_fill_in_defaults() {
-        let s: Settings = serde_json::from_str(r#"{ "theme": "dark", "rows_per_page": 1000 }"#).unwrap();
-        assert_eq!((s.theme.as_str(), s.rows_per_page, s.confirm_on_prod), ("dark", 1000, true));
+        let s: Settings =
+            serde_json::from_str(r#"{ "theme": "dark", "rows_per_page": 1000 }"#).unwrap();
+        assert_eq!(
+            (s.theme.as_str(), s.rows_per_page, s.confirm_on_prod),
+            ("dark", 1000, true)
+        );
     }
 }

@@ -25,8 +25,17 @@ pub struct SplitRules {
 
 /// A PL/SQL block rather than one SQL statement: it keeps its semicolons, and its final `;` is part of it
 pub fn is_plsql_block(sql: &str) -> bool {
-    let code = sql.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("--")).collect::<Vec<_>>().join(" ");
-    let words: Vec<String> = code.split_whitespace().take(6).map(|w| w.to_ascii_uppercase()).collect();
+    let code = sql
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("--"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words: Vec<String> = code
+        .split_whitespace()
+        .take(6)
+        .map(|w| w.to_ascii_uppercase())
+        .collect();
     let w = |i: usize| words.get(i).map(String::as_str).unwrap_or("");
     if matches!(w(0), "BEGIN" | "DECLARE") {
         return true;
@@ -42,7 +51,10 @@ pub fn is_plsql_block(sql: &str) -> bool {
     if matches!(w(i), "EDITIONABLE" | "NONEDITIONABLE") {
         i += 1;
     }
-    matches!(w(i), "PROCEDURE" | "FUNCTION" | "PACKAGE" | "TRIGGER" | "TYPE")
+    matches!(
+        w(i),
+        "PROCEDURE" | "FUNCTION" | "PACKAGE" | "TRIGGER" | "TYPE"
+    )
 }
 
 pub trait Dialect: Send + Sync {
@@ -65,7 +77,11 @@ pub trait Dialect: Send + Sync {
     /// `sql` limited to `limit` rows after skipping `offset`. Override when the clause depends on
     /// the statement (SQL Server's OFFSET needs an ORDER BY).
     fn limit(&self, sql: &str, limit: u64, offset: u64) -> String {
-        let sep = if sql.ends_with(char::is_whitespace) { "" } else { " " };
+        let sep = if sql.ends_with(char::is_whitespace) {
+            ""
+        } else {
+            " "
+        };
         format!("{sql}{sep}{}", self.limit_clause(limit, offset))
     }
 
@@ -149,7 +165,11 @@ impl Dialect for Postgres {
 
     fn explain(&self, sql: &str, analyze: bool) -> Option<String> {
         // JSON so the plan view can read it; the grid still shows it as one cell
-        Some(if analyze { format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}") } else { format!("EXPLAIN (FORMAT JSON) {sql}") })
+        Some(if analyze {
+            format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}")
+        } else {
+            format!("EXPLAIN (FORMAT JSON) {sql}")
+        })
     }
 
     fn plan(&self, result: &QueryResult) -> Option<Plan> {
@@ -230,7 +250,11 @@ impl Dialect for Mysql {
 
     /// JSON so the plan view can read it. ANALYZE only comes as a text tree, shown as is.
     fn explain(&self, sql: &str, analyze: bool) -> Option<String> {
-        Some(if analyze { format!("EXPLAIN ANALYZE {sql}") } else { format!("EXPLAIN FORMAT=JSON {sql}") })
+        Some(if analyze {
+            format!("EXPLAIN ANALYZE {sql}")
+        } else {
+            format!("EXPLAIN FORMAT=JSON {sql}")
+        })
     }
 
     fn plan(&self, result: &QueryResult) -> Option<Plan> {
@@ -247,7 +271,11 @@ impl Dialect for Mysql {
     }
 
     fn split_rules(&self) -> SplitRules {
-        SplitRules { hash_comments: true, backslash_escapes: true, ..SplitRules::default() }
+        SplitRules {
+            hash_comments: true,
+            backslash_escapes: true,
+            ..SplitRules::default()
+        }
     }
 
     /// Applies to SELECT only; MySQL has no limit for writes
@@ -302,9 +330,21 @@ impl Dialect for Mssql {
     /// OFFSET … FETCH only follows an ORDER BY; without one, any order will do
     fn limit(&self, sql: &str, limit: u64, offset: u64) -> String {
         // ponytail: looks for ORDER BY anywhere, so one only inside a subquery is missed; the server then says so
-        let ordered = sql.to_ascii_lowercase().split_whitespace().collect::<Vec<_>>().windows(2).any(|w| w == ["order", "by"]);
-        let order = if ordered { "" } else { " ORDER BY (SELECT NULL)" };
-        format!("{}{order} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY", sql.trim_end())
+        let ordered = sql
+            .to_ascii_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .any(|w| w == ["order", "by"]);
+        let order = if ordered {
+            ""
+        } else {
+            " ORDER BY (SELECT NULL)"
+        };
+        format!(
+            "{}{order} OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY",
+            sql.trim_end()
+        )
     }
 
     fn limit_clause(&self, limit: u64, offset: u64) -> String {
@@ -339,7 +379,10 @@ impl Dialect for Mssql {
     }
 
     fn split_rules(&self) -> SplitRules {
-        SplitRules { go_batches: true, ..SplitRules::default() }
+        SplitRules {
+            go_batches: true,
+            ..SplitRules::default()
+        }
     }
 }
 
@@ -409,7 +452,10 @@ impl Dialect for Oracle {
     }
 
     fn split_rules(&self) -> SplitRules {
-        SplitRules { slash_blocks: true, ..SplitRules::default() }
+        SplitRules {
+            slash_blocks: true,
+            ..SplitRules::default()
+        }
     }
 }
 
@@ -432,21 +478,39 @@ mod tests {
 
     #[test]
     fn dialects_differ_where_databases_do() {
-        assert_eq!(Postgres.literal(&DbValue::Blob(vec![0, 255])), "'\\x00FF'::bytea");
+        assert_eq!(
+            Postgres.literal(&DbValue::Blob(vec![0, 255])),
+            "'\\x00FF'::bytea"
+        );
         assert_eq!(Sqlite.literal(&DbValue::Blob(vec![0, 255])), "X'00FF'");
         assert_eq!(Postgres.qualified("public", "a\"b"), r#""public"."a""b""#);
         assert_eq!(Ansi.limit_clause(10, 0), "LIMIT 10");
         assert_eq!(Ansi.limit_clause(10, 20), "LIMIT 10 OFFSET 20");
-        assert_eq!(Sqlite.explain("SELECT 1", true).unwrap(), "EXPLAIN QUERY PLAN SELECT 1");
-        assert_eq!(Postgres.set_schema(None).unwrap(), "SET search_path TO DEFAULT");
+        assert_eq!(
+            Sqlite.explain("SELECT 1", true).unwrap(),
+            "EXPLAIN QUERY PLAN SELECT 1"
+        );
+        assert_eq!(
+            Postgres.set_schema(None).unwrap(),
+            "SET search_path TO DEFAULT"
+        );
         assert_eq!(Sqlite.set_schema(Some("main")), None);
         assert_eq!(Sqlite.type_name(&ColumnType::Date), None);
         assert_eq!(Mysql.qualified("shop", "a`b"), "`shop`.`a``b`");
-        assert_eq!(Mysql.literal(&DbValue::Text(r"C:\new 'x'".into())), r"'C:\\new ''x'''");
+        assert_eq!(
+            Mysql.literal(&DbValue::Text(r"C:\new 'x'".into())),
+            r"'C:\\new ''x'''"
+        );
         assert!(Mysql.switches_schema() && Mysql.set_schema(None).is_none());
         assert_eq!(Mssql.qualified("dbo", "a]b"), "[dbo].[a]]b]");
-        assert_eq!(Mssql.limit("SELECT * FROM t", 10, 0), "SELECT * FROM t ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY");
-        assert_eq!(Mssql.limit("SELECT * FROM t ORDER BY id", 5, 20), "SELECT * FROM t ORDER BY id OFFSET 20 ROWS FETCH NEXT 5 ROWS ONLY");
+        assert_eq!(
+            Mssql.limit("SELECT * FROM t", 10, 0),
+            "SELECT * FROM t ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
+        assert_eq!(
+            Mssql.limit("SELECT * FROM t ORDER BY id", 5, 20),
+            "SELECT * FROM t ORDER BY id OFFSET 20 ROWS FETCH NEXT 5 ROWS ONLY"
+        );
         assert_eq!(Ansi.limit("select 1\n", 3, 0), "select 1\nLIMIT 3");
     }
 }

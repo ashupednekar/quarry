@@ -8,8 +8,13 @@ mod monitor;
 use crate::conn_url::{self, UrlFields};
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema, EAGER_SCHEMAS};
-use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS};
+use crate::schema::{
+    ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject,
+    TableInfo, TableSchema, EAGER_SCHEMAS,
+};
+use crate::session::{
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS,
+};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use mysql_async::consts::ColumnType as T;
@@ -26,8 +31,20 @@ const SYSTEM: &str = "('mysql', 'information_schema', 'performance_schema', 'sys
 pub struct MysqlDriver;
 pub static DRIVER: MysqlDriver = MysqlDriver;
 
-const fn field(label: &'static str, placeholder: &'static str, secret: bool, row: u8, width: Option<f32>) -> Field {
-    Field { label, placeholder, secret, row, width }
+const fn field(
+    label: &'static str,
+    placeholder: &'static str,
+    secret: bool,
+    row: u8,
+    width: Option<f32>,
+) -> Field {
+    Field {
+        label,
+        placeholder,
+        secret,
+        row,
+        width,
+    }
 }
 
 #[async_trait]
@@ -60,11 +77,15 @@ impl Driver for MysqlDriver {
     }
 
     fn split(&self, conn: &str) -> Vec<String> {
-        conn_url::parse(conn, &SCHEMES).map(|(f, _)| f.to_vec()).unwrap_or_else(|| vec![String::new(); 5])
+        conn_url::parse(conn, &SCHEMES)
+            .map(|(f, _)| f.to_vec())
+            .unwrap_or_else(|| vec![String::new(); 5])
     }
 
     fn join(&self, values: &[String], previous: &str) -> String {
-        let query = conn_url::parse(previous, &SCHEMES).map(|(_, q)| q).unwrap_or_default();
+        let query = conn_url::parse(previous, &SCHEMES)
+            .map(|(_, q)| q)
+            .unwrap_or_default();
         let fields: UrlFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
         conn_url::build("mysql", &fields, &query)
     }
@@ -79,8 +100,16 @@ impl Driver for MysqlDriver {
 
     fn display_address(&self, conn: &str) -> String {
         let [host, port, _, _, db] = <[String; 5]>::try_from(self.split(conn)).unwrap_or_default();
-        let host = if host.is_empty() { "localhost".to_string() } else { host };
-        let mut out = if port.is_empty() { host } else { format!("{host}:{port}") };
+        let host = if host.is_empty() {
+            "localhost".to_string()
+        } else {
+            host
+        };
+        let mut out = if port.is_empty() {
+            host
+        } else {
+            format!("{host}:{port}")
+        };
         if !db.is_empty() {
             out += &format!("/{db}");
         }
@@ -95,7 +124,11 @@ impl Driver for MysqlDriver {
         conn_url::retarget(conn, local_port)
     }
 
-    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+    async fn connect(
+        &self,
+        conn: &str,
+        read_only: bool,
+    ) -> Result<Arc<dyn DatabaseSession>, DbError> {
         Ok(Arc::new(MysqlSession::connect(conn, read_only).await?))
     }
 }
@@ -114,15 +147,25 @@ fn err(e: mysql_async::Error) -> DbError {
 
 impl MysqlSession {
     pub async fn connect(url: &str, read_only: bool) -> Result<Self, DbError> {
-        let opts = mysql_async::Opts::from_url(url).map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
+        let opts = mysql_async::Opts::from_url(url)
+            .map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
         // Matched rather than changed rows: an edit that writes the value already there still
         // counts as one row, so the conflict check (exactly one row) stays right
         let opts = mysql_async::OptsBuilder::from_opts(opts).client_found_rows(true);
-        let mut conn = Conn::new(opts).await.map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
+        let mut conn = Conn::new(opts)
+            .await
+            .map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
         if read_only {
-            conn.query_drop("SET SESSION TRANSACTION READ ONLY").await.map_err(err)?;
+            conn.query_drop("SET SESSION TRANSACTION READ ONLY")
+                .await
+                .map_err(err)?;
         }
-        Ok(Self { conn: Mutex::new(conn), url: url.to_string(), read_only, tx: TxState::default() })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            url: url.to_string(),
+            read_only,
+            tx: TxState::default(),
+        })
     }
 
     async fn run(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -132,7 +175,13 @@ impl MysqlSession {
 
     /// First column of every row, as text (catalog queries)
     async fn column(&self, sql: &str) -> Result<Vec<String>, DbError> {
-        Ok(self.run(sql).await?.rows.iter().map(|r| r[0].to_display_string()).collect())
+        Ok(self
+            .run(sql)
+            .await?
+            .rows
+            .iter()
+            .map(|r| r[0].to_display_string())
+            .collect())
     }
 }
 
@@ -147,12 +196,22 @@ async fn run_statement(conn: &mut Conn, sql: &str) -> Result<QueryResult, DbErro
         .for_each(|row| {
             count += 1;
             if rows.len() < MAX_ROWS {
-                rows.push(row.unwrap().into_iter().zip(columns.iter()).map(|(v, c)| decode(v, c)).collect());
+                rows.push(
+                    row.unwrap()
+                        .into_iter()
+                        .zip(columns.iter())
+                        .map(|(v, c)| decode(v, c))
+                        .collect(),
+                );
             }
         })
         .await
         .map_err(err)?;
-    let affected = if columns.is_empty() { result.affected_rows() } else { count };
+    let affected = if columns.is_empty() {
+        result.affected_rows()
+    } else {
+        count
+    };
     result.drop_result().await.map_err(err)?;
     Ok(QueryResult {
         columns: columns.iter().map(|c| c.name_str().into_owned()).collect(),
@@ -172,22 +231,45 @@ fn decode(v: Value, col: &Column) -> DbValue {
         Value::NULL => return DbValue::Null,
         Value::Bytes(b) => b,
         Value::Int(i) => return DbValue::Int(i),
-        Value::UInt(u) => return i64::try_from(u).map(DbValue::Int).unwrap_or_else(|_| DbValue::Decimal(u.to_string())),
+        Value::UInt(u) => {
+            return i64::try_from(u)
+                .map(DbValue::Int)
+                .unwrap_or_else(|_| DbValue::Decimal(u.to_string()))
+        }
         Value::Float(f) => return DbValue::Float(f.into()),
         Value::Double(f) => return DbValue::Float(f),
         other => return DbValue::Text(other.as_sql(true).trim_matches('\'').to_string()),
     };
     let text = || String::from_utf8_lossy(&bytes).into_owned();
     match col.column_type() {
-        T::MYSQL_TYPE_TINY | T::MYSQL_TYPE_SHORT | T::MYSQL_TYPE_LONG | T::MYSQL_TYPE_INT24 | T::MYSQL_TYPE_LONGLONG | T::MYSQL_TYPE_YEAR => {
+        T::MYSQL_TYPE_TINY
+        | T::MYSQL_TYPE_SHORT
+        | T::MYSQL_TYPE_LONG
+        | T::MYSQL_TYPE_INT24
+        | T::MYSQL_TYPE_LONGLONG
+        | T::MYSQL_TYPE_YEAR => {
             // BIGINT UNSIGNED above i64::MAX keeps its exact digits
-            text().parse().map(DbValue::Int).unwrap_or_else(|_| DbValue::Decimal(text()))
+            text()
+                .parse()
+                .map(DbValue::Int)
+                .unwrap_or_else(|_| DbValue::Decimal(text()))
         }
-        T::MYSQL_TYPE_FLOAT | T::MYSQL_TYPE_DOUBLE => text().parse().map(DbValue::Float).unwrap_or_else(|_| DbValue::Text(text())),
+        T::MYSQL_TYPE_FLOAT | T::MYSQL_TYPE_DOUBLE => text()
+            .parse()
+            .map(DbValue::Float)
+            .unwrap_or_else(|_| DbValue::Text(text())),
         T::MYSQL_TYPE_DECIMAL | T::MYSQL_TYPE_NEWDECIMAL => DbValue::Decimal(text()),
-        T::MYSQL_TYPE_JSON => serde_json::from_slice(&bytes).map(DbValue::Json).unwrap_or_else(|_| DbValue::Text(text())),
+        T::MYSQL_TYPE_JSON => serde_json::from_slice(&bytes)
+            .map(DbValue::Json)
+            .unwrap_or_else(|_| DbValue::Text(text())),
         T::MYSQL_TYPE_BIT | T::MYSQL_TYPE_GEOMETRY => DbValue::Blob(bytes),
-        T::MYSQL_TYPE_TINY_BLOB | T::MYSQL_TYPE_MEDIUM_BLOB | T::MYSQL_TYPE_LONG_BLOB | T::MYSQL_TYPE_BLOB | T::MYSQL_TYPE_VAR_STRING | T::MYSQL_TYPE_STRING | T::MYSQL_TYPE_VARCHAR
+        T::MYSQL_TYPE_TINY_BLOB
+        | T::MYSQL_TYPE_MEDIUM_BLOB
+        | T::MYSQL_TYPE_LONG_BLOB
+        | T::MYSQL_TYPE_BLOB
+        | T::MYSQL_TYPE_VAR_STRING
+        | T::MYSQL_TYPE_STRING
+        | T::MYSQL_TYPE_VARCHAR
             if col.character_set() == BINARY =>
         {
             DbValue::Blob(bytes)
@@ -216,11 +298,18 @@ impl DatabaseSession for MysqlSession {
     /// Many databases on the server: only the selected one, the rest when opened
     async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
         let c = self.catalog_where(Some("DATABASE()")).await?;
-        if c.schemas.len() > EAGER_SCHEMAS { Ok(c.lazy()) } else { self.introspect().await }
+        if c.schemas.len() > EAGER_SCHEMAS {
+            Ok(c.lazy())
+        } else {
+            self.introspect().await
+        }
     }
 
     async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
-        Ok(self.catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into())))).await?.tables)
+        Ok(self
+            .catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into()))))
+            .await?
+            .tables)
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -259,7 +348,9 @@ impl DatabaseSession for MysqlSession {
             self.tx.set_open(keep_open);
         }
         if keep_open {
-            conn.query_drop("SAVEPOINT quarry_edits").await.map_err(err)?;
+            conn.query_drop("SAVEPOINT quarry_edits")
+                .await
+                .map_err(err)?;
         }
         for sql in &statements {
             let failure = match conn.query_drop(sql.as_str()).await {
@@ -267,10 +358,22 @@ impl DatabaseSession for MysqlSession {
                 Ok(()) => DbError::ConcurrentModification,
                 Err(e) => err(e),
             };
-            let _ = conn.query_drop(if keep_open { "ROLLBACK TO SAVEPOINT quarry_edits" } else { "ROLLBACK" }).await;
+            let _ = conn
+                .query_drop(if keep_open {
+                    "ROLLBACK TO SAVEPOINT quarry_edits"
+                } else {
+                    "ROLLBACK"
+                })
+                .await;
             return Err(failure);
         }
-        conn.query_drop(if keep_open { "RELEASE SAVEPOINT quarry_edits" } else { "COMMIT" }).await.map_err(err)?;
+        conn.query_drop(if keep_open {
+            "RELEASE SAVEPOINT quarry_edits"
+        } else {
+            "COMMIT"
+        })
+        .await
+        .map_err(err)?;
         Ok(statements.len())
     }
 
@@ -288,9 +391,16 @@ impl DatabaseSession for MysqlSession {
 
     /// MySQL keeps each table's DDL: SHOW CREATE TABLE has the indexes and constraints too
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
-        let name = self.dialect().qualified(&table.schema_name, &table.table_name);
+        let name = self
+            .dialect()
+            .qualified(&table.schema_name, &table.table_name);
         let ddl = self.run(&format!("SHOW CREATE TABLE {name}")).await?;
-        let ddl = ddl.rows.first().and_then(|r| r.get(1)).map(|v| format!("{};", v.to_display_string())).unwrap_or_default();
+        let ddl = ddl
+            .rows
+            .first()
+            .and_then(|r| r.get(1))
+            .map(|v| format!("{};", v.to_display_string()))
+            .unwrap_or_default();
         let indexes = self
             .run(&format!(
                 "SELECT INDEX_NAME, NON_UNIQUE = 0, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX SEPARATOR ', ') \
@@ -302,7 +412,11 @@ impl DatabaseSession for MysqlSession {
         let indexes = indexes
             .rows
             .iter()
-            .map(|r| IndexInfo { name: r[0].to_display_string(), unique: matches!(r[1], DbValue::Int(1)), columns: r[2].to_display_string() })
+            .map(|r| IndexInfo {
+                name: r[0].to_display_string(),
+                unique: matches!(r[1], DbValue::Int(1)),
+                columns: r[2].to_display_string(),
+            })
             .collect();
         Ok(TableInfo { ddl, indexes })
     }
@@ -325,7 +439,12 @@ impl DatabaseSession for MysqlSession {
                     "TRIGGER" => ObjectKind::Trigger,
                     _ => return None,
                 };
-                Some(SchemaObject { kind, name: row[1].to_display_string(), detail: row[2].to_display_string(), id: String::new() })
+                Some(SchemaObject {
+                    kind,
+                    name: row[1].to_display_string(),
+                    detail: row[2].to_display_string(),
+                    id: String::new(),
+                })
             })
             .collect())
     }
@@ -335,11 +454,25 @@ impl DatabaseSession for MysqlSession {
             ObjectKind::Function => "FUNCTION",
             ObjectKind::Procedure => "PROCEDURE",
             ObjectKind::Trigger => "TRIGGER",
-            _ => return Err(DbError::Internal(format!("MySQL has no {:?} objects", obj.kind))),
+            _ => {
+                return Err(DbError::Internal(format!(
+                    "MySQL has no {:?} objects",
+                    obj.kind
+                )))
+            }
         };
-        let r = self.run(&format!("SHOW CREATE {what} {}", self.dialect().qualified(schema, &obj.name))).await?;
+        let r = self
+            .run(&format!(
+                "SHOW CREATE {what} {}",
+                self.dialect().qualified(schema, &obj.name)
+            ))
+            .await?;
         // The statement is the third column for all three
-        r.rows.first().and_then(|row| row.get(2)).map(|v| format!("{};", v.to_display_string())).ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
+        r.rows
+            .first()
+            .and_then(|row| row.get(2))
+            .map(|v| format!("{};", v.to_display_string()))
+            .ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
     }
 
     fn monitor(&self) -> Option<&dyn crate::monitor::Monitor> {
@@ -355,12 +488,19 @@ impl DatabaseSession for MysqlSession {
 impl crate::dump::Dumper for MysqlSession {
     /// mysqldump; the password goes through MYSQL_PWD so it never shows in the process list
     async fn dump(&self, out: &std::path::Path) -> Result<String, String> {
-        let [host, port, user, pw, db] = <[String; 5]>::try_from(DRIVER.split(&self.url)).unwrap_or_default();
+        let [host, port, user, pw, db] =
+            <[String; 5]>::try_from(DRIVER.split(&self.url)).unwrap_or_default();
         if db.is_empty() {
             return Err("Pick a database in the connection's URL to dump it".into());
         }
         let mut cmd = std::process::Command::new("mysqldump");
-        cmd.args(["--single-transaction", "--routines", "--triggers", "-h", &host]);
+        cmd.args([
+            "--single-transaction",
+            "--routines",
+            "--triggers",
+            "-h",
+            &host,
+        ]);
         if !port.is_empty() {
             cmd.args(["-P", &port]);
         }
@@ -385,7 +525,9 @@ impl crate::dump::Dumper for MysqlSession {
 impl MysqlSession {
     /// Everything (`only` = None) or one schema: `only` is a SQL expression for its name
     async fn catalog_where(&self, only: Option<&str>) -> Result<SchemaCatalog, DbError> {
-        let f = only.map(|e| format!(" AND TABLE_SCHEMA = {e}")).unwrap_or_default();
+        let f = only
+            .map(|e| format!(" AND TABLE_SCHEMA = {e}"))
+            .unwrap_or_default();
         let schemas = self.column(&format!("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN {SYSTEM} ORDER BY 1")).await?;
         let tables = self
             .run(&format!(
@@ -404,7 +546,12 @@ impl MysqlSession {
                  FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA NOT IN {SYSTEM}{f}"
             ))
             .await?;
-        let default_schema = self.column("SELECT DATABASE()").await?.into_iter().next().filter(|s| s != "NULL");
+        let default_schema = self
+            .column("SELECT DATABASE()")
+            .await?
+            .into_iter()
+            .next()
+            .filter(|s| s != "NULL");
         let s = |v: &DbValue| v.to_display_string();
         let truthy = |v: &DbValue| matches!(v, DbValue::Int(1));
         let tables = tables
@@ -428,12 +575,21 @@ impl MysqlSession {
                     })
                     .collect();
                 TableSchema {
-                    primary_keys: columns.iter().filter(|c| c.is_primary_key).map(|c| c.name.clone()).collect(),
+                    primary_keys: columns
+                        .iter()
+                        .filter(|c| c.is_primary_key)
+                        .map(|c| c.name.clone())
+                        .collect(),
                     foreign_keys: fks
                         .rows
                         .iter()
                         .filter(mine)
-                        .map(|f| ForeignKeyRef { from_column: s(&f[2]), to_schema: s(&f[3]), to_table: s(&f[4]), to_column: s(&f[5]) })
+                        .map(|f| ForeignKeyRef {
+                            from_column: s(&f[2]),
+                            to_schema: s(&f[3]),
+                            to_table: s(&f[4]),
+                            to_column: s(&f[5]),
+                        })
                         .collect(),
                     schema_name: schema,
                     table_name: name,
@@ -442,6 +598,11 @@ impl MysqlSession {
                 }
             })
             .collect();
-        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
+        Ok(SchemaCatalog {
+            schemas,
+            tables,
+            default_schema,
+            ..Default::default()
+        })
     }
 }

@@ -15,12 +15,22 @@ impl Dumper for PostgresSession {
     async fn dump(&self, out: &Path) -> Result<String, String> {
         let (bare, password) = split_password(&self.url);
         let mut cmd = std::process::Command::new("pg_dump");
-        cmd.args(["--no-owner", "--dbname", &bare, "--file"]).arg(out);
+        cmd.args(["--no-owner", "--dbname", &bare, "--file"])
+            .arg(out);
         if let Some(pw) = password {
             // A URL carries the password percent-encoded; the environment variable wants it plain
-            cmd.env("PGPASSWORD", if bare.contains("://") { pct_decode(&pw) } else { pw });
+            cmd.env(
+                "PGPASSWORD",
+                if bare.contains("://") {
+                    pct_decode(&pw)
+                } else {
+                    pw
+                },
+            );
         }
-        let output = tokio::task::spawn_blocking(move || cmd.output()).await.map_err(|e| e.to_string())?;
+        let output = tokio::task::spawn_blocking(move || cmd.output())
+            .await
+            .map_err(|e| e.to_string())?;
         match output {
             Ok(o) if o.status.success() => Ok("the database".into()),
             Ok(o) => {

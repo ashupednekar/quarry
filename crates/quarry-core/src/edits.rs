@@ -63,9 +63,15 @@ impl PendingChanges {
 
     /// Records an edit, replacing an earlier one on the same cell; editing back to the original drops it.
     pub fn set_cell(&mut self, pks: RowKey, column: &str, old: DbValue, new: DbValue) {
-        self.cell_edits.retain(|e| !(e.pks == pks && e.column_name == column));
+        self.cell_edits
+            .retain(|e| !(e.pks == pks && e.column_name == column));
         if old != new {
-            self.cell_edits.push(PendingCellEdit { pks, column_name: column.to_string(), old_value: old, new_value: new });
+            self.cell_edits.push(PendingCellEdit {
+                pks,
+                column_name: column.to_string(),
+                old_value: old,
+                new_value: new,
+            });
         }
     }
 
@@ -98,11 +104,26 @@ impl PendingChanges {
         for (pks, edits) in rows {
             let set: Vec<String> = edits
                 .iter()
-                .map(|e| format!("{} = {}", d.quote_ident(&e.column_name), d.literal(&e.new_value)))
+                .map(|e| {
+                    format!(
+                        "{} = {}",
+                        d.quote_ident(&e.column_name),
+                        d.literal(&e.new_value)
+                    )
+                })
                 .collect();
             let mut conds = key_conditions(pks, d);
-            conds.extend(edits.iter().filter_map(|e| unchanged_condition(&e.column_name, &e.old_value, d)));
-            statements.push(format!("UPDATE {} SET {} WHERE {};", table, set.join(", "), conds.join(" AND ")));
+            conds.extend(
+                edits
+                    .iter()
+                    .filter_map(|e| unchanged_condition(&e.column_name, &e.old_value, d)),
+            );
+            statements.push(format!(
+                "UPDATE {} SET {} WHERE {};",
+                table,
+                set.join(", "),
+                conds.join(" AND ")
+            ));
         }
 
         for insert in &self.row_inserts {
@@ -114,14 +135,24 @@ impl PendingChanges {
                 format!(
                     "INSERT INTO {} ({}) VALUES ({});",
                     table,
-                    cols.iter().map(|c| d.quote_ident(c)).collect::<Vec<_>>().join(", "),
-                    cols.iter().map(|c| d.literal(&insert.values[*c])).collect::<Vec<_>>().join(", ")
+                    cols.iter()
+                        .map(|c| d.quote_ident(c))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    cols.iter()
+                        .map(|c| d.literal(&insert.values[*c]))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             });
         }
 
         for delete in &self.row_deletes {
-            statements.push(format!("DELETE FROM {} WHERE {};", table, key_conditions(&delete.pks, d).join(" AND ")));
+            statements.push(format!(
+                "DELETE FROM {} WHERE {};",
+                table,
+                key_conditions(&delete.pks, d).join(" AND ")
+            ));
         }
 
         statements
@@ -129,7 +160,9 @@ impl PendingChanges {
 }
 
 fn key_conditions(pks: &RowKey, d: &dyn Dialect) -> Vec<String> {
-    pks.iter().map(|(c, v)| format!("{} = {}", d.quote_ident(c), d.literal(v))).collect()
+    pks.iter()
+        .map(|(c, v)| format!("{} = {}", d.quote_ident(c), d.literal(v)))
+        .collect()
 }
 
 /// Optimistic-concurrency predicate. Floats and JSON don't round-trip exactly through SQL text, so they're skipped.
@@ -156,17 +189,27 @@ mod tests {
     use super::*;
 
     fn key(id: i64) -> RowKey {
-        vec![("tenant_id".into(), DbValue::Int(101)), ("user_id".into(), DbValue::Int(id))]
+        vec![
+            ("tenant_id".into(), DbValue::Int(101)),
+            ("user_id".into(), DbValue::Int(id)),
+        ]
     }
 
     #[test]
     fn composite_pk_update_checks_old_value() {
         let mut changes = PendingChanges::new();
-        changes.set_cell(key(42), "status", DbValue::Text("inactive".into()), DbValue::Text("active".into()));
+        changes.set_cell(
+            key(42),
+            "status",
+            DbValue::Text("inactive".into()),
+            DbValue::Text("active".into()),
+        );
         let sql = changes.generate_sql("\"tenant_users\"", &Ansi);
         assert_eq!(
             sql,
-            vec![r#"UPDATE "tenant_users" SET "status" = 'active' WHERE "tenant_id" = 101 AND "user_id" = 42 AND "status" = 'inactive';"#]
+            vec![
+                r#"UPDATE "tenant_users" SET "status" = 'active' WHERE "tenant_id" = 101 AND "user_id" = 42 AND "status" = 'inactive';"#
+            ]
         );
     }
 
@@ -187,7 +230,10 @@ mod tests {
         assert!(c.generate_sql("t", &Ansi)[0].contains(r#""a" IS NULL"#));
         c.toggle_delete(key(1));
         assert_eq!(c.cell_edits.len(), 0);
-        assert_eq!(c.generate_sql("t", &Ansi), vec![r#"DELETE FROM t WHERE "tenant_id" = 101 AND "user_id" = 1;"#]);
+        assert_eq!(
+            c.generate_sql("t", &Ansi),
+            vec![r#"DELETE FROM t WHERE "tenant_id" = 101 AND "user_id" = 1;"#]
+        );
         c.toggle_delete(key(1));
         assert!(c.is_empty());
     }

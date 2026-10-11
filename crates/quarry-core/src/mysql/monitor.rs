@@ -8,7 +8,8 @@ use crate::monitor::{Monitor, ServerView, Snapshot};
 use crate::session::DbError;
 use async_trait::async_trait;
 
-const STATEMENTS_HELP: &str = "Statement statistics come from performance_schema, which is off on this server. \
+const STATEMENTS_HELP: &str =
+    "Statement statistics come from performance_schema, which is off on this server. \
 Set performance_schema = ON in my.cnf and restart MySQL.";
 
 #[async_trait]

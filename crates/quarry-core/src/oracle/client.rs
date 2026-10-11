@@ -66,14 +66,18 @@ fn data_dir() -> Option<PathBuf> {
     let base = match std::env::consts::OS {
         "macos" => home()?.join("Library/Application Support"),
         "windows" => std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?,
-        _ => std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| Some(home()?.join(".local/share")))?,
+        _ => std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| Some(home()?.join(".local/share")))?,
     };
     Some(base.join("quarry").join("instantclient"))
 }
 
 /// The library ODPI-C loads, by platform
 pub fn has_client_lib(dir: &Path) -> bool {
-    ["libclntsh.dylib", "libclntsh.so", "oci.dll"].iter().any(|f| dir.join(f).exists())
+    ["libclntsh.dylib", "libclntsh.so", "oci.dll"]
+        .iter()
+        .any(|f| dir.join(f).exists())
 }
 
 /// Quarry's downloaded client, if installed
@@ -92,13 +96,20 @@ pub fn install() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&work).map_err(|e| e.to_string())?;
     let result = (|| {
         let archive = work.join(pkg.url.rsplit('/').next().unwrap_or("client"));
-        run(Command::new("curl").args(["-fsSL", "--retry", "2", "-o"]).arg(&archive).arg(pkg.url), "download")?;
+        run(
+            Command::new("curl")
+                .args(["-fsSL", "--retry", "2", "-o"])
+                .arg(&archive)
+                .arg(pkg.url),
+            "download",
+        )?;
         verify(&archive, pkg.sha256)?;
         let unpacked = work.join("unpacked");
         std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
         unpack(&archive, &unpacked)?;
         // Zips hold one instantclient_* folder; the dmg holds the files directly
-        let lib = find_lib_dir(&unpacked).ok_or("The download didn't contain the Oracle client library")?;
+        let lib = find_lib_dir(&unpacked)
+            .ok_or("The download didn't contain the Oracle client library")?;
         let _ = std::fs::remove_dir_all(&dest);
         std::fs::rename(&lib, &dest).map_err(|e| e.to_string())?;
         Ok(dest.clone())
@@ -109,12 +120,23 @@ pub fn install() -> Result<PathBuf, String> {
 
 fn verify(file: &Path, expected: &str) -> Result<(), String> {
     let mut hasher = Sha256::new();
-    std::io::copy(&mut std::fs::File::open(file).map_err(|e| e.to_string())?, &mut hasher).map_err(|e| e.to_string())?;
-    let got: String = hasher.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    std::io::copy(
+        &mut std::fs::File::open(file).map_err(|e| e.to_string())?,
+        &mut hasher,
+    )
+    .map_err(|e| e.to_string())?;
+    let got: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if got == expected {
         Ok(())
     } else {
-        Err("The downloaded Oracle client doesn't match its checksum, so it wasn't installed".into())
+        Err(
+            "The downloaded Oracle client doesn't match its checksum, so it wasn't installed"
+                .into(),
+        )
     }
 }
 
@@ -122,14 +144,43 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
     match std::env::consts::OS {
         "macos" => {
             let mnt = into.with_file_name("mnt");
-            run(Command::new("hdiutil").args(["attach", "-quiet", "-nobrowse", "-readonly", "-mountpoint"]).arg(&mnt).arg(archive), "open the disk image")?;
-            let copied = run(Command::new("cp").arg("-R").arg(format!("{}/.", mnt.display())).arg(into), "copy the client");
-            let _ = Command::new("hdiutil").args(["detach", "-quiet"]).arg(&mnt).status();
+            run(
+                Command::new("hdiutil")
+                    .args(["attach", "-quiet", "-nobrowse", "-readonly", "-mountpoint"])
+                    .arg(&mnt)
+                    .arg(archive),
+                "open the disk image",
+            )?;
+            let copied = run(
+                Command::new("cp")
+                    .arg("-R")
+                    .arg(format!("{}/.", mnt.display()))
+                    .arg(into),
+                "copy the client",
+            );
+            let _ = Command::new("hdiutil")
+                .args(["detach", "-quiet"])
+                .arg(&mnt)
+                .status();
             copied
         }
         // bsdtar ships with Windows 10+ and reads zips
-        "windows" => run(Command::new("tar").arg("-xf").arg(archive).arg("-C").arg(into), "unzip the client"),
-        _ => run(Command::new("unzip").arg("-q").arg(archive).arg("-d").arg(into), "unzip the client (is unzip installed?)"),
+        "windows" => run(
+            Command::new("tar")
+                .arg("-xf")
+                .arg(archive)
+                .arg("-C")
+                .arg(into),
+            "unzip the client",
+        ),
+        _ => run(
+            Command::new("unzip")
+                .arg("-q")
+                .arg(archive)
+                .arg("-d")
+                .arg(into),
+            "unzip the client (is unzip installed?)",
+        ),
     }
 }
 
@@ -137,13 +188,21 @@ fn find_lib_dir(dir: &Path) -> Option<PathBuf> {
     if has_client_lib(dir) {
         return Some(dir.to_path_buf());
     }
-    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).find(|p| has_client_lib(p))
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .find(|p| has_client_lib(p))
 }
 
 fn run(cmd: &mut Command, what: &str) -> Result<(), String> {
     match cmd.output() {
         Ok(o) if o.status.success() => Ok(()),
-        Ok(o) => Err(format!("Couldn't {what}: {}", String::from_utf8_lossy(&o.stderr).trim())),
+        Ok(o) => Err(format!(
+            "Couldn't {what}: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
         Err(e) => Err(format!("Couldn't {what}: {e}")),
     }
 }
@@ -157,7 +216,11 @@ mod tests {
         let f = std::env::temp_dir().join(format!("quarry-ic-{}", std::process::id()));
         std::fs::write(&f, b"not the client").unwrap();
         assert!(verify(&f, package().map_or("00", |p| p.sha256)).is_err());
-        assert!(verify(&f, "7918e0d07dbc6b3b0c8ae2561b5d164026fe9287bb014e98f0b7c4b145b41447").is_ok());
+        assert!(verify(
+            &f,
+            "7918e0d07dbc6b3b0c8ae2561b5d164026fe9287bb014e98f0b7c4b145b41447"
+        )
+        .is_ok());
         std::fs::remove_file(f).unwrap();
     }
 }

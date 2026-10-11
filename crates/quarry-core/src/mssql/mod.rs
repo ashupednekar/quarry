@@ -8,8 +8,13 @@ use crate::conn_url::{self, UrlFields};
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
 use crate::monitor::{Monitor, ServerView, Snapshot};
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema};
-use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS};
+use crate::schema::{
+    ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject,
+    TableInfo, TableSchema,
+};
+use crate::session::{
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS,
+};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
@@ -27,8 +32,20 @@ const ROWCOUNT: &str = "quarry_rowcount";
 pub struct MssqlDriver;
 pub static DRIVER: MssqlDriver = MssqlDriver;
 
-const fn field(label: &'static str, placeholder: &'static str, secret: bool, row: u8, width: Option<f32>) -> Field {
-    Field { label, placeholder, secret, row, width }
+const fn field(
+    label: &'static str,
+    placeholder: &'static str,
+    secret: bool,
+    row: u8,
+    width: Option<f32>,
+) -> Field {
+    Field {
+        label,
+        placeholder,
+        secret,
+        row,
+        width,
+    }
 }
 
 #[async_trait]
@@ -61,11 +78,15 @@ impl Driver for MssqlDriver {
     }
 
     fn split(&self, conn: &str) -> Vec<String> {
-        conn_url::parse(conn, &SCHEMES).map(|(f, _)| f.to_vec()).unwrap_or_else(|| vec![String::new(); 5])
+        conn_url::parse(conn, &SCHEMES)
+            .map(|(f, _)| f.to_vec())
+            .unwrap_or_else(|| vec![String::new(); 5])
     }
 
     fn join(&self, values: &[String], previous: &str) -> String {
-        let query = conn_url::parse(previous, &SCHEMES).map(|(_, q)| q).unwrap_or_default();
+        let query = conn_url::parse(previous, &SCHEMES)
+            .map(|(_, q)| q)
+            .unwrap_or_default();
         let fields: UrlFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
         conn_url::build("sqlserver", &fields, &query)
     }
@@ -80,8 +101,16 @@ impl Driver for MssqlDriver {
 
     fn display_address(&self, conn: &str) -> String {
         let [host, port, _, _, db] = <[String; 5]>::try_from(self.split(conn)).unwrap_or_default();
-        let host = if host.is_empty() { "localhost".to_string() } else { host };
-        let mut out = if port.is_empty() { host } else { format!("{host}:{port}") };
+        let host = if host.is_empty() {
+            "localhost".to_string()
+        } else {
+            host
+        };
+        let mut out = if port.is_empty() {
+            host
+        } else {
+            format!("{host}:{port}")
+        };
         if !db.is_empty() {
             out += &format!("/{db}");
         }
@@ -96,7 +125,11 @@ impl Driver for MssqlDriver {
         conn_url::retarget(conn, local_port)
     }
 
-    async fn connect(&self, conn: &str, read_only: bool) -> Result<Arc<dyn DatabaseSession>, DbError> {
+    async fn connect(
+        &self,
+        conn: &str,
+        read_only: bool,
+    ) -> Result<Arc<dyn DatabaseSession>, DbError> {
         Ok(Arc::new(MssqlSession::connect(conn, read_only).await?))
     }
 }
@@ -113,16 +146,30 @@ fn err(e: tiberius::error::Error) -> DbError {
 
 /// Statements that must be alone in their batch, so nothing can be appended after them
 fn must_stand_alone(sql: &str) -> bool {
-    let words: Vec<String> = sql.split_whitespace().take(4).map(|w| w.to_ascii_uppercase()).collect();
-    let verb = words.iter().position(|w| w == "CREATE" || w == "ALTER").map(|i| words.get(i + 1).map(String::as_str));
-    matches!(verb, Some(Some("PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW" | "SCHEMA")))
-        || words.first().is_some_and(|w| w == "CREATE" && words.get(1).is_some_and(|x| x == "OR"))
+    let words: Vec<String> = sql
+        .split_whitespace()
+        .take(4)
+        .map(|w| w.to_ascii_uppercase())
+        .collect();
+    let verb = words
+        .iter()
+        .position(|w| w == "CREATE" || w == "ALTER")
+        .map(|i| words.get(i + 1).map(String::as_str));
+    matches!(
+        verb,
+        Some(Some(
+            "PROCEDURE" | "PROC" | "FUNCTION" | "TRIGGER" | "VIEW" | "SCHEMA"
+        ))
+    ) || words
+        .first()
+        .is_some_and(|w| w == "CREATE" && words.get(1).is_some_and(|x| x == "OR"))
 }
 
 impl MssqlSession {
     pub async fn connect(url: &str, read_only: bool) -> Result<Self, DbError> {
         let fail = |e: String| DbError::ConnectionFailed(e);
-        let (f, _) = conn_url::parse(url, &SCHEMES).ok_or_else(|| fail("Not a sqlserver:// address".into()))?;
+        let (f, _) = conn_url::parse(url, &SCHEMES)
+            .ok_or_else(|| fail("Not a sqlserver:// address".into()))?;
         let [host, port, user, pw, db] = f;
         let mut config = Config::new();
         config.host(if host.is_empty() { "localhost" } else { &host });
@@ -133,10 +180,18 @@ impl MssqlSession {
         }
         // ponytail: no TLS yet (tiberius built without a TLS backend); servers that force encryption refuse
         config.encryption(EncryptionLevel::NotSupported);
-        let tcp = TcpStream::connect(config.get_addr()).await.map_err(|e| fail(e.to_string()))?;
+        let tcp = TcpStream::connect(config.get_addr())
+            .await
+            .map_err(|e| fail(e.to_string()))?;
         tcp.set_nodelay(true).map_err(|e| fail(e.to_string()))?;
-        let client = Client::connect(config, tcp.compat_write()).await.map_err(|e| fail(e.to_string()))?;
-        Ok(Self { client: Mutex::new(client), read_only, tx: TxState::default() })
+        let client = Client::connect(config, tcp.compat_write())
+            .await
+            .map_err(|e| fail(e.to_string()))?;
+        Ok(Self {
+            client: Mutex::new(client),
+            read_only,
+            tx: TxState::default(),
+        })
     }
 
     async fn run(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -145,24 +200,41 @@ impl MssqlSession {
 
     /// One row per result, as text cells (catalog queries)
     async fn rows(&self, sql: &str) -> Result<Vec<Vec<String>>, DbError> {
-        Ok(self.run(sql).await?.rows.iter().map(|r| r.iter().map(|v| v.to_display_string()).collect()).collect())
+        Ok(self
+            .run(sql)
+            .await?
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|v| v.to_display_string()).collect())
+            .collect())
     }
 }
 
 /// Runs one batch. tiberius doesn't surface row counts from a plain batch, so `SELECT @@ROWCOUNT`
 /// rides along after it (except where the statement must be alone). The first result set is the
 /// one shown; rows past MAX_ROWS are counted, not kept.
-async fn run_batch(client: &mut Client<Compat<TcpStream>>, sql: &str) -> Result<QueryResult, DbError> {
+async fn run_batch(
+    client: &mut Client<Compat<TcpStream>>,
+    sql: &str,
+) -> Result<QueryResult, DbError> {
     let start = Instant::now();
     let counted = !must_stand_alone(sql);
-    let batch = if counted { format!("{sql}\nSELECT @@ROWCOUNT AS {ROWCOUNT}") } else { sql.to_string() };
+    let batch = if counted {
+        format!("{sql}\nSELECT @@ROWCOUNT AS {ROWCOUNT}")
+    } else {
+        sql.to_string()
+    };
     let mut stream = client.simple_query(batch).await.map_err(err)?;
     let (mut columns, mut rows, mut seen, mut affected) = (Vec::new(), Vec::new(), 0u64, 0u64);
     let mut first_set: Option<usize> = None;
     while let Some(item) = stream.try_next().await.map_err(err)? {
         match item {
             QueryItem::Metadata(meta) => {
-                let names: Vec<String> = meta.columns().iter().map(|c| c.name().to_string()).collect();
+                let names: Vec<String> = meta
+                    .columns()
+                    .iter()
+                    .map(|c| c.name().to_string())
+                    .collect();
                 if names != [ROWCOUNT] && first_set.is_none() {
                     first_set = Some(meta.result_index());
                     columns = names;
@@ -207,12 +279,30 @@ fn decode(v: &ColumnData<'static>) -> DbValue {
         ColumnData::Numeric(x) => opt(x.map(|n| DbValue::Decimal(n.to_string()))),
         ColumnData::Xml(x) => opt(x.as_ref().map(|x| DbValue::Text(x.to_string()))),
         // Dates and times as the server's text, so nothing shifts zone or rounds
-        ColumnData::Date(_) => time(chrono::NaiveDate::from_sql(v).ok().flatten().map(|d| d.to_string())),
-        ColumnData::Time(_) => time(chrono::NaiveTime::from_sql(v).ok().flatten().map(|t| t.to_string())),
-        ColumnData::DateTimeOffset(_) => time(chrono::DateTime::<chrono::FixedOffset>::from_sql(v).ok().flatten().map(|t| t.to_string())),
-        ColumnData::DateTime(_) | ColumnData::SmallDateTime(_) | ColumnData::DateTime2(_) => {
-            time(chrono::NaiveDateTime::from_sql(v).ok().flatten().map(|t| t.format("%Y-%m-%d %H:%M:%S%.f").to_string()))
-        }
+        ColumnData::Date(_) => time(
+            chrono::NaiveDate::from_sql(v)
+                .ok()
+                .flatten()
+                .map(|d| d.to_string()),
+        ),
+        ColumnData::Time(_) => time(
+            chrono::NaiveTime::from_sql(v)
+                .ok()
+                .flatten()
+                .map(|t| t.to_string()),
+        ),
+        ColumnData::DateTimeOffset(_) => time(
+            chrono::DateTime::<chrono::FixedOffset>::from_sql(v)
+                .ok()
+                .flatten()
+                .map(|t| t.to_string()),
+        ),
+        ColumnData::DateTime(_) | ColumnData::SmallDateTime(_) | ColumnData::DateTime2(_) => time(
+            chrono::NaiveDateTime::from_sql(v)
+                .ok()
+                .flatten()
+                .map(|t| t.format("%Y-%m-%d %H:%M:%S%.f").to_string()),
+        ),
     }
 }
 
@@ -266,12 +356,18 @@ impl DatabaseSession for MssqlSession {
                  JOIN sys.tables r ON r.object_id = f.referenced_object_id JOIN sys.columns rc ON rc.object_id = r.object_id AND rc.column_id = f.referenced_column_id",
             )
             .await?;
-        let default_schema = self.rows("SELECT SCHEMA_NAME()").await?.into_iter().next().map(|r| r[0].clone());
+        let default_schema = self
+            .rows("SELECT SCHEMA_NAME()")
+            .await?
+            .into_iter()
+            .next()
+            .map(|r| r[0].clone());
         let tables = tables
             .iter()
             .map(|t| {
                 let mine = |r: &&Vec<String>| r[0] == t[0] && r[1] == t[1];
-                let primary_keys: Vec<String> = pks.iter().filter(mine).map(|r| r[2].clone()).collect();
+                let primary_keys: Vec<String> =
+                    pks.iter().filter(mine).map(|r| r[2].clone()).collect();
                 let columns = columns
                     .iter()
                     .filter(mine)
@@ -293,13 +389,23 @@ impl DatabaseSession for MssqlSession {
                     foreign_keys: fks
                         .iter()
                         .filter(mine)
-                        .map(|f| ForeignKeyRef { from_column: f[2].clone(), to_schema: f[3].clone(), to_table: f[4].clone(), to_column: f[5].clone() })
+                        .map(|f| ForeignKeyRef {
+                            from_column: f[2].clone(),
+                            to_schema: f[3].clone(),
+                            to_table: f[4].clone(),
+                            to_column: f[5].clone(),
+                        })
                         .collect(),
                     primary_keys,
                 }
             })
             .collect();
-        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
+        Ok(SchemaCatalog {
+            schemas,
+            tables,
+            default_schema,
+            ..Default::default()
+        })
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -346,7 +452,15 @@ impl DatabaseSession for MssqlSession {
                 Ok(_) => DbError::ConcurrentModification,
                 Err(e) => e,
             };
-            let _ = run_batch(&mut client, if keep_open { "ROLLBACK TRANSACTION quarry_edits" } else { "ROLLBACK TRANSACTION" }).await;
+            let _ = run_batch(
+                &mut client,
+                if keep_open {
+                    "ROLLBACK TRANSACTION quarry_edits"
+                } else {
+                    "ROLLBACK TRANSACTION"
+                },
+            )
+            .await;
             return Err(failure);
         }
         if !keep_open {
@@ -369,7 +483,11 @@ impl DatabaseSession for MssqlSession {
 
     /// CREATE TABLE rebuilt from the catalog (SQL Server keeps no table DDL), plus its indexes
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
-        let name = sql_string(&self.dialect().qualified(&table.schema_name, &table.table_name));
+        let name = sql_string(
+            &self
+                .dialect()
+                .qualified(&table.schema_name, &table.table_name),
+        );
         let indexes = self
             .rows(&format!(
                 "SELECT i.name, CAST(i.is_unique AS int), STRING_AGG(c.name, ', ') WITHIN GROUP (ORDER BY ic.key_ordinal) \
@@ -381,7 +499,14 @@ impl DatabaseSession for MssqlSession {
             .await?;
         Ok(TableInfo {
             ddl: table.create_sql(self.dialect()),
-            indexes: indexes.into_iter().map(|r| IndexInfo { name: r[0].clone(), unique: r[1] == "1", columns: r[2].clone() }).collect(),
+            indexes: indexes
+                .into_iter()
+                .map(|r| IndexInfo {
+                    name: r[0].clone(),
+                    unique: r[1] == "1",
+                    columns: r[2].clone(),
+                })
+                .collect(),
         })
     }
 
@@ -403,7 +528,12 @@ impl DatabaseSession for MssqlSession {
                     "TR" => ObjectKind::Trigger,
                     _ => return None,
                 };
-                Some(SchemaObject { kind, name: r[1].clone(), detail: r[2].clone(), id: r[3].clone() })
+                Some(SchemaObject {
+                    kind,
+                    name: r[1].clone(),
+                    detail: r[2].clone(),
+                    id: r[3].clone(),
+                })
             })
             .collect())
     }
@@ -420,7 +550,11 @@ impl DatabaseSession for MssqlSession {
             _ => format!("SELECT OBJECT_DEFINITION({})", obj.id),
         };
         let rows = self.rows(&sql).await?;
-        rows.into_iter().next().map(|r| r[0].clone()).filter(|d| d != "NULL").ok_or_else(|| DbError::SqlError(format!("{} has no visible definition", obj.name)))
+        rows.into_iter()
+            .next()
+            .map(|r| r[0].clone())
+            .filter(|d| d != "NULL")
+            .ok_or_else(|| DbError::SqlError(format!("{} has no visible definition", obj.name)))
     }
 
     fn monitor(&self) -> Option<&dyn Monitor> {
@@ -431,7 +565,11 @@ impl DatabaseSession for MssqlSession {
 #[async_trait]
 impl Monitor for MssqlSession {
     fn views(&self) -> &'static [ServerView] {
-        &[ServerView::Activity, ServerView::Statements, ServerView::Locks]
+        &[
+            ServerView::Activity,
+            ServerView::Statements,
+            ServerView::Locks,
+        ]
     }
 
     async fn snapshot(&self, view: ServerView) -> Result<Snapshot, DbError> {
@@ -465,7 +603,9 @@ impl Monitor for MssqlSession {
 
     /// SQL Server can't stop one query of another session, only end the session
     async fn cancel(&self, _id: i64) -> Result<(), DbError> {
-        Err(DbError::Internal("SQL Server can only end the whole session: use Terminate".into()))
+        Err(DbError::Internal(
+            "SQL Server can only end the whole session: use Terminate".into(),
+        ))
     }
 
     async fn terminate(&self, id: i64) -> Result<(), DbError> {
@@ -478,7 +618,9 @@ mod tests {
     #[test]
     fn knows_which_statements_must_be_alone() {
         assert!(super::must_stand_alone("CREATE PROCEDURE p AS SELECT 1"));
-        assert!(super::must_stand_alone("create or alter view v as select 1"));
+        assert!(super::must_stand_alone(
+            "create or alter view v as select 1"
+        ));
         assert!(!super::must_stand_alone("CREATE TABLE t (id int)"));
         assert!(!super::must_stand_alone("UPDATE t SET a = 1"));
     }

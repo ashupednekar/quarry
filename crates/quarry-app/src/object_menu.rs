@@ -10,9 +10,15 @@ use gpui::*;
 
 #[derive(Clone)]
 pub enum DbObject {
-    Connection { id: String, name: String },
+    Connection {
+        id: String,
+        name: String,
+    },
     Schema(String),
-    Table { schema: String, table: String },
+    Table {
+        schema: String,
+        table: String,
+    },
     /// A saved .sql file in the sidebar's Queries section
     Query(std::path::PathBuf),
 }
@@ -46,14 +52,21 @@ type Act = fn(&mut QuarryWindow, &DbObject, &mut Window, &mut Context<QuarryWind
 
 impl QuarryWindow {
     pub fn open_object_menu(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
-        let is_active = |id: &str| self.state.active_connection.as_ref().is_some_and(|c| c.id == id);
+        let is_active = |id: &str| {
+            self.state
+                .active_connection
+                .as_ref()
+                .is_some_and(|c| c.id == id)
+        };
         let conn_id = self.state.active_connection.as_ref().map(|c| c.id.clone());
         let mut items: Vec<(&str, Act)> = Vec::new();
         match &obj {
             DbObject::Connection { id, .. } => {
                 if is_active(id) {
                     items.push(("New Query", |this, _, w, cx| this.open_query_tab("", w, cx)));
-                    items.push(("Refresh Schema", |this, _, w, cx| this.refresh_catalog(w, cx)));
+                    items.push(("Refresh Schema", |this, _, w, cx| {
+                        this.refresh_catalog(w, cx)
+                    }));
                 } else {
                     items.push(("Connect", |this, o, w, cx| {
                         if let DbObject::Connection { id, .. } = o {
@@ -83,37 +96,76 @@ impl QuarryWindow {
             }
             DbObject::Schema(_) => {
                 items.push(("New Query", |this, _, w, cx| this.open_query_tab("", w, cx)));
-                items.push(("Refresh Schema", |this, _, w, cx| this.refresh_catalog(w, cx)));
+                items.push(("Refresh Schema", |this, _, w, cx| {
+                    this.refresh_catalog(w, cx)
+                }));
             }
             DbObject::Table { schema, table } => {
                 let pinned = conn_id
                     .and_then(|c| self.state.pins.get(&c))
-                    .is_some_and(|p| p.contains(&Pin::Table { schema: schema.clone(), table: table.clone() }));
+                    .is_some_and(|p| {
+                        p.contains(&Pin::Table {
+                            schema: schema.clone(),
+                            table: table.clone(),
+                        })
+                    });
                 items.push(("Open", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_pin(Pin::Table { schema: schema.clone(), table: table.clone() }, w, cx)
+                        this.open_pin(
+                            Pin::Table {
+                                schema: schema.clone(),
+                                table: table.clone(),
+                            },
+                            w,
+                            cx,
+                        )
                     }
                 }));
                 items.push(("Structure", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_pin(Pin::Table { schema: schema.clone(), table: table.clone() }, w, cx);
+                        this.open_pin(
+                            Pin::Table {
+                                schema: schema.clone(),
+                                table: table.clone(),
+                            },
+                            w,
+                            cx,
+                        );
                         this.set_table_view(crate::table_detail::TableView::Structure, w, cx);
                     }
                 }));
                 items.push(("DDL", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_pin(Pin::Table { schema: schema.clone(), table: table.clone() }, w, cx);
+                        this.open_pin(
+                            Pin::Table {
+                                schema: schema.clone(),
+                                table: table.clone(),
+                            },
+                            w,
+                            cx,
+                        );
                         this.set_table_view(crate::table_detail::TableView::Ddl, w, cx);
                     }
                 }));
                 items.push(("New Query on Table", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_query_tab(&format!("{};", this.state.select_rows_sql(schema, table, 100)), w, cx)
+                        this.open_query_tab(
+                            &format!("{};", this.state.select_rows_sql(schema, table, 100)),
+                            w,
+                            cx,
+                        )
                     }
                 }));
                 items.push(("Export…", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_pin(Pin::Table { schema: schema.clone(), table: table.clone() }, w, cx);
+                        this.open_pin(
+                            Pin::Table {
+                                schema: schema.clone(),
+                                table: table.clone(),
+                            },
+                            w,
+                            cx,
+                        );
                         this.open_export(cx);
                     }
                 }));
@@ -131,17 +183,37 @@ impl QuarryWindow {
                 // Destructive statements open in a query tab to review and run, so the prod check still applies
                 items.push(("Truncate…", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_query_tab(&format!("-- Deletes every row\nTRUNCATE TABLE {};", this.state.dialect().qualified(schema, table)), w, cx)
+                        this.open_query_tab(
+                            &format!(
+                                "-- Deletes every row\nTRUNCATE TABLE {};",
+                                this.state.dialect().qualified(schema, table)
+                            ),
+                            w,
+                            cx,
+                        )
                     }
                 }));
                 items.push(("Drop…", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.open_query_tab(&format!("-- Deletes the table and its data\nDROP TABLE {};", this.state.dialect().qualified(schema, table)), w, cx)
+                        this.open_query_tab(
+                            &format!(
+                                "-- Deletes the table and its data\nDROP TABLE {};",
+                                this.state.dialect().qualified(schema, table)
+                            ),
+                            w,
+                            cx,
+                        )
                     }
                 }));
                 items.push((if pinned { "Unpin" } else { "Pin" }, |this, o, _, cx| {
                     if let DbObject::Table { schema, table } = o {
-                        this.toggle_pin(Pin::Table { schema: schema.clone(), table: table.clone() }, cx)
+                        this.toggle_pin(
+                            Pin::Table {
+                                schema: schema.clone(),
+                                table: table.clone(),
+                            },
+                            cx,
+                        )
                     }
                 }));
             }
@@ -173,27 +245,38 @@ impl QuarryWindow {
                 }));
             }
         }
-        items.push((if matches!(obj, DbObject::Query(_)) { "Copy Path" } else { "Copy Name" }, |this, o, _, cx| {
-            let text = match o {
-                DbObject::Connection { name, .. } => name.clone(),
-                DbObject::Schema(s) => s.clone(),
-                DbObject::Table { schema, table } => this.state.dialect().qualified(schema, table),
-                DbObject::Query(p) => p.display().to_string(),
-            };
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-        }));
+        items.push((
+            if matches!(obj, DbObject::Query(_)) {
+                "Copy Path"
+            } else {
+                "Copy Name"
+            },
+            |this, o, _, cx| {
+                let text = match o {
+                    DbObject::Connection { name, .. } => name.clone(),
+                    DbObject::Schema(s) => s.clone(),
+                    DbObject::Table { schema, table } => {
+                        this.state.dialect().qualified(schema, table)
+                    }
+                    DbObject::Query(p) => p.display().to_string(),
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            },
+        ));
 
         let me = cx.entity().downgrade();
         let menu = PopupMenu::build(window, cx, |mut menu, _, _| {
             for (label, act) in items {
                 let (me, obj) = (me.clone(), obj.clone());
-                menu = menu.item(PopupMenuItem::new(label).icon(icon_for(label)).on_click(move |_, window, cx| {
-                    me.update(cx, |this, cx| {
-                        act(this, &obj, window, cx);
-                        cx.notify();
-                    })
-                    .ok();
-                }));
+                menu = menu.item(PopupMenuItem::new(label).icon(icon_for(label)).on_click(
+                    move |_, window, cx| {
+                        me.update(cx, |this, cx| {
+                            act(this, &obj, window, cx);
+                            cx.notify();
+                        })
+                        .ok();
+                    },
+                ));
             }
             menu
         });
