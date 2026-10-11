@@ -65,7 +65,8 @@ QUARRY_PG_URL=postgres://postgres:postgres@localhost:55432/postgres cargo test -
 docker run -d --rm --name quarry-mysql -e MYSQL_ROOT_PASSWORD=mysql -e MYSQL_DATABASE=quarry_test -p 53306:3306 mysql:8.4
 QUARRY_MYSQL_URL=mysql://root:mysql@127.0.0.1:53306/quarry_test cargo test -p quarry-core
 docker run -d --rm --name quarry-oracle -e ORACLE_PASSWORD=oracle -e APP_USER=quarry -e APP_USER_PASSWORD=quarry -p 51521:1521 gvenzl/oracle-free:23-slim-faststart
-ORACLE_CLIENT_LIB_DIR=~/instantclient_23_3 QUARRY_ORACLE_URL=oracle://quarry:quarry@127.0.0.1:51521/FREEPDB1 cargo test -p quarry-core
+# Instant Client: Quarry's own download (Connect → Download) is found automatically; 23.3 crashes on macOS 27
+QUARRY_ORACLE_URL=oracle://quarry:quarry@127.0.0.1:51521/FREEPDB1 cargo test -p quarry-core
 # SQL Server is amd64-only: on Apple Silicon it needs Rosetta (Docker Desktop, or `colima start --vm-type vz --vz-rosetta`)
 docker run -d --rm --platform linux/amd64 --name quarry-mssql -e ACCEPT_EULA=Y -e MSSQL_SA_PASSWORD=Quarry_test1 -p 51433:1433 mcr.microsoft.com/mssql/server:2022-latest
 QUARRY_MSSQL_URL=sqlserver://sa:Quarry_test1@127.0.0.1:51433/master cargo test -p quarry-core
@@ -79,5 +80,5 @@ cargo test -p quarry-core --no-default-features --features sqlite   # one driver
 | PostgreSQL | `postgres` | tokio-postgres | ✓ | pg_dump | SSH tunnel, `search_path` per tab |
 | SQLite | `sqlite` | rusqlite (bundled) | n/a | built in | `:memory:` connections aren't saved |
 | MySQL / MariaDB | `mysql` | mysql_async | processlist, statements | mysqldump | Databases are schemas; `#` comments and `\'` escapes split correctly |
-| Oracle | `oracle` | rust-oracle (ODPI-C) | sessions, SQL, locks | n/a | Needs Instant Client at connect time (`ORACLE_CLIENT_LIB_DIR`); users are schemas; PL/SQL blocks end at `/` |
+| Oracle | `oracle` | rust-oracle (ODPI-C) | sessions, SQL, locks | n/a | Needs Instant Client at connect time (`ORACLE_CLIENT_LIB_DIR`, a system install, or the pinned download the connect form offers); users are schemas; PL/SQL blocks end at `/` |
 | SQL Server | `mssql` | tiberius (TDS 7.3, no TLS yet) | requests, query stats, locks | n/a | `GO` batches; schemas of the connected database |

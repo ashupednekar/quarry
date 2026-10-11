@@ -2203,6 +2203,24 @@ impl QuarryWindow {
         });
     }
 
+    /// Fetches Oracle's client library (only when asked from the connect form), then connects again
+    fn download_oracle_client(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.state.add_conn_feedback = Some(("Downloading Oracle client…".to_string(), false));
+        cx.notify();
+        run_db(
+            window,
+            cx,
+            async move { tokio::task::spawn_blocking(quarry_core::oracle::client::install).await.map_err(|e| e.to_string())? },
+            |this, res, window, cx| match res {
+                Ok(_) => this.connect_add_conn_modal(window, cx),
+                Err(e) => {
+                    this.state.add_conn_feedback = Some((e, true));
+                    cx.notify();
+                }
+            },
+        );
+    }
+
     /// Tests connection parameters
     pub fn test_add_conn_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let profile = self.profile_from_modal(cx);
@@ -2741,6 +2759,7 @@ impl Render for QuarryWindow {
                         this.state.add_conn_read_only = !this.state.add_conn_read_only;
                         cx.notify();
                     },
+                    |this, window, cx| this.download_oracle_client(window, cx),
                 ))
             })
     }

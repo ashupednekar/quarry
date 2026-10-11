@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 //! Oracle through rust-oracle (ODPI-C). Needs Oracle Instant Client at connect time, found via
-//! ORACLE_CLIENT_LIB_DIR or the usual install folders; without it, connecting explains what to
-//! install. The client blocks, so every call runs on the blocking pool. Schemas are users.
+//! ORACLE_CLIENT_LIB_DIR, the usual install folders or Quarry's own download (see `client`). The client blocks, so every call runs on the blocking pool. Schemas are users.
 
 use crate::conn_url::{self, UrlFields};
 use crate::dialect::is_plsql_block;
@@ -20,9 +19,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const SCHEMES: [&str; 1] = ["oracle"];
-const NO_CLIENT: &str = "Oracle Instant Client isn't installed. Download the Basic package for your system from \
-oracle.com/database/technologies/instant-client, unpack it, and set ORACLE_CLIENT_LIB_DIR to that folder \
-(or put it in ~/Downloads/instantclient_*, /opt/oracle/instantclient*).";
+pub mod client;
+
+const NO_CLIENT: &str = "Oracle Instant Client isn't installed";
 
 pub struct OracleDriver;
 pub static DRIVER: OracleDriver = OracleDriver;
@@ -101,10 +100,19 @@ impl Driver for OracleDriver {
     }
 }
 
-/// Points ODPI-C at Instant Client once per process
+/// Whether a connect error means Instant Client is missing (so the app can offer the download)
+pub fn client_missing(error: &str) -> bool {
+    error.contains(NO_CLIENT)
+}
+
+/// Points ODPI-C at Instant Client: ORACLE_CLIENT_LIB_DIR, then a system install, then Quarry's
+/// own download. Only success is remembered, so connecting again after a download works.
 fn init_client() -> Result<(), DbError> {
-    static INIT: OnceLock<Result<(), String>> = OnceLock::new();
-    INIT.get_or_init(|| {
+    static READY: OnceLock<()> = OnceLock::new();
+    if READY.get().is_some() {
+        return Ok(());
+    }
+    let res = (|| -> Result<(), String> {
         let mut candidates: Vec<std::path::PathBuf> = std::env::var_os("ORACLE_CLIENT_LIB_DIR").map(Into::into).into_iter().collect();
         let globbed = |dir: std::path::PathBuf, prefix: &str| -> Vec<std::path::PathBuf> {
             let mut found: Vec<_> = std::fs::read_dir(&dir)
@@ -122,16 +130,27 @@ fn init_client() -> Result<(), DbError> {
             candidates.extend(globbed(home.join("Downloads"), "instantclient_"));
         }
         candidates.extend(globbed("/opt/oracle".into(), "instantclient"));
+        candidates.extend(client::installed());
         let mut params = oracle::InitParams::new();
-        if let Some(dir) = candidates.into_iter().find(|d| d.join("libclntsh.dylib").exists() || d.join("libclntsh.so").exists()) {
+        if let Some(dir) = candidates.into_iter().find(|d| client::has_client_lib(d)) {
             params.oracle_client_lib_dir(dir).map_err(|e| e.to_string())?;
         }
         // Nothing found: ODPI-C still tries its own search (LD_LIBRARY_PATH, ~/lib, …)
         params.init().map(|_| ()).map_err(|e| e.to_string())
-    })
-    .clone()
-    // DPI-1047: no client library where ODPI-C looked
-    .map_err(|e| DbError::ConnectionFailed(if e.contains("DPI-1047") { NO_CLIENT.into() } else { e }))
+    })();
+    match res {
+        Ok(()) => {
+            let _ = READY.set(());
+            Ok(())
+        }
+        // Linux Instant Client needs libaio, a system package we can't install
+        Err(e) if e.contains("libaio") => Err(DbError::ConnectionFailed(
+            "Oracle's client needs libaio. Install it with `sudo apt install libaio1t64` (Ubuntu 24.04+; `libaio1` on older) or `sudo dnf install libaio`, then connect again.".into(),
+        )),
+        // DPI-1047: no client library where ODPI-C looked
+        Err(e) if e.contains("DPI-1047") => Err(DbError::ConnectionFailed(NO_CLIENT.into())),
+        Err(e) => Err(DbError::ConnectionFailed(e)),
+    }
 }
 
 pub struct OracleSession {

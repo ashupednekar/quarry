@@ -80,7 +80,7 @@ Left in the app by design: the SQLite demo playground, and treating a dropped `.
 | 4 | DuckDB | `duckdb` | Large compile, so it's opt-in |
 
 **Oracle specifics.** None of these should touch the app:
-- **Instant Client:** ODPI-C loads it at connect time. If it's missing, show "install Oracle Instant Client" rather than crashing, and ship the binary without it.
+- ✓ **Instant Client:** ODPI-C loads it at connect time. If it's missing, the connect form offers a pinned, checksummed Basic Lite download (`oracle/client.rs`); the binary ships without it.
 - **Async:** the crate is blocking, so wrap calls in `spawn_blocking`.
 - **Identifiers:** schemas are users, unquoted identifiers fold to UPPERCASE (the completer has to respect this), and there's no `BOOLEAN` before 23ai.
 - **Dialect:** `FETCH FIRST n ROWS ONLY`; `EXPLAIN PLAN FOR` plus `DBMS_XPLAN`; PL/SQL blocks end with a `/` on its own line (`SplitRules`).

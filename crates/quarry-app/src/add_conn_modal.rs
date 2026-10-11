@@ -30,6 +30,7 @@ impl AddConnModal {
         on_close: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
         on_tab: impl Fn(&mut T, u8, &mut Window, &mut Context<T>) + Copy + 'static,
         on_toggle_read_only: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_download_client: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         if !state.add_conn_modal_open {
             return div().into_any_element();
@@ -123,7 +124,8 @@ impl AddConnModal {
         );
 
         // Test result sits next to the button that produced it
-        let feedback = state.add_conn_feedback.as_ref().map(|(msg, is_error)| {
+        let needs_client = state.add_conn_feedback.as_ref().is_some_and(|(msg, is_error)| *is_error && quarry_core::oracle::client_missing(msg));
+        let feedback = state.add_conn_feedback.as_ref().filter(|_| !needs_client).map(|(msg, is_error)| {
             h_flex()
                 .gap_1p5()
                 .min_w_0()
@@ -131,6 +133,25 @@ impl AddConnModal {
                 .child(Icon::new(if *is_error { IconName::CircleAlert } else { IconName::CircleCheck }).xsmall().text_color(if *is_error { t.danger } else { t.success }))
                 .child(div().text_xs().truncate().text_color(if *is_error { t.danger } else { t.text_secondary }).child(msg.clone()))
         });
+        // Oracle without its client library: a strip above the footer offers Oracle's download, never started unasked
+        let client_offer = needs_client
+            .then(quarry_core::oracle::client::package)
+            .flatten()
+            .map(|pkg| {
+                h_flex()
+                    .px_6()
+                    .py_3()
+                    .gap_3()
+                    .items_center()
+                    .border_t_1()
+                    .border_color(t.border)
+                    .child(Icon::new(IconName::CircleAlert).xsmall().text_color(t.warning))
+                    .child(div().flex_1().min_w_0().text_xs().text_color(t.text_secondary).child(format!("Oracle connections need Oracle's client library (Instant Client {}).", pkg.version)))
+                    .child(zbutton("btn-oracle-licence").pad_sm().label("Licence").ghost().small().on_click(|_, _, cx| cx.open_url(quarry_core::oracle::client::LICENCE_URL)))
+                    .child(
+                        zbutton("btn-get-oracle-client").pad_sm().label(format!("Download ({} MB)", pkg.size_mb)).small().on_click(cx.listener(move |this, _, window, cx| on_download_client(this, window, cx))),
+                    )
+            });
         let footer = modal_footer(t)
             .justify_between()
             .child(
@@ -175,6 +196,7 @@ impl AddConnModal {
                                 _ => general,
                             }),
                     )
+                    .children(client_offer)
                     .child(footer),
             )
             .into_any_element()

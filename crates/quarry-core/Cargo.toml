@@ -12,7 +12,7 @@ postgres = ["dep:tokio-postgres", "dep:futures-util"]
 sqlite = ["dep:rusqlite"]
 mysql = ["dep:mysql_async", "dep:futures-util"]
 mssql = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
-oracle = ["dep:oracle"]
+oracle = ["dep:oracle", "dep:sha2"]
 
 [dependencies]
 tokio = { workspace = true }
@@ -22,6 +22,7 @@ futures-util = { workspace = true, optional = true }
 mysql_async = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
 oracle = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
