@@ -3,6 +3,7 @@
 
 //! The command bar (U1-U3, U6): one box for tables, connections, recent queries, SQL and commands.
 
+use crate::history;
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::ui::*;
@@ -21,6 +22,7 @@ pub enum Kind {
     Connection,
     Recent,
     Command,
+    Usage,
 }
 
 impl Kind {
@@ -32,6 +34,7 @@ impl Kind {
             Kind::Recent => "Queries",
             Kind::Connection => "Connections",
             Kind::Command => "Commands",
+            Kind::Usage => "Usages",
         }
     }
 
@@ -43,6 +46,7 @@ impl Kind {
             Kind::Connection => IconName::Database,
             Kind::Recent => IconName::ScrollText,
             Kind::Command => IconName::SquareTerminal,
+            Kind::Usage => IconName::FileCode,
         }
     }
 }
@@ -60,6 +64,7 @@ pub struct CommandItem {
 /// Commands: (id, title, shortcut)
 const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:new_query", "New Query", "⌘N"),
+    ("action:compare_schema", "Compare Schema With…", ""),
     ("action:open_file", "Open File…", "⌘O"),
     ("action:maximize", "Maximize Editor (toggle)", "⇧⎋"),
     ("action:save_file", "Save Query", "⌘S"),
@@ -163,6 +168,17 @@ impl CommandBar {
             Some('/') => (raw[1..].trim(), false, true),
             _ => (raw, false, false),
         };
+        // Find Usages: only its results, narrowed by what's typed
+        if let Some(u) = &state.usages {
+            return u
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| raw.is_empty() || fuzzy_score(raw, &format!("{} {}", x.label, x.line_text)).is_some())
+                .take(50)
+                .map(|(i, x)| CommandItem { id: format!("usage:{i}"), title: x.line_text.clone(), detail: format!("{} · {}", x.label, u.name), kind: Kind::Usage, hint: "↵" })
+                .collect();
+        }
         let conn = state.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default();
         let mut scored: Vec<(i32, CommandItem)> = Vec::new();
         let mut push = |score: Option<i32>, bias: i32, item: CommandItem| {
@@ -248,13 +264,13 @@ impl CommandBar {
                     });
                 }
             }
-            // Recent queries, newest first; only once there's something typed or as the last recents
-            let mut seen: Vec<&str> = Vec::new();
+            // Recent queries, newest first. Empty query: the last few. Typed: the whole history is searched.
+            let cap = if query.is_empty() { 20 } else { history::MAX_ENTRIES };
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for (i, h) in state.history.iter().enumerate().rev().filter(|(_, h)| h.error.is_none()) {
-                if seen.contains(&h.sql.as_str()) || seen.len() >= 20 {
+                if seen.len() >= cap || !seen.insert(h.sql.as_str()) {
                     continue;
                 }
-                seen.push(&h.sql);
                 let one_line: String = h.sql.split_whitespace().collect::<Vec<_>>().join(" ");
                 let score = if query.is_empty() { (seen.len() <= 5).then_some(500 - seen.len() as i32) } else { fuzzy_score(query, &one_line) };
                 push(score, -5, CommandItem {

@@ -117,6 +117,17 @@ impl QuarryWindow {
                         this.open_export(cx);
                     }
                 }));
+                items.push(("Find Usages", |this, o, w, cx| {
+                    if let DbObject::Table { table, .. } = o {
+                        this.find_usages(table, w, cx)
+                    }
+                }));
+                items.push(("Rename…", |this, o, w, cx| {
+                    if let DbObject::Table { schema, table } = o {
+                        let sql = this.rename_table_sql(schema, table);
+                        this.open_query_tab(&sql, w, cx)
+                    }
+                }));
                 // Destructive statements open in a query tab to review and run, so the prod check still applies
                 items.push(("Truncate…", |this, o, w, cx| {
                     if let DbObject::Table { schema, table } = o {

@@ -18,6 +18,8 @@ pub enum TableView {
     Data,
     Structure,
     Ddl,
+    /// The table and its foreign-key neighbours (catalog only, nothing to load)
+    Diagram,
 }
 
 /// Loaded the first time Structure or DDL is opened
@@ -35,7 +37,7 @@ impl QuarryWindow {
         let Some(Tab::Table { view: v, detail, schema_name, table_name, grid, .. }) = self.state.tabs.get_mut(ix) else { return };
         *v = view;
         cx.notify();
-        if view == TableView::Data || detail.is_some() {
+        if matches!(view, TableView::Data | TableView::Diagram) || detail.is_some() {
             return;
         }
         let Some(session) = grid.read(cx).delegate().source.as_ref().map(|s| s.session.clone()) else { return };
@@ -59,7 +61,7 @@ impl QuarryWindow {
     pub fn render_table_view_switch(&self, current: TableView, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.theme;
         use gpui::assets::IconName;
-        let views = [(TableView::Data, "Data", IconName::Table), (TableView::Structure, "Structure", IconName::TableProperties), (TableView::Ddl, "DDL", IconName::FileCode)];
+        let views = [(TableView::Data, "Data", IconName::Table), (TableView::Structure, "Structure", IconName::TableProperties), (TableView::Ddl, "DDL", IconName::FileCode), (TableView::Diagram, "Diagram", IconName::Network)];
         h_flex().gap_0p5().children(views.map(|(view, label, icon)| {
             let on = view == current;
             h_flex()
@@ -82,6 +84,9 @@ impl QuarryWindow {
     pub fn render_table_detail(&self, tab: &Tab, cx: &mut Context<Self>) -> AnyElement {
         let Tab::Table { view, detail, schema_name, table_name, .. } = tab else { return div().into_any_element() };
         let t = &self.theme;
+        if *view == TableView::Diagram {
+            return self.render_diagram(schema_name, table_name, cx);
+        }
         let detail = match detail {
             None => return div().p_4().text_xs().text_color(t.text_muted).child("Loading…").into_any_element(),
             Some(Err(e)) => return div().p_4().text_xs().text_color(t.danger).child(e.clone()).into_any_element(),

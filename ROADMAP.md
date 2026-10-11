@@ -72,11 +72,11 @@ Left in the app by design: the SQLite demo playground, and treating a dropped `.
 
 ## 2. Databases
 
-| Order | Database | Crate | Notes |
+| Order | Database | Crate | Status |
 |---|---|---|---|
-| 1 | MySQL / MariaDB | `mysql_async` | Backticks, `#` comments, `LIMIT`; tests the abstraction |
-| 2 | SQL Server | `tiberius` | `TOP` / `OFFSET FETCH`, `GO` batches |
-| 3 | **Oracle** | `oracle` (ODPI-C) | See below |
+| 1 | MySQL / MariaDB | `mysql_async` | ✓ passes conformance (MySQL 8.4) |
+| 2 | SQL Server | `tiberius` | ✓ passes conformance (SQL Server 2022) |
+| 3 | **Oracle** | `oracle` (ODPI-C) | ✓ passes conformance (Oracle 23 Free) |
 | 4 | DuckDB | `duckdb` | Large compile, so it's opt-in |
 
 **Oracle specifics.** None of these should touch the app:
@@ -88,18 +88,11 @@ Left in the app by design: the SQLite demo playground, and treating a dropped `.
 
 ## 3. Features
 
-Already shipped (DataGrip parity): raw WHERE bar on table tabs, following FKs from cells, JSON/long-text cell editor, query history (bottom panel and palette).
+Done: visual EXPLAIN (Postgres JSON plans and SQLite query plans as a tree), functions/sequences/triggers/types in the sidebar (loaded per schema), history search across everything in the palette, Find Usages / Rename for tables, schema diff between connections, and a Diagram view (a table with its FK neighbours).
 
-| # | Feature | Plugs into | Kept small by |
-|---|---|---|---|
-| 1 | **Visual EXPLAIN** | `PlanParser` → plan tree in the results area | Tree with cost/time bars only; no graph canvas |
-| 2 | **More objects in sidebar**: functions, sequences, triggers, enums | `SchemaCatalog` + `ObjectDetail` | Loaded lazily when a schema is expanded |
-| 3 | **Searchable history** | `history.rs` + palette | Fuzzy search over the existing jsonl; filter by connection |
-| 4 | **Find usages / rename** a table or column in open queries | `quarry_sql::table_refs` | Open tabs and the queries folder only |
-| 5 | **Schema diff** between two connections | `SchemaCatalog` compare | Read-only; outputs an ALTER script into a new tab |
-| 6 | **Mini ER view** | FKs already in `TableSchema` | One table plus its direct neighbours |
+Earlier: WHERE bar on table tabs, following FKs from cells, JSON/long-text cell editor, query history.
 
 ## 4. Staying light
-- **Cap query-tab results.** Fetch the first N rows and page the rest, as table tabs already do. Today the whole `QueryResult` is held in memory.
-- **Introspect lazily per schema** on large databases. Today the whole database is loaded on connect.
+- ✓ **Query results are capped** at `MAX_ROWS` (100k), with the full count shown and "All rows" in Export.
+- **Introspect lazily per schema** on large databases. Today the whole database is loaded on connect. Needs completion, squiggles and go-to-definition to handle schemas that aren't loaded yet, or every table in one is flagged unknown.
 - **Keep heavy drivers opt-in** behind cargo features.

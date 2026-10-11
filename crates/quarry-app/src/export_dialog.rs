@@ -77,7 +77,8 @@ impl QuarryWindow {
             return;
         };
         self.export.columns = result.columns.iter().map(|c| (c.clone(), true)).collect();
-        self.export.whole_table = rs.source.as_ref().is_some_and(|s| s.has_more);
+        // More rows exist than are loaded: a table page, or a result cut at MAX_ROWS
+        self.export.whole_table = rs.source.as_ref().is_some_and(|s| s.has_more) || result.truncated();
         self.export.open = true;
         cx.notify();
     }
@@ -97,8 +98,12 @@ impl QuarryWindow {
             (Tab::Table { table_name, .. }, Some(src)) => (src.qualified_name(), table_name.clone()),
             _ => ("query_result".to_string(), "query_result".to_string()),
         };
-        let source = match rs.source.as_ref() {
-            Some(src) if e.whole_table => Source::Query(src.session.clone(), src.select_sql()),
+        let source = match (rs.source.as_ref(), self.state.session.clone()) {
+            (Some(src), _) if e.whole_table => Source::Query(src.session.clone(), src.select_sql()),
+            // A cut-off query result: run the statement again, a page at a time
+            (None, Some(session)) if e.whole_table && result.truncated() => {
+                Source::Query(session, format!("SELECT * FROM (\n{}\n) quarry_all", result.statement.trim().trim_end_matches(';')))
+            }
             _ => Source::Rows(result.rows.clone()),
         };
         let columns = result.columns.clone();
@@ -195,6 +200,7 @@ impl QuarryWindow {
         let t = self.theme.clone();
         let e = &self.export;
         let is_table = matches!(self.state.active_tab(), Some(Tab::Table { .. }));
+        let truncated = self.state.active_tab().and_then(|tab| tab.grid().read(cx).delegate().result().map(|r| r.truncated())).unwrap_or(false);
         let loaded = self.state.active_tab().and_then(|tab| tab.grid().read(cx).delegate().result().map(|r| r.rows.len())).unwrap_or(0);
         let running = e.running.as_ref().map(|j| j.progress.load(Ordering::Relaxed));
 
@@ -239,14 +245,14 @@ impl QuarryWindow {
                         this.export.whole_table = false;
                         cx.notify();
                     })))
-                    .when(is_table, |this| {
-                        this.child(choice("rows-all", "Entire table", e.whole_table).on_click(cx.listener(|this, _, _, cx| {
+                    .when(is_table || truncated, |this| {
+                        this.child(choice("rows-all", if is_table { "Entire table" } else { "All rows" }, e.whole_table).on_click(cx.listener(|this, _, _, cx| {
                             this.export.whole_table = true;
                             cx.notify();
                         })))
                     })
                     .child(div().text_xs().text_color(t.text_muted).child(if e.whole_table {
-                        "re-runs the table query".to_string()
+                        if is_table { "re-runs the table query".to_string() } else { "re-runs the query".to_string() }
                     } else {
                         format!("{loaded} rows")
                     })),
@@ -338,7 +344,7 @@ async fn write_export(
                 return Ok(None);
             }
             let want = CHUNK.min(cap - ex.written());
-            let page = session.execute(&format!("{sql} LIMIT {want} OFFSET {}", ex.written())).await.map_err(|e| e.to_string())?;
+            let page = session.execute(&session.dialect().limit(&sql, want as u64, ex.written() as u64)).await.map_err(|e| e.to_string())?;
             ex.rows(&page.rows).map_err(|e| e.to_string())?;
             progress.store(ex.written(), Ordering::Relaxed);
             if page.rows.len() < want || ex.written() >= cap {

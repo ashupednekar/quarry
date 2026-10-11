@@ -114,6 +114,8 @@ pub enum Tab {
         row_limit: Option<u32>,
         is_running: bool,
         error_message: Option<String>,
+        /// The last run was an EXPLAIN the dialect could read: shown as a tree instead of the grid
+        plan: Option<std::rc::Rc<quarry_core::plan::Plan>>,
     },
     Table {
         id: String,
@@ -181,6 +183,10 @@ pub struct AppState {
     /// Bumped on every catalog change; editors are re-linted when it moves past `linted_gen`
     pub catalog_gen: u64,
     pub linted_gen: u64,
+    /// Functions, sequences, triggers, types per expanded schema; `None` while loading. Reset with the catalog.
+    pub schema_objects: HashMap<String, Option<Vec<quarry_core::schema::SchemaObject>>>,
+    /// Open object groups in the sidebar, as "schema/Functions"
+    pub expanded_object_groups: HashSet<String>,
     pub expanded_schemas: HashSet<String>,
     /// Connections folded shut in the sidebar (clicking an open connection folds it)
     pub collapsed_connections: std::collections::HashSet<String>,
@@ -202,6 +208,10 @@ pub struct AppState {
 
     // Modals
     pub command_bar_open: bool,
+    /// Find Usages results; the palette lists these instead of its usual items while set
+    pub usages: Option<crate::usages::Usages>,
+    /// Connection picked in "Compare Schema With…"; handled on the next render, which has a window
+    pub pending_compare: Option<String>,
     pub command_bar_selected_index: usize,
 
     pub review_modal_open: bool,
@@ -249,6 +259,8 @@ impl AppState {
             completion_dialect: std::rc::Rc::new(std::cell::Cell::new(&quarry_core::dialect::Ansi)),
             catalog_gen: 0,
             linted_gen: 0,
+            schema_objects: HashMap::new(),
+            expanded_object_groups: HashSet::new(),
             expanded_schemas: HashSet::new(),
             collapsed_connections: Default::default(),
             sidebar_visible: true,
@@ -264,6 +276,8 @@ impl AppState {
             messages: Vec::new(),
 
             command_bar_open: false,
+            usages: None,
+            pending_compare: None,
             command_bar_selected_index: 0,
 
             review_modal_open: false,
@@ -441,13 +455,14 @@ impl AppState {
     /// `SELECT * FROM <table>` limited to `rows`, in the active connection's dialect
     pub fn select_rows_sql(&self, schema: &str, table: &str, rows: u64) -> String {
         let d = self.dialect();
-        format!("SELECT * FROM {} {}", d.qualified(schema, table), d.limit_clause(rows, 0))
+        d.limit(&format!("SELECT * FROM {}", d.qualified(schema, table)), rows, 0)
     }
 
     pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
         *self.completion_catalog.borrow_mut() = catalog.clone();
         self.catalog = catalog;
         self.catalog_gen += 1;
+        self.schema_objects.clear();
     }
 
     pub fn note_recent_table(&mut self, schema: &str, table: &str) {

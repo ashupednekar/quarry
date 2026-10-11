@@ -27,6 +27,8 @@ impl Sidebar {
         on_unpin: impl Fn(&mut T, crate::pins::Pin, &mut Window, &mut Context<T>) + Copy + 'static,
         on_menu: impl Fn(&mut T, DbObject, &mut Window, &mut Context<T>) + Copy + 'static,
         on_query_click: impl Fn(&mut T, std::path::PathBuf, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_toggle_group: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
+        on_object_click: impl Fn(&mut T, String, quarry_core::schema::SchemaObject, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         if !state.sidebar_visible {
             return div().into_any_element();
@@ -177,6 +179,43 @@ impl Sidebar {
                             .child(muted(tbl.columns.len().to_string())),
                     );
                 }
+
+                // Functions, sequences, triggers, types: one collapsed group per kind, loaded on expand
+                let objects = state.schema_objects.get(schema);
+                if matches!(objects, Some(None)) {
+                    tree = tree.child(row(("objects-loading", schema_ix).into(), 2.0).child(muted("Loading…".into())));
+                }
+                let objects = objects.and_then(|o| o.as_deref()).unwrap_or_default();
+                for (kind_ix, kind) in quarry_core::schema::ObjectKind::ALL.into_iter().enumerate() {
+                    let of_kind: Vec<_> = objects.iter().filter(|o| o.kind == kind).collect();
+                    if of_kind.is_empty() {
+                        continue;
+                    }
+                    let key = format!("{schema}/{}", kind.plural());
+                    let open = state.expanded_object_groups.contains(&key);
+                    let group_id = schema_ix * 10 + kind_ix;
+                    tree = tree.child(
+                        row(("object-group", group_id).into(), 2.0)
+                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_group(this, key.clone(), window, cx)))
+                            .child(icon(if open { IconName::ChevronDown } else { IconName::ChevronRight }, theme.text_muted))
+                            .child(icon(object_icon(kind), theme.text_muted))
+                            .child(label(kind.plural().to_string(), theme.text_secondary))
+                            .child(muted(of_kind.len().to_string())),
+                    );
+                    if !open {
+                        continue;
+                    }
+                    for (obj_ix, obj) in of_kind.into_iter().enumerate() {
+                        let (s_name, o) = (schema.clone(), obj.clone());
+                        tree = tree.child(
+                            row(("object", group_id * 100_000 + obj_ix).into(), 3.0)
+                                .on_click(cx.listener(move |this, _, window, cx| on_object_click(this, s_name.clone(), o.clone(), window, cx)))
+                                .child(icon(object_icon(kind), theme.text_muted))
+                                .child(div().flex_none().max_w(px(140.0)).text_xs().text_color(theme.text_secondary).truncate().child(obj.name.clone()))
+                                .child(div().flex_1().min_w_0().text_xs().text_color(theme.text_muted).truncate().child(obj.detail.clone())),
+                        );
+                    }
+                }
             }
         }
 
@@ -277,5 +316,16 @@ impl Sidebar {
                     ),
             ))
             .into_any_element()
+    }
+}
+
+fn object_icon(kind: quarry_core::schema::ObjectKind) -> IconName {
+    use quarry_core::schema::ObjectKind::*;
+    match kind {
+        Function => IconName::SquareFunction,
+        Procedure => IconName::Workflow,
+        Sequence => IconName::ListOrdered,
+        Trigger => IconName::Zap,
+        Type => IconName::Tag,
     }
 }

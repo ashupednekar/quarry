@@ -2,6 +2,9 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 mod add_conn_modal;
+mod er_view;
+mod plan_view;
+mod usages;
 mod bottom_panel;
 mod command_bar;
 mod completion;
@@ -498,9 +501,9 @@ impl QuarryWindow {
                 .child(gpui::component::input::Editor::new(editor).h_full().bordered(false))
                 .into_any_element(),
             // Editor over results, with a draggable divider. Until the first run the editor gets the whole tab.
-            Tab::Query { editor, is_running, error_message, grid: results, schema, row_limit, .. } => {
+            Tab::Query { editor, is_running, error_message, grid: results, schema, row_limit, plan, .. } => {
                 let conn = self.state.active_connection.as_ref().map(|c| (c.name.as_str(), c.env));
-                let switches_schema = self.state.dialect().set_schema(None).is_some();
+                let switches_schema = self.state.dialect().switches_schema();
                 let schema_label = switches_schema.then(|| schema.clone().unwrap_or_else(|| "default schema".into()));
                 let editor = QueryEditor::render(
                     editor,
@@ -509,6 +512,7 @@ impl QuarryWindow {
                     conn,
                     schema_label,
                     *row_limit,
+                    self.state.dialect().split_rules(),
                     &self.theme,
                     cx,
                     |this, window, cx| this.refresh_active_tab(window, cx),
@@ -522,6 +526,7 @@ impl QuarryWindow {
                         let ms = r.execution_time.as_millis();
                         match (r.columns.is_empty(), r.rows.len()) {
                             (true, _) => format!("{} rows affected · {ms} ms", r.rows_affected),
+                            (false, n) if r.truncated() => format!("first {n} of {} rows · add a LIMIT, or Export for all · {ms} ms", r.rows_affected),
                             (false, 1) => format!("1 row · {ms} ms"),
                             (false, n) => format!("{n} rows · {ms} ms"),
                         }
@@ -542,7 +547,10 @@ impl QuarryWindow {
                     .map(|h| match (error_message, *is_running) {
                         (_, true) => h.child(div().text_xs().text_color(t.text_muted).child("Running…")),
                         (Some(err), _) => h.child(div().flex_1().min_w_0().text_xs().text_color(t.danger).truncate().child(err.clone())),
-                        (None, _) => h.child(div().text_xs().text_color(t.text_muted).child(summary.clone().unwrap_or_default())),
+                        (None, _) => {
+                            let text = plan.as_ref().map(|p| plan_view::summary(p)).or_else(|| summary.clone()).unwrap_or_default();
+                            h.child(div().text_xs().text_color(t.text_muted).child(text))
+                        }
                     })
                     .child(div().flex_1())
                     .child(
@@ -569,7 +577,11 @@ impl QuarryWindow {
                             .tooltip("Export (⇧⌘E)")
                             .on_click(cx.listener(|this, _, _, cx| this.open_export(cx))),
                     );
-                let results = v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(grid));
+                let body = match plan.as_ref().filter(|_| error_message.is_none() && !*is_running) {
+                    Some(p) => plan_view::render(p, &t),
+                    None => grid.into_any_element(),
+                };
+                let results = v_flex().size_full().child(header).child(div().flex_1().min_h_0().child(body));
                 if self.results_expanded {
                     return results.into_any_element();
                 }
@@ -1008,6 +1020,7 @@ impl QuarryWindow {
             row_limit: None,
             is_running: false,
             error_message: None,
+            plan: None,
         });
         self.state.active_tab_index = self.state.tabs.len() - 1;
         self.schedule_session_save(cx);
@@ -1091,7 +1104,7 @@ impl QuarryWindow {
             let e = editor.read(cx);
             let sql = e.value();
             let span = if this.settings.highlight_current_statement {
-                quarry_sql::find_statement_at_offset(&sql, e.cursor().min(sql.len())).map_or(0..0, |s| s.start..s.end)
+                quarry_sql::find_statement_at_offset_with(&sql, e.cursor().min(sql.len()), this.state.dialect().split_rules()).map_or(0..0, |s| s.start..s.end)
             } else {
                 0..0
             };
@@ -1203,12 +1216,13 @@ impl QuarryWindow {
         let ed = editor.read(cx);
         let text = ed.value();
         let sel = ed.selected_range();
+        let rules = self.state.dialect().split_rules();
         let mut statements: Vec<String> = if !sel.is_empty() {
-            quarry_sql::split_statements(&text[sel]).into_iter().map(|s| s.sql).collect()
+            quarry_sql::split_statements_with(&text[sel], rules).into_iter().map(|s| s.sql).collect()
         } else if mode == RunMode::All {
-            quarry_sql::split_statements(&text).into_iter().map(|s| s.sql).collect()
+            quarry_sql::split_statements_with(&text, rules).into_iter().map(|s| s.sql).collect()
         } else {
-            quarry_sql::find_statement_at_offset(&text, ed.cursor()).into_iter().map(|s| s.sql).collect()
+            quarry_sql::find_statement_at_offset_with(&text, ed.cursor(), rules).into_iter().map(|s| s.sql).collect()
         };
         if statements.is_empty() {
             return;
@@ -1302,13 +1316,16 @@ impl QuarryWindow {
             });
 
             let row_sets: Vec<_> = done.into_iter().filter(|r| !r.columns.is_empty()).collect();
+            let explained = statements.iter().any(|s| s.trim_start().to_ascii_uppercase().starts_with("EXPLAIN"));
+            let new_plan = explained.then(|| row_sets.iter().find_map(|r| dialect.plan(r))).flatten().map(std::rc::Rc::new);
             grid.update(cx, |t, cx| {
                 t.delegate_mut().set_results(row_sets);
                 t.refresh(cx);
                 cx.notify();
             });
-            if let Some(Tab::Query { is_running, error_message, editor, .. }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id) {
+            if let Some(Tab::Query { is_running, error_message, editor, plan, .. }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id) {
                 *is_running = false;
+                *plan = new_plan;
                 if let (Some(msg), Some(ix)) = (&failure_msg, failed_ix) {
                     let at = quarry_core::session::error_position(msg);
                     completion::mark_run_error(editor, &statements[ix], at, msg, cx);
@@ -1326,12 +1343,97 @@ impl QuarryWindow {
         });
     }
 
+    /// Other connected databases to compare the active one with
+    fn open_compare_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.state.active_connection.as_ref().map(|c| c.id.clone());
+        let choices: Vec<(String, bool, String)> = self
+            .state
+            .saved_connections
+            .iter()
+            .filter(|c| Some(&c.id) != active.as_ref() && self.state.open_sessions.contains_key(&c.id))
+            .map(|c| (c.name.clone(), false, c.id.clone()))
+            .collect();
+        if active.is_none() || choices.is_empty() {
+            return self.toast("Connect to both databases first: the one to compare and the one to change", true, cx);
+        }
+        self.open_choice_menu(choices, |this, id, cx| {
+            this.state.pending_compare = Some(id);
+            cx.notify();
+        }, window, cx);
+    }
+
+    /// The script that makes `target_id` match the active connection's schema, in a tab on the target
+    fn compare_schema(&mut self, target_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((target_session, target_catalog)) = self.state.open_sessions.get(target_id).cloned() else { return };
+        let source = self.state.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+        let target = self.state.saved_connections.iter().find(|c| c.id == target_id).map(|c| c.name.clone()).unwrap_or_default();
+        let Some(script) = quarry_core::diff::diff(&self.state.catalog, &target_catalog, target_session.dialect()) else {
+            return self.toast(format!("{source} and {target} have the same tables and columns"), false, cx);
+        };
+        let header = format!("-- Makes {target} match {source} (tables and columns; views, indexes and constraints aren't compared).\n-- Review before running: this tab runs on {target}.\n\n");
+        self.open_query_tab(&(header + &script), window, cx);
+        // The tab runs on the target; switching to it switches the connection
+        if let Some(Tab::Query { connection_id, .. }) = self.state.tabs.last_mut() {
+            *connection_id = Some(target_id.to_string());
+        }
+    }
+
+    /// Fetches the extra objects of every expanded schema that doesn't have them yet
+    fn load_schema_objects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.state.session.clone() else { return };
+        let missing: Vec<String> = self
+            .state
+            .catalog
+            .schemas
+            .iter()
+            .filter(|s| self.state.expanded_schemas.contains(*s) && !self.state.schema_objects.contains_key(*s))
+            .cloned()
+            .collect();
+        for schema in missing {
+            self.state.schema_objects.insert(schema.clone(), None);
+            let (session, gen) = (session.clone(), self.state.catalog_gen);
+            let name = schema.clone();
+            run_db(window, cx, async move { session.objects(&name).await }, move |this, res, _, cx| {
+                // A reconnect or refresh since: these belong to the old catalog
+                if this.state.catalog_gen != gen {
+                    return;
+                }
+                let objects = res.unwrap_or_else(|e| {
+                    this.state.messages.push(format!("Couldn't list objects in {schema}: {e}"));
+                    Vec::new()
+                });
+                this.state.schema_objects.insert(schema, Some(objects));
+                cx.notify();
+            });
+        }
+    }
+
+    /// Opens a function, trigger, sequence or type's definition in a new query tab
+    fn open_object_definition(&mut self, schema: String, obj: quarry_core::schema::SchemaObject, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(session) = self.state.session.clone() else { return };
+        run_db(window, cx, async move { session.object_ddl(&schema, &obj).await }, |this, res, window, cx| match res {
+            Ok(ddl) => this.open_query_tab(&ddl, window, cx),
+            Err(e) => this.toast(format!("Couldn't load the definition: {e}"), true, cx),
+        });
+    }
+
     /// Re-reads the schema tree of the active connection
     fn refresh_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.state.session.clone() else { return };
-        run_db(window, cx, async move { session.introspect().await }, |this, res, _, _| match res {
-            Ok(catalog) => this.state.set_catalog(catalog),
-            Err(e) => this.state.messages.push(format!("Schema refresh failed: {}", e)),
+        let Some(id) = self.state.active_connection.as_ref().map(|c| c.id.clone()) else { return };
+        run_db(window, cx, async move { session.introspect().await }, move |this, res, _, cx| match res {
+            Ok(catalog) => {
+                // Kept for when this connection is switched back to
+                if let Some(open) = this.state.open_sessions.get_mut(&id) {
+                    open.1 = catalog.clone();
+                }
+                // Switched away mid-refresh: don't put this schema under another connection
+                if this.state.active_connection.as_ref().is_some_and(|c| c.id == id) {
+                    this.state.set_catalog(catalog);
+                    this.toast("Schema refreshed".to_string(), false, cx);
+                }
+            }
+            Err(e) => this.toast(format!("Schema refresh failed: {e}"), true, cx),
         });
     }
 
@@ -1350,6 +1452,7 @@ impl QuarryWindow {
 
     fn toggle_command_bar(&mut self, _: &ToggleCommandBar, window: &mut Window, cx: &mut Context<Self>) {
         self.state.command_bar_open = !self.state.command_bar_open;
+        self.state.usages = None; // ⌘K is the normal palette, not the last Find Usages
         if self.state.command_bar_open {
             self.state.command_bar_selected_index = 0;
             self.command_input.update(cx, |input, cx| {
@@ -1564,6 +1667,7 @@ impl QuarryWindow {
     /// ⌘⇧P (P1): the command bar in command mode
     fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.state.command_bar_open = true;
+        self.state.usages = None;
         self.state.command_bar_selected_index = 0;
         self.command_input.update(cx, |input, cx| {
             input.set_value(">", window, cx);
@@ -1658,6 +1762,10 @@ impl QuarryWindow {
     pub fn handle_command_action(&mut self, action_id: String, window: &mut Window, cx: &mut Context<Self>) {
         self.state.command_bar_open = false;
         self.refocus_root(window, cx);
+        if let Some(ix) = action_id.strip_prefix("usage:").and_then(|i| i.parse::<usize>().ok()) {
+            return self.open_usage(ix, window, cx);
+        }
+        self.state.usages = None;
 
         if let Some((schema, table)) = action_id.strip_prefix("table:").and_then(|t| t.split_once('\u{1f}')) {
             self.open_table_tab(table, schema, window, cx);
@@ -1688,6 +1796,8 @@ impl QuarryWindow {
             self.new_query(&NewQuery, window, cx);
         } else if action_id == "action:review" {
             self.review_changes(&ReviewChanges, window, cx);
+        } else if action_id == "action:compare_schema" {
+            self.open_compare_menu(window, cx);
         } else if action_id == "action:add_conn" {
             self.open_add_conn(window, cx);
         } else if action_id == "action:toggle_sidebar" {
@@ -2167,6 +2277,10 @@ impl Render for QuarryWindow {
             self.apply_settings_to_views(window, cx);
         }
         // The schema changed (connect, switch, refresh): squiggles must reflect the new one
+        self.load_schema_objects(window, cx);
+        if let Some(id) = self.state.pending_compare.take() {
+            self.compare_schema(&id, window, cx);
+        }
         if self.state.linted_gen != self.state.catalog_gen {
             self.state.linted_gen = self.state.catalog_gen;
             let editors: Vec<_> = self.state.tabs.iter().filter_map(|t| match t {
@@ -2382,6 +2496,13 @@ impl Render for QuarryWindow {
                 this.open_object_menu(obj, window, cx)
             },
             |this, path, window, cx| this.open_query_file(path, window, cx),
+            |this, key, _, cx| {
+                if !this.state.expanded_object_groups.remove(&key) {
+                    this.state.expanded_object_groups.insert(key);
+                }
+                cx.notify();
+            },
+            |this, schema, obj, window, cx| this.open_object_definition(schema, obj, window, cx),
         );
 
         div()

@@ -22,9 +22,11 @@ impl QueryEditor {
         is_running: bool,
         soft_wrap: bool,
         connection: Option<(&str, Environment)>,
-        // `Some` on Postgres: the tab's schema label ("default" when unset)
+        // `Some` when the dialect can switch schemas: the tab's schema label ("default" when unset)
         schema: Option<String>,
         row_limit: Option<u32>,
+        // How the connection's dialect splits statements, for the ▶ buttons
+        rules: quarry_sql::SplitRules,
         theme: &Theme,
         cx: &Context<T>,
         on_run: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -114,7 +116,7 @@ impl QueryEditor {
             )
             // The left padding is the ▶ column, so the button never sits on the line numbers
             .child(div().flex_1().min_h_0().pl(px(RUN_COL_W)).bg(theme.bg_app).child(Editor::new(editor).h_full().bordered(false)))
-            .children(run_gutter_buttons(editor, is_running, soft_wrap, theme, cx, on_run))
+            .children(run_gutter_buttons(editor, is_running, soft_wrap, rules, theme, cx, on_run))
     }
 }
 
@@ -134,6 +136,7 @@ fn run_gutter_buttons<T: 'static>(
     editor: &Entity<EditorState>,
     is_running: bool,
     soft_wrap: bool,
+    rules: quarry_sql::SplitRules,
     theme: &Theme,
     cx: &Context<T>,
     on_run: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
@@ -143,7 +146,7 @@ fn run_gutter_buttons<T: 'static>(
     let scroll_y = e.scroll_offset().y;
     let sql = e.value();
     let area = e.input_bounds();
-    let starts: Vec<usize> = quarry_sql::split_statements(&sql).into_iter().map(|s| s.start).collect();
+    let starts: Vec<usize> = quarry_sql::split_statements_with(&sql, rules).into_iter().map(|s| s.start).collect();
     let lines: Vec<usize> = sql.split('\n').map(|l| l.chars().count()).collect();
     let wrap_cols = (area.size.width / (line_height * 0.45)).floor() as usize;
     let fits = |line: usize| !soft_wrap || lines[..line.min(lines.len())].iter().all(|n| *n < wrap_cols);

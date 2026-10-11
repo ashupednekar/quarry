@@ -121,7 +121,7 @@ impl TableSource {
 
     fn page_sql(&self, offset: usize, limit: usize) -> String {
         // One extra row tells us whether another page exists
-        format!("{} {}", self.select_sql(), self.dialect().limit_clause(limit as u64 + 1, offset as u64))
+        self.dialect().limit(&self.select_sql(), limit as u64 + 1, offset as u64)
     }
 }
 
