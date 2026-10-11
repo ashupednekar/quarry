@@ -18,7 +18,7 @@ pub fn rewrites(stmt: &str, catalog: &SchemaCatalog, d: &dyn Dialect) -> Vec<(&'
         out.push(("Expand * into column names", format!("{expanded}{semi}")));
     }
     if is_select && !has_limit(&lower) {
-        out.push(("Limit to 100 rows", format!("{body}\n{}{semi}", d.limit_clause(100, 0))));
+        out.push(("Limit to 100 rows", format!("{}{semi}", d.limit(&format!("{body}\n"), 100, 0))));
     }
     if is_read(body) && !lower.starts_with("explain") {
         if let Some(explain) = d.explain(body, false) {
@@ -39,7 +39,7 @@ pub fn with_limit(stmt: &str, n: u32, d: &dyn Dialect) -> String {
     if !is_select || has_limit(&lower) || is_mutation(body) {
         return stmt.to_string();
     }
-    format!("{body}\n{}", d.limit_clause(n.into(), 0))
+    d.limit(&format!("{body}\n"), n.into(), 0)
 }
 
 /// The statement already bounds its rows (LIMIT, FETCH FIRST, TOP)

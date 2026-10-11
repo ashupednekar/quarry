@@ -88,6 +88,37 @@ fn tokens(sql: &str) -> Vec<(&str, std::ops::Range<usize>)> {
     out
 }
 
+/// Where `name` appears as an identifier (a table, column or alias), as byte ranges. Matches each
+/// part of a dotted name on its own, so `public.users` and `u.users_id` are checked part by part.
+/// Unquoted names match case-insensitively; strings and comments are skipped.
+pub fn find_usages(sql: &str, name: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    for (tok, range) in tokens(sql) {
+        let mut at = range.start;
+        for part in tok.split('.') {
+            let hit = match part.strip_prefix('"').and_then(|p| p.strip_suffix('"')) {
+                Some(quoted) => quoted == name,
+                None => part.eq_ignore_ascii_case(name),
+            };
+            if hit {
+                out.push(at..at + part.len());
+            }
+            at += part.len() + 1;
+        }
+    }
+    out
+}
+
+/// `sql` with every usage of `old` renamed to `new` (quoted usages stay quoted)
+pub fn rename_identifier(sql: &str, old: &str, new: &str) -> String {
+    let mut out = sql.to_string();
+    for r in find_usages(sql, old).into_iter().rev() {
+        let quoted = sql[r.clone()].starts_with('"');
+        out.replace_range(r, &if quoted { format!("\"{new}\"") } else { new.to_string() });
+    }
+    out
+}
+
 fn is_kw(tok: &str, kw: &str) -> bool {
     tok.eq_ignore_ascii_case(kw)
 }
@@ -551,5 +582,23 @@ mod tests {
     fn suggests_joins_from_foreign_keys() {
         assert_eq!(labels("select * from customers c join |")[0], "orders ON orders.customer_id = c.id");
         assert_eq!(labels("select * from orders o join cu|")[0], "customers ON customers.id = o.customer_id");
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::{find_usages, rename_identifier};
+
+    #[test]
+    fn finds_identifiers_not_strings_or_comments() {
+        let sql = "select u.id from public.users u -- users\nwhere u.name = 'users' and \"Users\".x = 1 and users_id = 2";
+        let hits: Vec<&str> = find_usages(sql, "users").iter().map(|r| &sql[r.clone()]).collect();
+        assert_eq!(hits, vec!["users"], "quoted \"Users\" is case-sensitive; users_id is another name");
+        assert_eq!(find_usages(sql, "Users").len(), 2, "unquoted matches any case, quoted matches exactly");
+    }
+
+    #[test]
+    fn renames_keeping_quotes() {
+        assert_eq!(rename_identifier("select * from \"orders\" o join orders x", "orders", "purchases"), "select * from \"purchases\" o join purchases x");
     }
 }
