@@ -4,6 +4,7 @@
 use crate::state::{AppState, ConnectionProfile, Environment};
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::{CommitTx, QuarryWindow, RollbackTx, ToggleBottomPanel, ToggleSidebar, ToggleTxMode};
 use gpui::*;
 use quarry_core::DatabaseSession;
 use std::sync::Arc;
@@ -11,17 +12,12 @@ use std::sync::Arc;
 pub struct StatusBar;
 
 impl StatusBar {
-    pub fn render<T: 'static>(
+    pub fn render(
         state: &AppState,
         session: Option<&Arc<dyn DatabaseSession>>,
         connection: Option<&ConnectionProfile>,
         theme: &Theme,
-        cx: &Context<T>,
-        on_toggle_bottom: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_sidebar: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_tx: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_commit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_rollback: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+        cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
         let (manual, in_tx) =
             session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
@@ -62,7 +58,7 @@ impl StatusBar {
             .unwrap_or_else(|| "Not connected".to_string());
         // Where it points, so two connections with similar names can't be confused
         let address = connection
-            .map(|c| crate::connections::display_address(c))
+            .map(crate::connections::display_address)
             .filter(|a| *a != conn_name);
         let env_tag = connection.map(|c| c.env).unwrap_or(Environment::Local);
         // Flow C: "PROD · READ-ONLY" is impossible to miss
@@ -104,7 +100,9 @@ impl StatusBar {
                                 theme.text_muted,
                             )
                             .on_click(cx.listener(
-                                move |this, _, window, cx| on_toggle_tx(this, window, cx),
+                                move |this, _, window, cx| {
+                                    this.toggle_tx_mode(&ToggleTxMode, window, cx)
+                                },
                             )),
                         )
                     })
@@ -116,12 +114,16 @@ impl StatusBar {
                                 .text_color(theme.warning)
                                 .child("● Transaction open"),
                         )
-                        .child(link("tx-commit", "Commit", theme.success).on_click(
-                            cx.listener(move |this, _, window, cx| on_commit(this, window, cx)),
-                        ))
+                        .child(
+                            link("tx-commit", "Commit", theme.success).on_click(cx.listener(
+                                move |this, _, window, cx| this.commit_tx(&CommitTx, window, cx),
+                            )),
+                        )
                         .child(
                             link("tx-rollback", "Rollback", theme.danger).on_click(cx.listener(
-                                move |this, _, window, cx| on_rollback(this, window, cx),
+                                move |this, _, window, cx| {
+                                    this.rollback_tx(&RollbackTx, window, cx)
+                                },
                             )),
                         )
                     })
@@ -178,7 +180,9 @@ impl StatusBar {
                             },
                         )
                         .on_click(cx.listener(
-                            move |this, _, window, cx| on_toggle_sidebar(this, window, cx),
+                            move |this, _, window, cx| {
+                                this.toggle_sidebar(&ToggleSidebar, window, cx)
+                            },
                         )),
                     )
                     .child(
@@ -192,7 +196,9 @@ impl StatusBar {
                             },
                         )
                         .on_click(cx.listener(
-                            move |this, _, window, cx| on_toggle_bottom(this, window, cx),
+                            move |this, _, window, cx| {
+                                this.toggle_bottom_panel(&ToggleBottomPanel, window, cx)
+                            },
                         )),
                     ),
             )

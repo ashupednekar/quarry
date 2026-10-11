@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-use crate::state::{AppState, Environment};
+use crate::state::Environment;
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Input, InputContentType, InputState};
@@ -13,25 +14,13 @@ use gpui::*;
 pub struct AddConnModal;
 
 impl AddConnModal {
-    pub fn render<T: 'static>(
-        state: &AppState,
-        theme: &Theme,
-        cx: &Context<T>,
-        name_input: &Entity<InputState>,
-        path_input: &Entity<InputState>,
-        ssh_inputs: [&Entity<InputState>; 3],
-        field_inputs: &[Entity<InputState>],
-        timeout_input: &Entity<InputState>,
-        on_toggle_ssh: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_pick_driver: impl Fn(&mut T, &'static str, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_env: impl Fn(&mut T, Environment, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_connect: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_test: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_close: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_tab: impl Fn(&mut T, u8, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_read_only: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_download_client: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-    ) -> impl IntoElement {
+    /// The inputs live on the window so they keep their text between openings
+    pub fn render(w: &QuarryWindow, cx: &Context<QuarryWindow>) -> impl IntoElement {
+        let (state, theme) = (&w.state, &w.theme);
+        let (name_input, path_input, timeout_input) =
+            (&w.conn_name_input, &w.conn_path_input, &w.timeout_input);
+        let ssh_inputs = &w.ssh_inputs;
+        let field_inputs = &w.conn_field_inputs;
         if !state.add_conn_modal_open {
             return div().into_any_element();
         }
@@ -59,7 +48,7 @@ impl AddConnModal {
                     let id = d.id();
                     chip(t, ("kind", i), d.name(), id == driver.id()).on_click(
                         cx.listener(move |this, _, window, cx| {
-                            on_pick_driver(this, id, window, cx)
+                            this.pick_conn_driver(id, window, cx)
                         }),
                     )
                 })),
@@ -100,8 +89,9 @@ impl AddConnModal {
                             .child(div().ml_1p5().size(px(6.0)).rounded_full().bg(color))
                             .flex_row_reverse()
                             .gap_1p5()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                on_toggle_env(this, env, window, cx)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.add_conn_env = env;
+                                cx.notify()
                             }))
                     },
                 )),
@@ -123,8 +113,9 @@ impl AddConnModal {
                     gpui::component::switch::Switch::new("ssh-switch")
                         .checked(state.add_conn_ssh)
                         .small()
-                        .on_click(cx.listener(move |this, _: &bool, window, cx| {
-                            on_toggle_ssh(this, window, cx)
+                        .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                            this.state.add_conn_ssh = !this.state.add_conn_ssh;
+                            cx.notify()
                         })),
                 ))
                 .when(state.add_conn_ssh, |d| {
@@ -135,20 +126,20 @@ impl AddConnModal {
                                 t,
                                 "Host",
                                 None,
-                                form_input(ssh_inputs[0]),
+                                form_input(&ssh_inputs[0]),
                             )))
                             .child(div().w(px(160.0)).child(field(
                                 t,
                                 "User",
                                 None,
-                                form_input(ssh_inputs[1]),
+                                form_input(&ssh_inputs[1]),
                             ))),
                     )
                     .child(field(
                         t,
                         "Private key",
                         Some("Blank uses ssh-agent and ~/.ssh/config"),
-                        form_input(ssh_inputs[2]),
+                        form_input(&ssh_inputs[2]),
                     ))
                 })
         };
@@ -169,8 +160,9 @@ impl AddConnModal {
                 gpui::component::switch::Switch::new("ro-switch")
                     .checked(state.add_conn_read_only)
                     .small()
-                    .on_click(cx.listener(move |this, _: &bool, window, cx| {
-                        on_toggle_read_only(this, window, cx)
+                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                        this.state.add_conn_read_only = !this.state.add_conn_read_only;
+                        cx.notify()
                     })),
             ));
 
@@ -183,8 +175,9 @@ impl AddConnModal {
                 .children(["General", "SSH", "Advanced"].into_iter().enumerate().map(
                     |(i, label)| {
                         underline_tab(t, ("conn-tab", i), label, tab as usize == i).on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                on_tab(this, i as u8, window, cx)
+                            cx.listener(move |this, _, _, cx| {
+                                this.state.add_conn_tab = i as u8;
+                                cx.notify()
                             }),
                         )
                     },
@@ -245,68 +238,71 @@ impl AddConnModal {
                     .child(div().flex_1().min_w_0().text_xs().text_color(t.text_secondary).child(format!("Oracle connections need Oracle's client library (Instant Client {}).", pkg.version)))
                     .child(zbutton("btn-oracle-licence").pad_sm().label("Licence").ghost().small().on_click(|_, _, cx| cx.open_url(quarry_core::oracle::client::LICENCE_URL)))
                     .child(
-                        zbutton("btn-get-oracle-client").pad_sm().label(format!("Download ({} MB)", pkg.size_mb)).small().on_click(cx.listener(move |this, _, window, cx| on_download_client(this, window, cx))),
+                        zbutton("btn-get-oracle-client").pad_sm().label(format!("Download ({} MB)", pkg.size_mb)).small().on_click(cx.listener(move |this, _, window, cx| this.download_oracle_client(window, cx))),
                     )
             });
-        let footer =
-            modal_footer(t)
-                .justify_between()
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .min_w_0()
-                        .flex_1()
-                        .child(
-                            zbutton("btn-test-conn")
-                                .pad_sm()
-                                .label("Test connection")
-                                .ghost()
-                                .small()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    on_test(this, window, cx)
-                                })),
-                        )
-                        .children(feedback),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            zbutton("btn-cancel-add-conn")
-                                .pad_sm()
-                                .label("Cancel")
-                                .ghost()
-                                .small()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    on_close(this, window, cx)
-                                })),
-                        )
-                        .child(
-                            zbutton("btn-save-add-conn")
-                                .pad_sm()
-                                .label(if editing {
-                                    "Save & reconnect"
-                                } else {
-                                    "Connect"
-                                })
-                                .primary()
-                                .small()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    on_connect(this, window, cx)
-                                })),
-                        ),
-                );
+        let footer = modal_footer(t)
+            .justify_between()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .min_w_0()
+                    .flex_1()
+                    .child(
+                        zbutton("btn-test-conn")
+                            .pad_sm()
+                            .label("Test connection")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.test_add_conn_modal(window, cx)
+                            })),
+                    )
+                    .children(feedback),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        zbutton("btn-cancel-add-conn")
+                            .pad_sm()
+                            .label("Cancel")
+                            .ghost()
+                            .small()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.state.add_conn_modal_open = false;
+                                cx.notify()
+                            })),
+                    )
+                    .child(
+                        zbutton("btn-save-add-conn")
+                            .pad_sm()
+                            .label(if editing {
+                                "Save & reconnect"
+                            } else {
+                                "Connect"
+                            })
+                            .primary()
+                            .small()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.connect_add_conn_modal(window, cx)
+                            })),
+                    ),
+            );
 
         modal_backdrop(
             "add-conn-backdrop",
-            cx.listener(move |this, _, window, cx| on_close(this, window, cx)),
+            cx.listener(move |this, _, _, cx| {
+                this.state.add_conn_modal_open = false;
+                cx.notify()
+            }),
         )
         .child(
             modal_card("add-conn-modal-card", 640.0, t)
                 // Enter in any field connects, like the primary button
                 .on_action(cx.listener(
                     move |this, _: &gpui::component::input::Enter, window, cx| {
-                        on_connect(this, window, cx)
+                        this.connect_add_conn_modal(window, cx)
                     },
                 ))
                 .overflow_hidden()
@@ -322,7 +318,10 @@ impl AddConnModal {
                     } else {
                         "Paste a URL or a file path; the type is picked for you".into()
                     }),
-                    cx.listener(move |this, _, window, cx| on_close(this, window, cx)),
+                    cx.listener(move |this, _, _, cx| {
+                        this.state.add_conn_modal_open = false;
+                        cx.notify()
+                    }),
                 ))
                 .child(tabs)
                 .child(

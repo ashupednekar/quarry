@@ -337,29 +337,6 @@ pub const EXAMPLE_THEME: &str = r##"{
 }
 "##;
 
-#[cfg(test)]
-mod tests {
-    use super::Theme;
-
-    #[test]
-    fn user_theme_overrides_a_base() {
-        let t = Theme::from_json(
-            "Grape",
-            r##"{"base": "light", "accent": "#7c5cff", "pending_cell_bg": "#ff000033"}"##,
-        )
-        .ok()
-        .unwrap();
-        assert_eq!((t.name.as_str(), t.is_dark), ("Grape", false));
-        assert_eq!(t.accent, gpui::rgb(0x7c5cff));
-        assert_eq!(t.bg_app, Theme::light().bg_app);
-        assert!(Theme::from_json("x", r##"{"accnet": "#fff000"}"##)
-            .err()
-            .unwrap()
-            .contains("unknown token"));
-        assert!(Theme::from_json("x", r##"{"accent": "blue"}"##).is_err());
-    }
-}
-
 /// Interface text
 pub const UI_FONT: &str = "Space Grotesk";
 /// SQL, cell values and anything that should line up; the Nerd Font build also carries icon glyphs
@@ -395,4 +372,27 @@ pub fn apply_fonts(cx: &mut gpui::App, mono: &str) {
     } else {
         mono.to_string().into()
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Theme;
+
+    #[test]
+    fn user_theme_overrides_a_base() {
+        let t = Theme::from_json(
+            "Grape",
+            r##"{"base": "light", "accent": "#7c5cff", "pending_cell_bg": "#ff000033"}"##,
+        )
+        .ok()
+        .unwrap();
+        assert_eq!((t.name.as_str(), t.is_dark), ("Grape", false));
+        assert_eq!(t.accent, gpui::rgb(0x7c5cff));
+        assert_eq!(t.bg_app, Theme::light().bg_app);
+        assert!(Theme::from_json("x", r##"{"accnet": "#fff000"}"##)
+            .err()
+            .unwrap()
+            .contains("unknown token"));
+        assert!(Theme::from_json("x", r##"{"accent": "blue"}"##).is_err());
+    }
 }

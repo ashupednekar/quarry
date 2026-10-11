@@ -42,3 +42,6 @@ crossbeam-channel = "0.5"
 keyring = "4.2"
 lsp-types = { version = "0.97", features = ["proposed"] }
 sqlformat = "0.5"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

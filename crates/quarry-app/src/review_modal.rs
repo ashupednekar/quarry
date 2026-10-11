@@ -4,6 +4,7 @@
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::QuarryWindow;
 use gpui::component::button::ButtonVariants;
 use gpui::component::{ActiveTheme, Sizable};
 use gpui::*;
@@ -11,13 +12,7 @@ use gpui::*;
 pub struct ReviewModal;
 
 impl ReviewModal {
-    pub fn render<T: 'static>(
-        state: &AppState,
-        theme: &Theme,
-        cx: &Context<T>,
-        on_commit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_cancel: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-    ) -> impl IntoElement {
+    pub fn render(state: &AppState, theme: &Theme, cx: &Context<QuarryWindow>) -> impl IntoElement {
         if !state.review_modal_open {
             return div().into_any_element();
         }
@@ -27,10 +22,10 @@ impl ReviewModal {
         let count = sql_statements.len();
 
         let mono = cx.theme().mono_font_family.clone();
-        let close = cx.listener(move |this, _, window, cx| on_cancel(this, window, cx));
+        let close = cx.listener(move |this, _, _, cx| this.close_review_modal(cx));
         modal_backdrop(
             "review-modal-backdrop",
-            cx.listener(move |this, _, window, cx| on_cancel(this, window, cx)),
+            cx.listener(move |this, _, _, cx| this.close_review_modal(cx)),
         )
         .child(
             modal_card("review-modal-card", 640.0, theme)
@@ -87,9 +82,9 @@ impl ReviewModal {
                                 .label("Cancel")
                                 .ghost()
                                 .small()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    on_cancel(this, window, cx)
-                                })),
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.close_review_modal(cx)),
+                                ),
                         )
                         .child(
                             zbutton("review-commit-btn")
@@ -98,11 +93,18 @@ impl ReviewModal {
                                 .primary()
                                 .small()
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    on_commit(this, window, cx)
+                                    this.commit_pending_changes(window, cx)
                                 })),
                         ),
                 ),
         )
         .into_any_element()
+    }
+}
+
+impl QuarryWindow {
+    pub(crate) fn close_review_modal(&mut self, cx: &mut Context<Self>) {
+        self.state.review_modal_open = false;
+        cx.notify();
     }
 }

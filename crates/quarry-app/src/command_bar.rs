@@ -7,6 +7,7 @@ use crate::history;
 use crate::state::AppState;
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::input::{Input, InputState};
 use gpui::component::{Icon, Sizable};
@@ -158,8 +159,8 @@ fn edit_distance(a: &[char], b: &[char]) -> usize {
     for (i, row) in d.iter_mut().enumerate() {
         row[0] = i;
     }
-    for j in 0..=b.len() {
-        d[0][j] = j;
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
     }
     for i in 1..=a.len() {
         for j in 1..=b.len() {
@@ -398,7 +399,7 @@ impl CommandBar {
             }
         }
 
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|(score, ..)| std::cmp::Reverse(*score));
         // A short list reads at a glance; typing narrows it rather than scrolling
         let limit = if query.is_empty() { 8 } else { 14 };
         let mut items: Vec<CommandItem> = scored
@@ -431,13 +432,11 @@ impl CommandBar {
         keyed.into_iter().map(|(_, i)| i).collect()
     }
 
-    pub fn render<T: 'static>(
+    pub fn render(
         state: &AppState,
         theme: &Theme,
-        cx: &Context<T>,
+        cx: &Context<QuarryWindow>,
         input: &Entity<InputState>,
-        on_select: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_close: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
     ) -> impl IntoElement {
         if !state.command_bar_open {
             return div().into_any_element();
@@ -507,7 +506,7 @@ impl CommandBar {
                     .when(is_selected, |d| d.bg(theme.bg_selected))
                     .when(!is_selected, |d| d.hover(|s| s.bg(theme.bg_hover)))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        on_select(this, item_id.clone(), window, cx)
+                        this.handle_command_action(item_id.clone(), window, cx)
                     }))
                     .child(
                         Icon::new(item.kind.icon())
@@ -543,7 +542,7 @@ impl CommandBar {
 
         modal_backdrop(
             "command-bar-backdrop",
-            cx.listener(move |this, _, window, cx| on_close(this, window, cx)),
+            cx.listener(move |this, _, window, cx| this.dismiss(&crate::Dismiss, window, cx)),
         )
         .child(
             modal_card("command-bar-card", 640.0, theme)

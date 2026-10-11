@@ -428,7 +428,7 @@ impl QuarryWindow {
                     }
                     Ok(Err(help)) => {
                         p.server_raw = None;
-                        p.server_message = Some(help.into());
+                        p.server_message = Some(help);
                     }
                     Err(e) => {
                         p.server_raw = None;

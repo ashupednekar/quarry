@@ -418,7 +418,7 @@ impl QuarryWindow {
             .state
             .tabs
             .iter()
-            .filter_map(|t| match t {
+            .map(|t| match t {
                 Tab::Query {
                     title,
                     editor,
@@ -427,7 +427,7 @@ impl QuarryWindow {
                     schema,
                     row_limit,
                     ..
-                } => Some(SavedTab {
+                } => SavedTab {
                     title: title.clone(),
                     sql: editor.read(cx).value().to_string(),
                     file: file.clone(),
@@ -435,14 +435,14 @@ impl QuarryWindow {
                     table: None,
                     schema: schema.clone(),
                     row_limit: *row_limit,
-                }),
+                },
                 Tab::Table {
                     schema_name,
                     table_name,
                     connection,
                     view,
                     ..
-                } => Some(SavedTab {
+                } => SavedTab {
                     title: table_name.clone(),
                     sql: String::new(),
                     file: None,
@@ -454,7 +454,7 @@ impl QuarryWindow {
                     }),
                     schema: None,
                     row_limit: None,
-                }),
+                },
             })
             // Still waiting for their connection: keep them for next time
             .chain(self.pending_table_tabs.iter().map(|(conn, t)| SavedTab {

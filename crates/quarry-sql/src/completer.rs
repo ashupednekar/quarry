@@ -228,10 +228,7 @@ pub fn table_refs<'a>(stmt: &str, catalog: &'a SchemaCatalog) -> Vec<TableRef<'a
             continue;
         }
         // `FROM a x, b AS y` — keep reading refs while commas follow
-        loop {
-            let Some((name, range)) = toks.get(i).cloned() else {
-                break;
-            };
+        while let Some((name, range)) = toks.get(i).cloned() {
             if name == "(" || RESERVED.iter().any(|r| is_kw(name, r)) {
                 break;
             }
@@ -612,8 +609,7 @@ impl SchemaCompleter {
         let prefix = Self::extract_prefix(sql, cursor_offset);
         let before_prefix = &before_cursor[..before_cursor.len() - prefix.len()];
 
-        if before_prefix.ends_with('.') {
-            let trimmed = &before_prefix[..before_prefix.len() - 1];
+        if let Some(trimmed) = before_prefix.strip_suffix('.') {
             let start = trimmed
                 .rfind(|c: char| !c.is_alphanumeric() && c != '_')
                 .map(|idx| idx + 1)

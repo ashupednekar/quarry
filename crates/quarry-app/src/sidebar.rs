@@ -5,6 +5,7 @@ use crate::object_menu::DbObject;
 use crate::state::{AppState, Environment};
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::{Icon, Sizable};
 use gpui::*;
@@ -13,28 +14,7 @@ use gpui::*;
 pub struct Sidebar;
 
 impl Sidebar {
-    pub fn render<T: 'static>(
-        state: &AppState,
-        theme: &Theme,
-        cx: &Context<T>,
-        on_table_click: impl Fn(&mut T, String, String, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_add_conn: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_schema: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_conn_click: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_table_hover: impl Fn(&mut T, String, String, bool, &mut Window, &mut Context<T>)
-            + Copy
-            + 'static,
-        on_pin_click: impl Fn(&mut T, crate::pins::Pin, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_unpin: impl Fn(&mut T, crate::pins::Pin, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_menu: impl Fn(&mut T, DbObject, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_query_click: impl Fn(&mut T, std::path::PathBuf, &mut Window, &mut Context<T>)
-            + Copy
-            + 'static,
-        on_toggle_group: impl Fn(&mut T, String, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_object_click: impl Fn(&mut T, String, quarry_core::schema::SchemaObject, &mut Window, &mut Context<T>)
-            + Copy
-            + 'static,
-    ) -> impl IntoElement {
+    pub fn render(state: &AppState, theme: &Theme, cx: &Context<QuarryWindow>) -> impl IntoElement {
         if !state.sidebar_visible {
             return div().into_any_element();
         }
@@ -64,7 +44,7 @@ impl Sidebar {
         };
         let menu_on = |obj: DbObject| {
             cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                on_menu(this, obj.clone(), window, cx)
+                this.open_sidebar_menu(obj.clone(), window, cx)
             })
         };
         let label = |text: String, color: Rgba| {
@@ -97,7 +77,7 @@ impl Sidebar {
                             .label("Add Connection")
                             .small()
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                on_add_conn(this, window, cx)
+                                this.open_add_conn(window, cx)
                             })),
                     ),
             );
@@ -146,7 +126,7 @@ impl Sidebar {
                         }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        on_conn_click(this, conn_id.clone(), window, cx)
+                        this.connect_saved(conn_id.clone(), window, cx)
                     }))
                     .child(icon(
                         if expanded {
@@ -187,7 +167,7 @@ impl Sidebar {
                     row(("pin", pin_ix).into(), 1.0)
                         .group("pin-row")
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            on_pin_click(this, open_pin.clone(), window, cx)
+                            this.open_pin(open_pin.clone(), window, cx)
                         }))
                         .child(icon(IconName::Pin, theme.accent))
                         .child(icon(
@@ -204,9 +184,9 @@ impl Sidebar {
                                 .id(("unpin", pin_ix))
                                 .invisible()
                                 .group_hover("pin-row", |s| s.visible())
-                                .on_click(cx.listener(move |this, _, window, cx| {
+                                .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.stop_propagation();
-                                    on_unpin(this, drop_pin.clone(), window, cx)
+                                    this.toggle_pin(drop_pin.clone(), cx)
                                 }))
                                 .child(icon(IconName::PinOff, theme.text_muted)),
                         ),
@@ -228,8 +208,8 @@ impl Sidebar {
                             MouseButton::Right,
                             menu_on(DbObject::Schema(schema.clone())),
                         )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            on_toggle_schema(this, schema_name.clone(), window, cx)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.toggle_sidebar_schema(schema_name.clone(), cx)
                         }))
                         .child(icon(
                             if expanded {
@@ -274,12 +254,11 @@ impl Sidebar {
                                 }),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                on_table_click(this, t_name.clone(), s_name.clone(), window, cx)
+                                this.open_sidebar_table(&t_name, &s_name, window, cx)
                             }))
                             // Peek (U7): hovering previews the table without opening it
                             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
-                                on_table_hover(
-                                    this,
+                                this.peek_hover(
                                     h_schema.clone(),
                                     h_name.clone(),
                                     *hovered,
@@ -331,8 +310,8 @@ impl Sidebar {
                     let group_id = schema_ix * 10 + kind_ix;
                     tree = tree.child(
                         row(("object-group", group_id).into(), 2.0)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                on_toggle_group(this, key.clone(), window, cx)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.toggle_sidebar_group(key.clone(), cx)
                             }))
                             .child(icon(
                                 if open {
@@ -354,7 +333,12 @@ impl Sidebar {
                         tree = tree.child(
                             row(("object", group_id * 100_000 + obj_ix).into(), 3.0)
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    on_object_click(this, s_name.clone(), o.clone(), window, cx)
+                                    this.open_object_definition(
+                                        s_name.clone(),
+                                        o.clone(),
+                                        window,
+                                        cx,
+                                    )
                                 }))
                                 .child(icon(object_icon(kind), theme.text_muted))
                                 .child(
@@ -426,7 +410,7 @@ impl Sidebar {
                     .when(selected, |r| r.bg(theme.bg_selected))
                     .on_mouse_down(MouseButton::Right, menu_on(DbObject::Query(path.clone())))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        on_query_click(this, path.clone(), window, cx)
+                        this.open_query_file(path.clone(), window, cx)
                     }))
                     .child(icon(
                         IconName::FileCode,
@@ -473,7 +457,7 @@ impl Sidebar {
                     .when(selected, |r| r.bg(theme.bg_selected))
                     .on_mouse_down(MouseButton::Right, menu_on(DbObject::Query(path.clone())))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        on_query_click(this, path.clone(), window, cx)
+                        this.open_query_file(path.clone(), window, cx)
                     }))
                     .child(icon(
                         IconName::FileCode,
@@ -521,11 +505,9 @@ impl Sidebar {
                             .rounded(px(3.0))
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.bg_hover))
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| {
-                                    on_add_conn(this, window, cx)
-                                }),
-                            )
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_add_conn(window, cx)
+                            }))
                             .child(icon(IconName::Plus, theme.text_muted)),
                     ),
             )
@@ -582,5 +564,42 @@ fn object_icon(kind: quarry_core::schema::ObjectKind) -> IconName {
         Sequence => IconName::ListOrdered,
         Trigger => IconName::Zap,
         Type => IconName::Tag,
+    }
+}
+
+/// Sidebar clicks that do more than call one existing method
+impl QuarryWindow {
+    fn open_sidebar_table(
+        &mut self,
+        table: &str,
+        schema: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.peek = None;
+        self.peek_task = None;
+        self.open_table_tab(table, schema, window, cx);
+        self.refresh_active_tab(window, cx);
+        cx.notify();
+    }
+
+    fn toggle_sidebar_schema(&mut self, schema: String, cx: &mut Context<Self>) {
+        self.state.toggle_schema(&schema);
+        if self.state.expanded_schemas.contains(&schema) {
+            self.load_schemas(vec![schema], cx);
+        }
+        cx.notify();
+    }
+
+    fn open_sidebar_menu(&mut self, obj: DbObject, window: &mut Window, cx: &mut Context<Self>) {
+        self.peek = None;
+        self.open_object_menu(obj, window, cx)
+    }
+
+    fn toggle_sidebar_group(&mut self, key: String, cx: &mut Context<Self>) {
+        if !self.state.expanded_object_groups.remove(&key) {
+            self.state.expanded_object_groups.insert(key);
+        }
+        cx.notify();
     }
 }

@@ -512,7 +512,7 @@ impl crate::dump::Dumper for MysqlSession {
         }
         cmd.arg("--result-file").arg(out).arg(&db);
         match tokio::task::spawn_blocking(move || cmd.output()).await.map_err(|e| e.to_string())? {
-            Ok(o) if o.status.success() => Ok(format!("{db}")),
+            Ok(o) if o.status.success() => Ok(db.to_string()),
             Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err("mysqldump isn't installed. Install the MySQL client tools (e.g. `brew install mysql-client`) and try again.".into())

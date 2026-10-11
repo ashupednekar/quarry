@@ -151,13 +151,16 @@ fn error_range(stmt: &str, at: Option<usize>) -> std::ops::Range<usize> {
 /// ⌥↵ / ⌘. on a statement: format, expand `*`, add LIMIT, EXPLAIN, wrap in a transaction
 pub struct SqlActions(pub SharedCatalog, pub SharedDialect);
 
+/// (title, rewritten statement)
+type Rewrite = (String, String);
+
 impl SqlActions {
     /// The statement at `offset` and every (title, rewrite) that applies to it
     fn for_statement(
         &self,
         sql: &str,
         offset: usize,
-    ) -> Option<(std::ops::Range<usize>, Vec<(String, String)>)> {
+    ) -> Option<(std::ops::Range<usize>, Vec<Rewrite>)> {
         let span = quarry_sql::find_statement_at_offset(sql, offset.min(sql.len()))?;
         let stmt = &sql[span.start..span.end];
         let mut actions = vec![(

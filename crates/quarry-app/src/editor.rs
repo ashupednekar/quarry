@@ -4,6 +4,7 @@
 use crate::state::Environment;
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Editor, EditorState};
@@ -17,7 +18,7 @@ const RUN_COL_W: f32 = 18.0;
 impl QueryEditor {
     /// `connection`: the active connection's name and environment, shown at the left of the toolbar
     #[allow(clippy::too_many_arguments)]
-    pub fn render<T: 'static>(
+    pub fn render(
         editor: &Entity<EditorState>,
         is_running: bool,
         soft_wrap: bool,
@@ -28,11 +29,7 @@ impl QueryEditor {
         // How the connection's dialect splits statements, for the ▶ buttons
         rules: quarry_sql::SplitRules,
         theme: &Theme,
-        cx: &Context<T>,
-        on_run: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_pick_connection: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_pick_schema: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_pick_limit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+        cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
         let picker = |id: &'static str, icon: IconName, text: String, on: bool| {
             h_flex()
@@ -60,7 +57,7 @@ impl QueryEditor {
         };
         let schema_picker = schema.map(|s| {
             picker("btn-schema", IconName::Layers, s, true)
-                .on_click(cx.listener(move |this, _, window, cx| on_pick_schema(this, window, cx)))
+                .on_click(cx.listener(move |this, _, window, cx| this.open_schema_menu(window, cx)))
         });
         let limit_picker = picker(
             "btn-limit",
@@ -68,7 +65,7 @@ impl QueryEditor {
             row_limit.map_or("No limit".to_string(), |n| format!("Limit {n}")),
             row_limit.is_some(),
         )
-        .on_click(cx.listener(move |this, _, window, cx| on_pick_limit(this, window, cx)));
+        .on_click(cx.listener(move |this, _, window, cx| this.open_limit_menu(window, cx)));
         let is_prod = connection.is_some_and(|(_, env)| env == Environment::Prod);
         let conn_label = match connection {
             Some((name, env)) => h_flex()
@@ -104,7 +101,7 @@ impl QueryEditor {
             .rounded(px(4.0))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
-            .on_click(cx.listener(move |this, _, window, cx| on_pick_connection(this, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_connection_menu(window, cx)))
             .child(
                 Icon::new(IconName::ChevronDown)
                     .xsmall()
@@ -162,9 +159,9 @@ impl QueryEditor {
                             .tooltip("Run the selection, or the statement at the cursor (⌘↵)")
                             .primary()
                             .xsmall()
-                            .on_click(
-                                cx.listener(move |this, _, window, cx| on_run(this, window, cx)),
-                            ),
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.refresh_active_tab(window, cx)
+                            })),
                     ),
             )
             // The left padding is the ▶ column, so the button never sits on the line numbers
@@ -177,7 +174,7 @@ impl QueryEditor {
                     .child(Editor::new(editor).h_full().bordered(false)),
             )
             .children(run_gutter_buttons(
-                editor, is_running, soft_wrap, rules, theme, cx, on_run,
+                editor, is_running, soft_wrap, rules, theme, cx,
             ))
     }
 }
@@ -194,14 +191,13 @@ pub fn env_color(env: Environment, theme: &Theme) -> Rgba {
 /// Rows are placed from the editor's line height and scroll offset, which only holds while every line above is
 /// one row high; with soft wrap on, a statement is skipped when a line above it might wrap.
 /// ponytail: "might wrap" guesses a monospace char at 0.45 × line height; exact needs per-line layout from gpui-kit
-fn run_gutter_buttons<T: 'static>(
+fn run_gutter_buttons(
     editor: &Entity<EditorState>,
     is_running: bool,
     soft_wrap: bool,
     rules: quarry_sql::SplitRules,
     theme: &Theme,
-    cx: &Context<T>,
-    on_run: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+    cx: &Context<QuarryWindow>,
 ) -> Vec<AnyElement> {
     let e = editor.read(cx);
     let Some(line_height) = e.line_height() else {
@@ -252,7 +248,7 @@ fn run_gutter_buttons<T: 'static>(
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| {
                     editor.update(cx, |e, cx| e.set_selected_range(start..start, cx));
-                    on_run(this, window, cx)
+                    this.refresh_active_tab(window, cx)
                 }))
                 .child(Icon::new(IconName::Play).xsmall());
             Some(deferred(anchored().position(point(x, y)).child(button)).into_any_element())
