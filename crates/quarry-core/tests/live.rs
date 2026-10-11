@@ -318,3 +318,23 @@ fn oracle_without_client_says_what_to_install() {
     let msg = res.err().expect("no client, no connection").to_string();
     assert!(msg.contains("Instant Client isn't installed"), "{msg}");
 }
+
+/// Many schemas: connecting loads only the default one; the others load on their own
+#[test]
+fn postgres_loads_big_catalogs_lazily() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    for i in 0..=quarry_core::schema::EAGER_SCHEMAS {
+        rt.block_on(s.execute(&format!("CREATE SCHEMA IF NOT EXISTS lazy_{i}"))).unwrap();
+        rt.block_on(s.execute(&format!("CREATE TABLE IF NOT EXISTS lazy_{i}.t{i} (id int PRIMARY KEY)"))).unwrap();
+    }
+    let c = rt.block_on(s.load_catalog()).unwrap();
+    assert!(c.is_loaded("public") && !c.is_loaded("lazy_3"), "{:?}", c.unloaded);
+    assert!(c.tables.iter().all(|t| t.schema_name == "public"), "only the default schema's tables");
+    let t = rt.block_on(s.introspect_schema("lazy_3")).unwrap();
+    assert_eq!(t.iter().map(|t| (t.schema_name.as_str(), t.table_name.as_str(), t.primary_keys.clone())).collect::<Vec<_>>(), [("lazy_3", "t3", vec!["id".to_string()])]);
+    for i in 0..=quarry_core::schema::EAGER_SCHEMAS {
+        rt.block_on(s.execute(&format!("DROP SCHEMA lazy_{i} CASCADE"))).unwrap();
+    }
+}

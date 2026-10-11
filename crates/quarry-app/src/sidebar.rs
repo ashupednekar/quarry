@@ -148,9 +148,14 @@ impl Sidebar {
                         .child(icon(if expanded { IconName::ChevronDown } else { IconName::ChevronRight }, theme.text_muted))
                         .child(icon(IconName::Layers, theme.text_muted))
                         .child(label(schema.clone(), theme.text_secondary))
-                        .child(muted(tables.len().to_string())),
+                        // Not loaded yet (big databases): no count rather than a wrong 0
+                        .child(muted(if state.catalog.is_loaded(schema) { tables.len().to_string() } else { "…".into() })),
                 );
                 if !expanded {
+                    continue;
+                }
+                if !state.catalog.is_loaded(schema) {
+                    tree = tree.child(row(("schema-loading", schema_ix).into(), 2.0).child(muted("Loading…".to_string())));
                     continue;
                 }
                 for (tbl_ix, tbl) in tables.into_iter().enumerate() {

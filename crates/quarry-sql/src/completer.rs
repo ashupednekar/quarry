@@ -404,6 +404,23 @@ impl SchemaCompleter {
     }
 }
 
+/// Unloaded schemas `sql` mentions as `schema.`, so they can be loaded before completion needs them
+pub fn mentioned_unloaded(sql: &str, catalog: &SchemaCatalog) -> Vec<String> {
+    if catalog.unloaded.is_empty() {
+        return vec![];
+    }
+    let text = sql.replace(['"', '`', '[', ']'], "").to_lowercase();
+    catalog
+        .unloaded
+        .iter()
+        .filter(|s| {
+            let needle = format!("{}.", s.to_lowercase());
+            text.match_indices(&needle).any(|(i, _)| !text[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_'))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Names the catalog doesn't know: tables in FROM/JOIN and `alias.column` references.
 /// Returns byte ranges into `sql` with a message. Skips CTE names, which aren't in the catalog.
 pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, String)> {
@@ -417,7 +434,9 @@ pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, 
         // `WITH x AS (...)` names a table only this statement has
         let ctes: Vec<String> = toks.windows(2).filter(|w| is_kw(w[1].0, "as") && toks.iter().any(|t| is_kw(t.0, "with"))).map(|w| w[0].0.to_lowercase()).collect();
         let refs = table_refs(text, catalog);
-        for r in refs.iter().filter(|r| r.table.is_none() && !ctes.contains(&r.name.to_lowercase())) {
+        // `schema.table` in a schema that isn't loaded yet isn't unknown, just not known yet
+        let pending = |r: &TableRef| r.name.rsplit_once('.').is_some_and(|(schema, _)| !catalog.is_loaded(schema));
+        for r in refs.iter().filter(|r| r.table.is_none() && !ctes.contains(&r.name.to_lowercase()) && !pending(r)) {
             out.push((stmt.start + r.range.start..stmt.start + r.range.end, format!("Unknown table `{}`", r.name)));
         }
         for (tok, range) in &toks {
@@ -464,6 +483,7 @@ mod tests {
     fn test_completer_table_and_columns() {
         let catalog = SchemaCatalog {
             default_schema: None,
+            unloaded: vec![],
             schemas: vec!["public".to_string()],
             tables: vec![TableSchema {
                 schema_name: "public".to_string(),
@@ -519,6 +539,7 @@ mod tests {
             schemas: vec!["public".into()],
             tables: vec![t("customers", &["id", "email"], vec![]), t("orders", &["id", "customer_id", "total"], vec![fk])],
             default_schema: None,
+            ..Default::default()
         }
     }
 
@@ -568,6 +589,21 @@ mod tests {
         let got: Vec<_> = lint(sql, &shop()).into_iter().map(|(r, m)| (&sql[r], m)).collect();
         assert_eq!(got, [("ghosts", "Unknown table `ghosts`".to_string()), ("o.nope", "`orders` has no column `nope`".to_string())]);
         assert!(lint("select * from anything", &SchemaCatalog::default()).is_empty());
+    }
+
+    #[test]
+    fn leaves_schemas_that_are_not_loaded_yet_alone() {
+        let mut cat = shop();
+        cat.schemas.push("sales".into());
+        cat.unloaded = vec!["sales".into()];
+        // sales.* can't be judged yet; unknown names in loaded places still are
+        let sql = "select * from sales.invoices, \"Sales\".x, ghosts";
+        let got: Vec<_> = lint(sql, &cat).into_iter().map(|(r, _)| &sql[r]).collect();
+        assert_eq!(got, ["ghosts"]);
+        assert_eq!(mentioned_unloaded("select * from \"Sales\".", &cat), ["sales"]);
+        assert!(mentioned_unloaded("select presales.x from t", &cat).is_empty(), "only whole schema names");
+        cat.add_schema("sales", vec![]);
+        assert!(cat.is_loaded("sales") && mentioned_unloaded("sales.x", &cat).is_empty());
     }
 
     #[test]

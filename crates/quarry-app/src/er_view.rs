@@ -141,6 +141,7 @@ mod tests {
             schemas: vec!["public".into()],
             tables: vec![t("customers", vec![]), t("orders", vec![fk("customer_id", "customers")]), t("items", vec![fk("order_id", "orders")])],
             default_schema: None,
+            ..Default::default()
         };
         let (out, inc) = neighbours(&cat, &cat.tables[1]);
         assert_eq!(out.iter().map(|(t, l)| (t.table_name.as_str(), l.as_str())).collect::<Vec<_>>(), vec![("customers", "customer_id → id")]);

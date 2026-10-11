@@ -185,9 +185,32 @@ pub struct SchemaCatalog {
     /// Where unqualified names resolve (Postgres: current_schema(), SQLite: main)
     #[serde(default)]
     pub default_schema: Option<String>,
+    /// Schemas whose tables aren't loaded yet (big databases load them when opened). Empty: all loaded.
+    #[serde(default)]
+    pub unloaded: Vec<String>,
 }
 
+/// Above this many schemas, connecting loads only the default one; the rest load when opened
+pub const EAGER_SCHEMAS: usize = 8;
+
 impl SchemaCatalog {
+    pub fn is_loaded(&self, schema: &str) -> bool {
+        !self.unloaded.iter().any(|s| s.eq_ignore_ascii_case(schema))
+    }
+
+    /// A catalog holding only the default schema's tables: every other schema is marked unloaded
+    pub fn lazy(mut self) -> Self {
+        self.unloaded = self.schemas.iter().filter(|s| self.default_schema.as_ref() != Some(*s)).cloned().collect();
+        self
+    }
+
+    /// Puts a schema's freshly loaded tables in place of whatever was there
+    pub fn add_schema(&mut self, schema: &str, tables: Vec<TableSchema>) {
+        self.unloaded.retain(|s| !s.eq_ignore_ascii_case(schema));
+        self.tables.retain(|t| !t.schema_name.eq_ignore_ascii_case(schema));
+        self.tables.extend(tables);
+    }
+
     pub fn find_table(&self, schema: Option<&str>, table_name: &str) -> Option<&TableSchema> {
         self.tables.iter().find(|t| {
             if let Some(s) = schema {

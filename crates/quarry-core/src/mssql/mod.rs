@@ -299,7 +299,7 @@ impl DatabaseSession for MssqlSession {
                 }
             })
             .collect();
-        Ok(SchemaCatalog { schemas, tables, default_schema })
+        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {

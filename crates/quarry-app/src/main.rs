@@ -45,7 +45,7 @@ use gpui::*;
 use gpui::component::table::{TableEvent, TableState};
 use grid::{DataGrid, Fetch, ResultSet, TableSource};
 use review_modal::ReviewModal;
-use runtime::{run_db, DB_RUNTIME};
+use runtime::{run_db, run_db_bg, DB_RUNTIME};
 use sidebar::Sidebar;
 use quarry_core::DatabaseSession;
 use std::sync::Arc;
@@ -996,6 +996,8 @@ impl QuarryWindow {
         let sub = cx.subscribe(&editor, |this, editor, ev: &InputEvent, cx| {
             if matches!(ev, InputEvent::Change) {
                 completion::lint_editor(&editor, &this.state.completion_catalog, cx);
+                let mentioned = quarry_sql::mentioned_unloaded(&editor.read(cx).value(), &this.state.catalog);
+                this.load_schemas(mentioned, cx);
                 this.schedule_session_save(cx);
                 cx.notify();
             }
@@ -1236,7 +1238,8 @@ impl QuarryWindow {
             let Some(explain) = self.state.dialect().explain(&sql, mode == RunMode::ExplainAnalyze) else {
                 return self.toast("This database can't show a query plan", true, cx);
             };
-            statements = vec![explain];
+            // Some databases need more than one statement (Oracle: EXPLAIN PLAN, then read it back)
+            statements = quarry_sql::split_statements_with(&explain, rules).into_iter().map(|s| s.sql).collect();
         }
         let mut params: Vec<String> = Vec::new();
         for p in statements.iter().flat_map(|s| quarry_sql::find_params(s)) {
@@ -1363,11 +1366,62 @@ impl QuarryWindow {
     }
 
     /// The script that makes `target_id` match the active connection's schema, in a tab on the target
+    /// Loads schemas a big database's catalog skipped, once each; the sidebar, completion and
+    /// squiggles pick them up when they arrive
+    fn load_schemas(&mut self, names: Vec<String>, cx: &mut Context<Self>) {
+        let (Some(session), Some(id)) = (self.state.session.clone(), self.state.active_connection.as_ref().map(|c| c.id.clone())) else { return };
+        for schema in names {
+            let key = format!("{id}/{schema}");
+            if self.state.catalog.is_loaded(&schema) || !self.state.loading_schemas.insert(key.clone()) {
+                continue;
+            }
+            let (session, id) = (session.clone(), id.clone());
+            run_db_bg(cx, async move { session.introspect_schema(&schema).await.map(|t| (schema, t)) }, move |this, res, cx| {
+                this.state.loading_schemas.remove(&key);
+                match res {
+                    Ok((schema, tables)) => {
+                        if let Some(open) = this.state.open_sessions.get_mut(&id) {
+                            open.1.add_schema(&schema, tables.clone());
+                        }
+                        // Switched away meanwhile: it's kept for when this connection comes back
+                        if this.state.active_connection.as_ref().is_some_and(|c| c.id == id) {
+                            let mut catalog = this.state.catalog.clone();
+                            catalog.add_schema(&schema, tables);
+                            this.state.set_catalog(catalog);
+                        }
+                    }
+                    Err(e) => this.toast(format!("Couldn't load the schema: {e}"), true, cx),
+                }
+            });
+        }
+    }
+
     fn compare_schema(&mut self, target_id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some((target_session, target_catalog)) = self.state.open_sessions.get(target_id).cloned() else { return };
+        // A diff needs every table: big databases' partial catalogs are read in full first
+        if !self.state.catalog.unloaded.is_empty() || !target_catalog.unloaded.is_empty() {
+            let Some(source_session) = self.state.session.clone() else { return };
+            let target_id = target_id.to_string();
+            self.toast("Reading both schemas in full…".to_string(), false, cx);
+            return run_db(
+                window,
+                cx,
+                async move { (source_session.introspect().await, target_session.introspect().await) },
+                move |this, res, window, cx| match res {
+                    (Ok(source), Ok(target)) => this.finish_compare(&target_id, &source, &target, window, cx),
+                    (Err(e), _) | (_, Err(e)) => this.toast(format!("Couldn't read the schemas: {e}"), true, cx),
+                },
+            );
+        }
+        let source_catalog = self.state.catalog.clone();
+        self.finish_compare(target_id, &source_catalog, &target_catalog, window, cx);
+    }
+
+    fn finish_compare(&mut self, target_id: &str, source_catalog: &quarry_core::SchemaCatalog, target_catalog: &quarry_core::SchemaCatalog, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target_session) = self.state.open_sessions.get(target_id).map(|o| o.0.clone()) else { return };
         let source = self.state.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default();
         let target = self.state.saved_connections.iter().find(|c| c.id == target_id).map(|c| c.name.clone()).unwrap_or_default();
-        let Some(script) = quarry_core::diff::diff(&self.state.catalog, &target_catalog, target_session.dialect()) else {
+        let Some(script) = quarry_core::diff::diff(source_catalog, target_catalog, target_session.dialect()) else {
             return self.toast(format!("{source} and {target} have the same tables and columns"), false, cx);
         };
         let header = format!("-- Makes {target} match {source} (tables and columns; views, indexes and constraints aren't compared).\n-- Review before running: this tab runs on {target}.\n\n");
@@ -1421,7 +1475,7 @@ impl QuarryWindow {
     fn refresh_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(session) = self.state.session.clone() else { return };
         let Some(id) = self.state.active_connection.as_ref().map(|c| c.id.clone()) else { return };
-        run_db(window, cx, async move { session.introspect().await }, move |this, res, _, cx| match res {
+        run_db(window, cx, async move { session.load_catalog().await }, move |this, res, _, cx| match res {
             Ok(catalog) => {
                 // Kept for when this connection is switched back to
                 if let Some(open) = this.state.open_sessions.get_mut(&id) {
@@ -1430,6 +1484,9 @@ impl QuarryWindow {
                 // Switched away mid-refresh: don't put this schema under another connection
                 if this.state.active_connection.as_ref().is_some_and(|c| c.id == id) {
                     this.state.set_catalog(catalog);
+                    // A big database's catalog comes back partial: reload the schemas that were open
+                    let open: Vec<String> = this.state.expanded_schemas.iter().cloned().collect();
+                    this.load_schemas(open, cx);
                     this.toast("Schema refreshed".to_string(), false, cx);
                 }
             }
@@ -2503,6 +2560,9 @@ impl Render for QuarryWindow {
             |this, window, cx| this.open_add_conn(window, cx),
             |this, schema_name, _window, cx| {
                 this.state.toggle_schema(&schema_name);
+                if this.state.expanded_schemas.contains(&schema_name) {
+                    this.load_schemas(vec![schema_name], cx);
+                }
                 cx.notify();
             },
             |this, id, window, cx| this.connect_saved(id, window, cx),

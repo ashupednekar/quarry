@@ -87,7 +87,7 @@ mod tests {
     }
 
     fn catalog(tables: Vec<TableSchema>) -> SchemaCatalog {
-        SchemaCatalog { schemas: vec!["public".into()], tables, default_schema: None }
+        SchemaCatalog { schemas: vec!["public".into()], tables, default_schema: None, ..Default::default() }
     }
 
     #[test]

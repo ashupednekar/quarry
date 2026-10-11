@@ -64,7 +64,7 @@ Saved profiles change from `kind + path_or_url` to `driver: String, params: BTre
 - [x] `Dialect`: SQL built through `session.dialect()`
 - [x] Optional capabilities: `Monitor`, `Dumper`, `table_info`
 - [x] Driver registry; profiles store a driver id (old files still load); drivers are cargo features
-- [ ] Dialect-aware splitter/params/completer: built with the first driver that needs it (MySQL backticks, Oracle `/`)
+- [x] Dialect-aware splitter/params/completer: built with the first driver that needs it (MySQL backticks, Oracle `/`)
 - [x] Conformance suite: `quarry_core::conformance::check`, passing for Postgres and SQLite
 - [x] `DRIVERS.md`
 
@@ -88,11 +88,11 @@ Left in the app by design: the SQLite demo playground, and treating a dropped `.
 
 ## 3. Features
 
-Done: visual EXPLAIN (Postgres JSON plans and SQLite query plans as a tree), functions/sequences/triggers/types in the sidebar (loaded per schema), history search across everything in the palette, Find Usages / Rename for tables, schema diff between connections, and a Diagram view (a table with its FK neighbours).
+Done: visual EXPLAIN (plan trees from Postgres and MySQL JSON, SQLite query plans and Oracle's PLAN_TABLE), functions/sequences/triggers/types in the sidebar (loaded per schema), history search across everything in the palette, Find Usages / Rename for tables, schema diff between connections, and a Diagram view (a table with its FK neighbours).
 
 Earlier: WHERE bar on table tabs, following FKs from cells, JSON/long-text cell editor, query history.
 
 ## 4. Staying light
 - ✓ **Query results are capped** at `MAX_ROWS` (100k), with the full count shown and "All rows" in Export.
-- **Introspect lazily per schema** on large databases. Today the whole database is loaded on connect. Needs completion, squiggles and go-to-definition to handle schemas that aren't loaded yet, or every table in one is flagged unknown.
+- ✓ **Introspect lazily per schema** on large databases (Postgres, MySQL, Oracle). Over `EAGER_SCHEMAS` schemas, connecting loads only the default one; others load when expanded in the sidebar or named as `schema.` in SQL, and aren't flagged unknown meanwhile. Schema diff reads both sides in full. SQL Server still loads everything.
 - **Keep heavy drivers opt-in** behind cargo features.

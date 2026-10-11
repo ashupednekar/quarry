@@ -219,6 +219,7 @@ impl DatabaseSession for SqliteSession {
             schemas: vec!["main".to_string()],
             tables,
             default_schema: Some("main".to_string()),
+            ..Default::default()
         })
     }
 

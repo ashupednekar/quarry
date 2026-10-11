@@ -33,3 +33,21 @@ pub fn run_db<T, R>(
     })
     .detach();
 }
+
+/// `run_db` for callers without a window (editor change events)
+pub fn run_db_bg<T, R>(cx: &mut Context<T>, fut: impl std::future::Future<Output = R> + Send + 'static, on_done: impl FnOnce(&mut T, R, &mut Context<T>) + 'static)
+where
+    T: 'static,
+    R: Send + 'static,
+{
+    let handle = DB_RUNTIME.spawn(fut);
+    cx.spawn(async move |this, cx| {
+        let Ok(res) = handle.await else { return };
+        this.update(cx, |this, cx| {
+            on_done(this, res, cx);
+            cx.notify();
+        })
+        .ok();
+    })
+    .detach();
+}

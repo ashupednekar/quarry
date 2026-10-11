@@ -188,6 +188,8 @@ pub struct AppState {
     /// Open object groups in the sidebar, as "schema/Functions"
     pub expanded_object_groups: HashSet<String>,
     pub expanded_schemas: HashSet<String>,
+    /// "connection id/schema" being loaded for a big database's lazy catalog
+    pub loading_schemas: HashSet<String>,
     /// Connections folded shut in the sidebar (clicking an open connection folds it)
     pub collapsed_connections: std::collections::HashSet<String>,
     pub sidebar_visible: bool,
@@ -252,6 +254,7 @@ impl AppState {
             saved_connections: crate::connections::load(),
             session: None,
             open_sessions: HashMap::new(),
+            loading_schemas: HashSet::new(),
             activity_log: ActivityLog::default(),
             tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
@@ -552,7 +555,7 @@ pub async fn open_session(
             session.execute(&sql).await.map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
         }
     }
-    let catalog = session.introspect().await.map_err(|e| format!("Introspection error: {}", e))?;
+    let catalog = session.load_catalog().await.map_err(|e| format!("Introspection error: {}", e))?;
     Ok((session, catalog, tunnel))
 }
 

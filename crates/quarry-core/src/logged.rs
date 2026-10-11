@@ -5,7 +5,7 @@
 //! Client activity log (L1): a session wrapper that records every statement the app runs.
 
 use crate::edits::PendingChanges;
-use crate::schema::SchemaCatalog;
+use crate::schema::{SchemaCatalog, TableSchema};
 use crate::monitor::{LogPage, Monitor, ServerView, Snapshot};
 use crate::session::{DatabaseSession, DbError, QueryResult, TxState};
 use async_trait::async_trait;
@@ -85,6 +85,20 @@ impl DatabaseSession for LoggedSession {
         let start = Instant::now();
         let res = self.inner.introspect().await;
         self.record("-- read schema".into(), start, &res, |c| c.tables.len() as u64);
+        res
+    }
+
+    async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
+        let start = Instant::now();
+        let res = self.inner.load_catalog().await;
+        self.record("-- read schema".into(), start, &res, |c| c.tables.len() as u64);
+        res
+    }
+
+    async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
+        let start = Instant::now();
+        let res = self.inner.introspect_schema(schema).await;
+        self.record(format!("-- read schema {schema}"), start, &res, |t| t.len() as u64);
         res
     }
 

@@ -228,8 +228,13 @@ impl Dialect for Mysql {
         }
     }
 
+    /// JSON so the plan view can read it. ANALYZE only comes as a text tree, shown as is.
     fn explain(&self, sql: &str, analyze: bool) -> Option<String> {
-        Some(if analyze { format!("EXPLAIN ANALYZE {sql}") } else { format!("EXPLAIN {sql}") })
+        Some(if analyze { format!("EXPLAIN ANALYZE {sql}") } else { format!("EXPLAIN FORMAT=JSON {sql}") })
+    }
+
+    fn plan(&self, result: &QueryResult) -> Option<Plan> {
+        crate::plan::from_mysql_json(result)
     }
 
     /// A database is MySQL's schema; `USE` switches it, but there's no "back to the default"
@@ -362,9 +367,18 @@ impl Dialect for Oracle {
         }
     }
 
-    /// EXPLAIN PLAN writes to PLAN_TABLE and DBMS_XPLAN reads it back: two statements, not a prefix
-    fn explain(&self, _sql: &str, _analyze: bool) -> Option<String> {
-        None
+    /// EXPLAIN PLAN writes to PLAN_TABLE, then its newest plan is read back as rows (estimates only)
+    fn explain(&self, sql: &str, _analyze: bool) -> Option<String> {
+        Some(format!(
+            "EXPLAIN PLAN SET STATEMENT_ID = 'quarry' FOR {};\n{}",
+            sql.trim().trim_end_matches(';'),
+            "SELECT id, parent_id, operation, options, object_name, cost, cardinality FROM plan_table \
+             WHERE plan_id = (SELECT MAX(plan_id) FROM plan_table WHERE statement_id = 'quarry') ORDER BY id"
+        ))
+    }
+
+    fn plan(&self, result: &QueryResult) -> Option<Plan> {
+        crate::plan::from_oracle_plan_table(result)
     }
 
     /// A schema is a user; there's no "back to my own" without knowing who that is

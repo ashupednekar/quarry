@@ -33,6 +33,13 @@ pub async fn check(s: &dyn DatabaseSession, schema: &str) {
     assert_eq!(table.primary_keys, vec!["id"], "introspect: primary key");
     assert_eq!(table.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "name", "score"], "introspect: columns");
 
+    // One schema on its own, and the catalog a connection starts with, both find it too
+    let one = s.introspect_schema(&table.schema_name).await.expect("introspect one schema");
+    assert!(one.iter().any(|t| t.table_name.eq_ignore_ascii_case("quarry_conformance")), "introspect_schema: table not found");
+    assert!(one.iter().all(|t| t.schema_name == table.schema_name), "introspect_schema: other schemas leaked in");
+    let start = s.load_catalog().await.expect("load catalog");
+    assert!(start.find_table(Some(schema), "quarry_conformance").is_some() || !start.is_loaded(schema), "load_catalog: a loaded schema is missing its table");
+
     // Literals round-trip, including quotes; LIMIT comes from the dialect
     let insert = |id: i64, name: &str| {
         format!("INSERT INTO {t} ({}, {}) VALUES ({id}, {})", d.quote_ident("id"), d.quote_ident("name"), d.literal(&DbValue::Text(name.into())))
@@ -63,6 +70,17 @@ pub async fn check(s: &dyn DatabaseSession, schema: &str) {
     s.tx().set_manual(false);
     let r = s.execute(&format!("SELECT count(*) FROM {t}")).await.expect("count");
     assert_eq!(r.rows[0][0], DbValue::Int(3), "manual commit: rollback must undo");
+
+    // Explain, where the dialect has one, reads back as a plan tree. It may be several statements;
+    // the plan is in the last one's rows.
+    if let Some(explain) = d.explain(&format!("SELECT * FROM {t} WHERE {} = 1", d.quote_ident("id")), false) {
+        let mut last = None;
+        for stmt in explain.split(";\n") {
+            last = Some(s.execute(stmt).await.expect("explain"));
+        }
+        let plan = d.plan(&last.expect("explain: no statement")).expect("explain: plan didn't parse");
+        assert!(!plan.root.op.is_empty(), "explain: empty plan");
+    }
 
     // The DDL view works for every driver
     let info = s.table_info(table).await.expect("table info");

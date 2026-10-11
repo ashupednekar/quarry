@@ -110,7 +110,7 @@ mod tests {
     fn cat() -> SchemaCatalog {
         let col = |n: &str| ColumnSchema { name: n.into(), data_type: ColumnType::Integer, raw_type_name: "int".into(), is_nullable: true, is_primary_key: false, default_value: None, ordinal_position: 1 };
         let t = |n: &str, c: &[&str]| TableSchema { schema_name: "public".into(), table_name: n.into(), is_view: false, columns: c.iter().map(|c| col(c)).collect(), primary_keys: vec![], foreign_keys: vec![] };
-        SchemaCatalog { schemas: vec!["public".into()], tables: vec![t("users", &["id", "email"]), t("orders", &["id", "user_id"])], default_schema: None }
+        SchemaCatalog { schemas: vec!["public".into()], tables: vec![t("users", &["id", "email"]), t("orders", &["id", "user_id"])], default_schema: None, ..Default::default() }
     }
 
     fn get(stmt: &str, title: &str) -> Option<String> {

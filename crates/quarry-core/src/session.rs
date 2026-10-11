@@ -124,6 +124,17 @@ pub trait DatabaseSession: Send + Sync {
     /// Returns the live schema tree (schemas, tables, columns, PKs)
     async fn introspect(&self) -> Result<SchemaCatalog, DbError>;
 
+    /// The catalog to start a connection with. Drivers for big databases load only the default
+    /// schema here (see `SchemaCatalog::lazy`) and the rest through `introspect_schema`.
+    async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
+        self.introspect().await
+    }
+
+    /// One schema's tables
+    async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
+        Ok(self.introspect().await?.tables.into_iter().filter(|t| t.schema_name.eq_ignore_ascii_case(schema)).collect())
+    }
+
     /// Executes an arbitrary SQL query or statement
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError>;
 

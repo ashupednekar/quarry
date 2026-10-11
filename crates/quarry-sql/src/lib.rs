@@ -8,5 +8,5 @@ pub mod splitter;
 
 pub use params::{bind_params, find_params};
 pub use rewrites::{rewrites, with_limit};
-pub use completer::{find_usages, lint, rename_identifier, resolve_qualifier, table_refs, CompletionCandidate, CompletionKind, SchemaCompleter, TableRef};
+pub use completer::{find_usages, lint, mentioned_unloaded, rename_identifier, resolve_qualifier, table_refs, CompletionCandidate, CompletionKind, SchemaCompleter, TableRef};
 pub use splitter::{find_statement_at_offset, find_statement_at_offset_with, split_statements, split_statements_with, SplitRules, StatementSpan};

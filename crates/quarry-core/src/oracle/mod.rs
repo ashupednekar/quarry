@@ -9,7 +9,7 @@ use crate::dialect::is_plsql_block;
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
 use crate::monitor::{Monitor, ServerView, Snapshot};
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema};
+use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema, EAGER_SCHEMAS};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS};
 use crate::value::DbValue;
 use async_trait::async_trait;
@@ -275,73 +275,17 @@ impl DatabaseSession for OracleSession {
     }
 
     async fn introspect(&self) -> Result<SchemaCatalog, DbError> {
-        let schemas: Vec<String> = self.rows(&format!("{USER_SCHEMAS} ORDER BY 1")).await?.into_iter().map(|r| r[0].clone()).collect();
-        let tables = self
-            .rows(&format!(
-                "SELECT owner, table_name, 0 FROM all_tables WHERE owner IN ({USER_SCHEMAS}) AND nested = 'NO' AND secondary = 'N' \
-                 UNION ALL SELECT owner, view_name, 1 FROM all_views WHERE owner IN ({USER_SCHEMAS}) ORDER BY 1, 2"
-            ))
-            .await?;
-        let columns = self
-            .rows(&format!(
-                "SELECT owner, table_name, column_name, \
-                   CASE WHEN data_type IN ('VARCHAR2', 'NVARCHAR2', 'CHAR', 'NCHAR', 'RAW') THEN data_type || '(' || char_length || ')' \
-                        WHEN data_type = 'NUMBER' AND data_precision IS NOT NULL THEN 'NUMBER(' || data_precision || ',' || data_scale || ')' \
-                        ELSE data_type END, \
-                   CASE nullable WHEN 'Y' THEN 1 ELSE 0 END, data_default, column_id \
-                 FROM all_tab_columns WHERE owner IN ({USER_SCHEMAS}) ORDER BY 1, 2, column_id"
-            ))
-            .await?;
-        let pks = self
-            .rows(&format!(
-                "SELECT c.owner, c.table_name, cc.column_name FROM all_constraints c \
-                 JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name \
-                 WHERE c.constraint_type = 'P' AND c.owner IN ({USER_SCHEMAS}) ORDER BY cc.position"
-            ))
-            .await?;
-        let fks = self
-            .rows(&format!(
-                "SELECT c.owner, c.table_name, cc.column_name, r.owner, r.table_name, rc.column_name FROM all_constraints c \
-                 JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name \
-                 JOIN all_constraints r ON r.owner = c.r_owner AND r.constraint_name = c.r_constraint_name \
-                 JOIN all_cons_columns rc ON rc.owner = r.owner AND rc.constraint_name = r.constraint_name AND rc.position = cc.position \
-                 WHERE c.constraint_type = 'R' AND c.owner IN ({USER_SCHEMAS})"
-            ))
-            .await?;
-        let default_schema = self.rows("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM dual").await?.into_iter().next().map(|r| r[0].clone());
-        let tables = tables
-            .iter()
-            .map(|t| {
-                let mine = |r: &&Vec<String>| r[0] == t[0] && r[1] == t[1];
-                let primary_keys: Vec<String> = pks.iter().filter(mine).map(|r| r[2].clone()).collect();
-                let columns = columns
-                    .iter()
-                    .filter(mine)
-                    .map(|c| ColumnSchema {
-                        name: c[2].clone(),
-                        data_type: ColumnType::from_sql_str(&c[3]),
-                        raw_type_name: c[3].clone(),
-                        is_nullable: c[4] == "1",
-                        is_primary_key: primary_keys.contains(&c[2]),
-                        default_value: Some(c[5].trim().to_string()).filter(|d| !d.is_empty()),
-                        ordinal_position: c[6].parse().unwrap_or(0),
-                    })
-                    .collect();
-                TableSchema {
-                    schema_name: t[0].clone(),
-                    table_name: t[1].clone(),
-                    is_view: t[2] == "1",
-                    columns,
-                    foreign_keys: fks
-                        .iter()
-                        .filter(mine)
-                        .map(|f| ForeignKeyRef { from_column: f[2].clone(), to_schema: f[3].clone(), to_table: f[4].clone(), to_column: f[5].clone() })
-                        .collect(),
-                    primary_keys,
-                }
-            })
-            .collect();
-        Ok(SchemaCatalog { schemas, tables, default_schema })
+        self.catalog_where(None).await
+    }
+
+    /// Many schemas: only the session's own, the rest when opened
+    async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
+        let c = self.catalog_where(Some("SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')")).await?;
+        if c.schemas.len() > EAGER_SCHEMAS { Ok(c.lazy()) } else { self.introspect().await }
+    }
+
+    async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
+        Ok(self.catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into())))).await?.tables)
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -529,6 +473,81 @@ impl Monitor for OracleSession {
         let serial = self.rows(&format!("SELECT serial# FROM v$session WHERE sid = {sid}")).await?;
         let serial = serial.first().map(|r| r[0].clone()).ok_or_else(|| DbError::SqlError(format!("session {sid} has ended")))?;
         self.run(&format!("ALTER SYSTEM KILL SESSION '{sid},{serial}' IMMEDIATE")).await.map(|_| ())
+    }
+}
+
+impl OracleSession {
+    /// Everything (`only` = None) or one schema: `only` is a SQL expression for its name
+    async fn catalog_where(&self, only: Option<&str>) -> Result<SchemaCatalog, DbError> {
+        let f = |col: &str| only.map(|e| format!(" AND {col} = {e}")).unwrap_or_default();
+        let (owner, c_owner) = (f("owner"), f("c.owner"));
+        let schemas: Vec<String> = self.rows(&format!("{USER_SCHEMAS} ORDER BY 1")).await?.into_iter().map(|r| r[0].clone()).collect();
+        let tables = self
+            .rows(&format!(
+                "SELECT owner, table_name, 0 FROM all_tables WHERE owner IN ({USER_SCHEMAS}){owner} AND nested = 'NO' AND secondary = 'N' \
+                 UNION ALL SELECT owner, view_name, 1 FROM all_views WHERE owner IN ({USER_SCHEMAS}){owner} ORDER BY 1, 2"
+            ))
+            .await?;
+        let columns = self
+            .rows(&format!(
+                "SELECT owner, table_name, column_name, \
+                   CASE WHEN data_type IN ('VARCHAR2', 'NVARCHAR2', 'CHAR', 'NCHAR', 'RAW') THEN data_type || '(' || char_length || ')' \
+                        WHEN data_type = 'NUMBER' AND data_precision IS NOT NULL THEN 'NUMBER(' || data_precision || ',' || data_scale || ')' \
+                        ELSE data_type END, \
+                   CASE nullable WHEN 'Y' THEN 1 ELSE 0 END, data_default, column_id \
+                 FROM all_tab_columns WHERE owner IN ({USER_SCHEMAS}){owner} ORDER BY 1, 2, column_id"
+            ))
+            .await?;
+        let pks = self
+            .rows(&format!(
+                "SELECT c.owner, c.table_name, cc.column_name FROM all_constraints c \
+                 JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name \
+                 WHERE c.constraint_type = 'P' AND c.owner IN ({USER_SCHEMAS}){c_owner} ORDER BY cc.position"
+            ))
+            .await?;
+        let fks = self
+            .rows(&format!(
+                "SELECT c.owner, c.table_name, cc.column_name, r.owner, r.table_name, rc.column_name FROM all_constraints c \
+                 JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name \
+                 JOIN all_constraints r ON r.owner = c.r_owner AND r.constraint_name = c.r_constraint_name \
+                 JOIN all_cons_columns rc ON rc.owner = r.owner AND rc.constraint_name = r.constraint_name AND rc.position = cc.position \
+                 WHERE c.constraint_type = 'R' AND c.owner IN ({USER_SCHEMAS}){c_owner}"
+            ))
+            .await?;
+        let default_schema = self.rows("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM dual").await?.into_iter().next().map(|r| r[0].clone());
+        let tables = tables
+            .iter()
+            .map(|t| {
+                let mine = |r: &&Vec<String>| r[0] == t[0] && r[1] == t[1];
+                let primary_keys: Vec<String> = pks.iter().filter(mine).map(|r| r[2].clone()).collect();
+                let columns = columns
+                    .iter()
+                    .filter(mine)
+                    .map(|c| ColumnSchema {
+                        name: c[2].clone(),
+                        data_type: ColumnType::from_sql_str(&c[3]),
+                        raw_type_name: c[3].clone(),
+                        is_nullable: c[4] == "1",
+                        is_primary_key: primary_keys.contains(&c[2]),
+                        default_value: Some(c[5].trim().to_string()).filter(|d| !d.is_empty()),
+                        ordinal_position: c[6].parse().unwrap_or(0),
+                    })
+                    .collect();
+                TableSchema {
+                    schema_name: t[0].clone(),
+                    table_name: t[1].clone(),
+                    is_view: t[2] == "1",
+                    columns,
+                    foreign_keys: fks
+                        .iter()
+                        .filter(mine)
+                        .map(|f| ForeignKeyRef { from_column: f[2].clone(), to_schema: f[3].clone(), to_table: f[4].clone(), to_column: f[5].clone() })
+                        .collect(),
+                    primary_keys,
+                }
+            })
+            .collect();
+        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
     }
 }
 

@@ -11,7 +11,7 @@ pub use url::split_password;
 
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema};
+use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema, EAGER_SCHEMAS};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb};
 use crate::value::DbValue;
 use async_trait::async_trait;
@@ -171,122 +171,17 @@ impl DatabaseSession for PostgresSession {
     }
 
     async fn introspect(&self) -> Result<SchemaCatalog, DbError> {
-        let schemas_rows = self.client.query(
-            "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') ORDER BY schema_name",
-            &[],
-        ).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+        self.catalog_where(None).await
+    }
 
-        let schemas: Vec<String> = schemas_rows.iter().map(|r| r.get(0)).collect();
+    /// Many schemas: only the one unqualified names resolve to, the rest when opened
+    async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
+        let c = self.catalog_where(Some("current_schema()")).await?;
+        if c.schemas.len() > EAGER_SCHEMAS { Ok(c.lazy()) } else { self.introspect().await }
+    }
 
-        let tables_query = r#"
-            SELECT 
-                table_schema, 
-                table_name, 
-                table_type = 'VIEW' as is_view
-            FROM information_schema.tables 
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY table_schema, table_name;
-        "#;
-
-        let table_rows = self.client.query(tables_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
-
-        let columns_query = r#"
-            SELECT 
-                table_schema,
-                table_name,
-                column_name,
-                data_type,
-                is_nullable = 'YES' as nullable,
-                column_default,
-                ordinal_position
-            FROM information_schema.columns
-            WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-            ORDER BY table_schema, table_name, ordinal_position;
-        "#;
-
-        let col_rows = self.client.query(columns_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
-
-        // Primary keys query
-        let pks_query = r#"
-            SELECT 
-                kcu.table_schema,
-                kcu.table_name,
-                kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu 
-              ON tc.constraint_name = kcu.constraint_name 
-             AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY';
-        "#;
-
-        let pk_rows = self.client.query(pks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
-
-        // Foreign keys, one row per referencing column (G5)
-        let fks_query = r#"
-            SELECT kcu.table_schema, kcu.table_name, kcu.column_name,
-                   ccu.table_schema, ccu.table_name, ccu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-            JOIN information_schema.constraint_column_usage ccu
-              ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema
-            WHERE tc.constraint_type = 'FOREIGN KEY';
-        "#;
-        let fk_rows = self.client.query(fks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
-
-        let mut tables = Vec::new();
-
-        for trow in table_rows {
-            let schema_name: String = trow.get(0);
-            let table_name: String = trow.get(1);
-            let is_view: bool = trow.get(2);
-
-            let table_pks: Vec<String> = pk_rows
-                .iter()
-                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
-                .map(|r| r.get::<_, String>(2))
-                .collect();
-
-            let columns: Vec<ColumnSchema> = col_rows
-                .iter()
-                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
-                .map(|r| {
-                    let col_name: String = r.get(2);
-                    let raw_type: String = r.get(3);
-                    let is_nullable: bool = r.get(4);
-                    let default_val: Option<String> = r.get(5);
-                    let ord: i32 = r.get(6);
-                    let is_pk = table_pks.contains(&col_name);
-
-                    ColumnSchema {
-                        name: col_name,
-                        data_type: ColumnType::from_sql_str(&raw_type),
-                        raw_type_name: raw_type,
-                        is_nullable,
-                        is_primary_key: is_pk,
-                        default_value: default_val,
-                        ordinal_position: ord as usize,
-                    }
-                })
-                .collect();
-
-            let foreign_keys = fk_rows
-                .iter()
-                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
-                .map(|r| ForeignKeyRef { from_column: r.get(2), to_schema: r.get(3), to_table: r.get(4), to_column: r.get(5) })
-                .collect();
-            tables.push(TableSchema {
-                schema_name,
-                table_name,
-                is_view,
-                columns,
-                primary_keys: table_pks,
-                foreign_keys,
-            });
-        }
-
-        let default_schema = self.client.query_one("SELECT current_schema()", &[]).await.ok().and_then(|r| r.get(0));
-        Ok(SchemaCatalog { schemas, tables, default_schema })
+    async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
+        Ok(self.catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into())))).await?.tables)
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -463,6 +358,129 @@ fn decode_text(text: Option<&str>, ty: Option<&Type>) -> DbValue {
             .map(DbValue::Blob)
             .unwrap_or_else(text),
         _ => text(),
+    }
+}
+
+impl PostgresSession {
+    /// Everything (`only` = None) or one schema: `only` is a SQL expression for its name
+    async fn catalog_where(&self, only: Option<&str>) -> Result<SchemaCatalog, DbError> {
+        let f = |col: &str| only.map(|e| format!(" AND {col} = {e}")).unwrap_or_default();
+        let schemas_rows = self.client.query(
+            "SELECT schema_name FROM information_schema.schemata WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast') ORDER BY schema_name",
+            &[],
+        ).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+
+        let schemas: Vec<String> = schemas_rows.iter().map(|r| r.get(0)).collect();
+
+        let tables_query = format!(r#"
+            SELECT 
+                table_schema, 
+                table_name, 
+                table_type = 'VIEW' as is_view
+            FROM information_schema.tables 
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema'){}
+            ORDER BY table_schema, table_name;
+        "#, f("table_schema"));
+
+        let table_rows = self.client.query(&tables_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+
+        let columns_query = format!(r#"
+            SELECT 
+                table_schema,
+                table_name,
+                column_name,
+                data_type,
+                is_nullable = 'YES' as nullable,
+                column_default,
+                ordinal_position
+            FROM information_schema.columns
+            WHERE table_schema NOT IN ('pg_catalog', 'information_schema'){}
+            ORDER BY table_schema, table_name, ordinal_position;
+        "#, f("table_schema"));
+
+        let col_rows = self.client.query(&columns_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+
+        // Primary keys query
+        let pks_query = format!(r#"
+            SELECT 
+                kcu.table_schema,
+                kcu.table_name,
+                kcu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu 
+              ON tc.constraint_name = kcu.constraint_name 
+             AND tc.table_schema = kcu.table_schema
+            WHERE tc.constraint_type = 'PRIMARY KEY'{};
+        "#, f("kcu.table_schema"));
+
+        let pk_rows = self.client.query(&pks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+
+        // Foreign keys, one row per referencing column (G5)
+        let fks_query = format!(r#"
+            SELECT kcu.table_schema, kcu.table_name, kcu.column_name,
+                   ccu.table_schema, ccu.table_name, ccu.column_name
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'{};
+        "#, f("kcu.table_schema"));
+        let fk_rows = self.client.query(&fks_query, &[]).await.map_err(|e| DbError::SqlError(e.to_string()))?;
+
+        let mut tables = Vec::new();
+
+        for trow in table_rows {
+            let schema_name: String = trow.get(0);
+            let table_name: String = trow.get(1);
+            let is_view: bool = trow.get(2);
+
+            let table_pks: Vec<String> = pk_rows
+                .iter()
+                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
+                .map(|r| r.get::<_, String>(2))
+                .collect();
+
+            let columns: Vec<ColumnSchema> = col_rows
+                .iter()
+                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
+                .map(|r| {
+                    let col_name: String = r.get(2);
+                    let raw_type: String = r.get(3);
+                    let is_nullable: bool = r.get(4);
+                    let default_val: Option<String> = r.get(5);
+                    let ord: i32 = r.get(6);
+                    let is_pk = table_pks.contains(&col_name);
+
+                    ColumnSchema {
+                        name: col_name,
+                        data_type: ColumnType::from_sql_str(&raw_type),
+                        raw_type_name: raw_type,
+                        is_nullable,
+                        is_primary_key: is_pk,
+                        default_value: default_val,
+                        ordinal_position: ord as usize,
+                    }
+                })
+                .collect();
+
+            let foreign_keys = fk_rows
+                .iter()
+                .filter(|r| r.get::<_, String>(0) == schema_name && r.get::<_, String>(1) == table_name)
+                .map(|r| ForeignKeyRef { from_column: r.get(2), to_schema: r.get(3), to_table: r.get(4), to_column: r.get(5) })
+                .collect();
+            tables.push(TableSchema {
+                schema_name,
+                table_name,
+                is_view,
+                columns,
+                primary_keys: table_pks,
+                foreign_keys,
+            });
+        }
+
+        let default_schema = self.client.query_one("SELECT current_schema()", &[]).await.ok().and_then(|r| r.get(0));
+        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
     }
 }
 

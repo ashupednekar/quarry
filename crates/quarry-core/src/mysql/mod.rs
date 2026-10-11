@@ -8,7 +8,7 @@ mod monitor;
 use crate::conn_url::{self, UrlFields};
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
-use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema};
+use crate::schema::{ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject, TableInfo, TableSchema, EAGER_SCHEMAS};
 use crate::session::{is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS};
 use crate::value::DbValue;
 use async_trait::async_trait;
@@ -210,63 +210,17 @@ impl DatabaseSession for MysqlSession {
     }
 
     async fn introspect(&self) -> Result<SchemaCatalog, DbError> {
-        let schemas = self.column(&format!("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN {SYSTEM} ORDER BY 1")).await?;
-        let tables = self
-            .run(&format!(
-                "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE = 'VIEW' FROM information_schema.TABLES WHERE TABLE_SCHEMA NOT IN {SYSTEM} ORDER BY 1, 2"
-            ))
-            .await?;
-        let columns = self
-            .run(&format!(
-                "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE = 'YES', COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_KEY = 'PRI' \
-                 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA NOT IN {SYSTEM} ORDER BY 1, 2, ORDINAL_POSITION"
-            ))
-            .await?;
-        let fks = self
-            .run(&format!(
-                "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
-                 FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA NOT IN {SYSTEM}"
-            ))
-            .await?;
-        let default_schema = self.column("SELECT DATABASE()").await?.into_iter().next().filter(|s| s != "NULL");
-        let s = |v: &DbValue| v.to_display_string();
-        let truthy = |v: &DbValue| matches!(v, DbValue::Int(1));
-        let tables = tables
-            .rows
-            .iter()
-            .map(|t| {
-                let (schema, name) = (s(&t[0]), s(&t[1]));
-                let mine = |r: &&Vec<DbValue>| s(&r[0]) == schema && s(&r[1]) == name;
-                let columns: Vec<ColumnSchema> = columns
-                    .rows
-                    .iter()
-                    .filter(mine)
-                    .map(|c| ColumnSchema {
-                        name: s(&c[2]),
-                        data_type: ColumnType::from_sql_str(&s(&c[3])),
-                        raw_type_name: s(&c[3]),
-                        is_nullable: truthy(&c[4]),
-                        is_primary_key: truthy(&c[7]),
-                        default_value: (!c[5].is_null()).then(|| s(&c[5])),
-                        ordinal_position: s(&c[6]).parse().unwrap_or(0),
-                    })
-                    .collect();
-                TableSchema {
-                    primary_keys: columns.iter().filter(|c| c.is_primary_key).map(|c| c.name.clone()).collect(),
-                    foreign_keys: fks
-                        .rows
-                        .iter()
-                        .filter(mine)
-                        .map(|f| ForeignKeyRef { from_column: s(&f[2]), to_schema: s(&f[3]), to_table: s(&f[4]), to_column: s(&f[5]) })
-                        .collect(),
-                    schema_name: schema,
-                    table_name: name,
-                    is_view: truthy(&t[2]),
-                    columns,
-                }
-            })
-            .collect();
-        Ok(SchemaCatalog { schemas, tables, default_schema })
+        self.catalog_where(None).await
+    }
+
+    /// Many databases on the server: only the selected one, the rest when opened
+    async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
+        let c = self.catalog_where(Some("DATABASE()")).await?;
+        if c.schemas.len() > EAGER_SCHEMAS { Ok(c.lazy()) } else { self.introspect().await }
+    }
+
+    async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
+        Ok(self.catalog_where(Some(&self.dialect().literal(&DbValue::Text(schema.into())))).await?.tables)
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -425,5 +379,69 @@ impl crate::dump::Dumper for MysqlSession {
             }
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+impl MysqlSession {
+    /// Everything (`only` = None) or one schema: `only` is a SQL expression for its name
+    async fn catalog_where(&self, only: Option<&str>) -> Result<SchemaCatalog, DbError> {
+        let f = only.map(|e| format!(" AND TABLE_SCHEMA = {e}")).unwrap_or_default();
+        let schemas = self.column(&format!("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN {SYSTEM} ORDER BY 1")).await?;
+        let tables = self
+            .run(&format!(
+                "SELECT TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE = 'VIEW' FROM information_schema.TABLES WHERE TABLE_SCHEMA NOT IN {SYSTEM}{f} ORDER BY 1, 2"
+            ))
+            .await?;
+        let columns = self
+            .run(&format!(
+                "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE = 'YES', COLUMN_DEFAULT, ORDINAL_POSITION, COLUMN_KEY = 'PRI' \
+                 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA NOT IN {SYSTEM}{f} ORDER BY 1, 2, ORDINAL_POSITION"
+            ))
+            .await?;
+        let fks = self
+            .run(&format!(
+                "SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, REFERENCED_TABLE_SCHEMA, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME \
+                 FROM information_schema.KEY_COLUMN_USAGE WHERE REFERENCED_TABLE_NAME IS NOT NULL AND TABLE_SCHEMA NOT IN {SYSTEM}{f}"
+            ))
+            .await?;
+        let default_schema = self.column("SELECT DATABASE()").await?.into_iter().next().filter(|s| s != "NULL");
+        let s = |v: &DbValue| v.to_display_string();
+        let truthy = |v: &DbValue| matches!(v, DbValue::Int(1));
+        let tables = tables
+            .rows
+            .iter()
+            .map(|t| {
+                let (schema, name) = (s(&t[0]), s(&t[1]));
+                let mine = |r: &&Vec<DbValue>| s(&r[0]) == schema && s(&r[1]) == name;
+                let columns: Vec<ColumnSchema> = columns
+                    .rows
+                    .iter()
+                    .filter(mine)
+                    .map(|c| ColumnSchema {
+                        name: s(&c[2]),
+                        data_type: ColumnType::from_sql_str(&s(&c[3])),
+                        raw_type_name: s(&c[3]),
+                        is_nullable: truthy(&c[4]),
+                        is_primary_key: truthy(&c[7]),
+                        default_value: (!c[5].is_null()).then(|| s(&c[5])),
+                        ordinal_position: s(&c[6]).parse().unwrap_or(0),
+                    })
+                    .collect();
+                TableSchema {
+                    primary_keys: columns.iter().filter(|c| c.is_primary_key).map(|c| c.name.clone()).collect(),
+                    foreign_keys: fks
+                        .rows
+                        .iter()
+                        .filter(mine)
+                        .map(|f| ForeignKeyRef { from_column: s(&f[2]), to_schema: s(&f[3]), to_table: s(&f[4]), to_column: s(&f[5]) })
+                        .collect(),
+                    schema_name: schema,
+                    table_name: name,
+                    is_view: truthy(&t[2]),
+                    columns,
+                }
+            })
+            .collect();
+        Ok(SchemaCatalog { schemas, tables, default_schema, ..Default::default() })
     }
 }
