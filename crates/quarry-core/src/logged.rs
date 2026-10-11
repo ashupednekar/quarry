@@ -110,6 +110,14 @@ impl DatabaseSession for LoggedSession {
         self.inner.table_info(table).await
     }
 
+    async fn objects(&self, schema: &str) -> Result<Vec<crate::schema::SchemaObject>, DbError> {
+        self.inner.objects(schema).await
+    }
+
+    async fn object_ddl(&self, schema: &str, obj: &crate::schema::SchemaObject) -> Result<String, DbError> {
+        self.inner.object_ddl(schema, obj).await
+    }
+
     fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
         self.inner.dumper()
     }

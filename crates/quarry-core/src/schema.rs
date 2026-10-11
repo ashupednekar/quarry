@@ -136,6 +136,41 @@ pub fn index_rows(r: &crate::session::QueryResult) -> Vec<IndexInfo> {
     r.rows.iter().map(|r| IndexInfo { name: r[0].to_display_string(), unique: truthy(&r[1]), columns: r[2].to_display_string() }).collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    Function,
+    Procedure,
+    Sequence,
+    Trigger,
+    /// Enums and other user-defined types
+    Type,
+}
+
+impl ObjectKind {
+    pub const ALL: [ObjectKind; 5] = [ObjectKind::Function, ObjectKind::Procedure, ObjectKind::Sequence, ObjectKind::Trigger, ObjectKind::Type];
+
+    pub fn plural(self) -> &'static str {
+        match self {
+            ObjectKind::Function => "Functions",
+            ObjectKind::Procedure => "Procedures",
+            ObjectKind::Sequence => "Sequences",
+            ObjectKind::Trigger => "Triggers",
+            ObjectKind::Type => "Types",
+        }
+    }
+}
+
+/// A schema object other than a table or view, listed lazily when its schema is expanded
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaObject {
+    pub kind: ObjectKind,
+    pub name: String,
+    /// Shown beside the name: arguments, the table a trigger is on, enum labels
+    pub detail: String,
+    /// Driver-specific handle for `object_ddl` (a Postgres oid); empty when the name is enough
+    pub id: String,
+}
+
 /// What the Structure and DDL views show beyond the catalog
 #[derive(Debug, Clone, Default)]
 pub struct TableInfo {

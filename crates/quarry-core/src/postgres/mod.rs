@@ -4,6 +4,7 @@
 mod dump;
 mod logs;
 mod monitor;
+mod objects;
 mod url;
 
 pub use url::split_password;
@@ -56,13 +57,13 @@ impl Driver for PostgresDriver {
     }
 
     fn split(&self, conn: &str) -> Vec<String> {
-        url::parse_pg_url(conn).map_or_else(|| url::parse_kv(conn), |(f, _)| f).to_vec()
+        crate::conn_url::parse(conn, &url::SCHEMES).map_or_else(|| url::parse_kv(conn), |(f, _)| f).to_vec()
     }
 
     fn join(&self, values: &[String], previous: &str) -> String {
-        let query = url::parse_pg_url(previous).map(|(_, q)| q).unwrap_or_default();
-        let fields: url::PgFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
-        url::build_pg_url(&fields, &query)
+        let query = crate::conn_url::parse(previous, &url::SCHEMES).map(|(_, q)| q).unwrap_or_default();
+        let fields: crate::conn_url::UrlFields = std::array::from_fn(|i| values.get(i).cloned().unwrap_or_default());
+        crate::conn_url::build("postgres", &fields, &query)
     }
 
     fn take_secret(&self, conn: &str) -> (String, Option<String>) {
@@ -348,6 +349,14 @@ impl DatabaseSession for PostgresSession {
         Some(self)
     }
 
+    async fn objects(&self, schema: &str) -> Result<Vec<crate::schema::SchemaObject>, DbError> {
+        self.list_objects(schema).await
+    }
+
+    async fn object_ddl(&self, _schema: &str, obj: &crate::schema::SchemaObject) -> Result<String, DbError> {
+        self.definition(obj).await
+    }
+
     /// Postgres doesn't keep DDL: CREATE TABLE comes from the catalog, the rest from pg_catalog
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
         let rel = format!("{}::regclass", sql_string(&self.dialect().qualified(&table.schema_name, &table.table_name)));
@@ -401,16 +410,20 @@ impl PostgresSession {
             .ok()
             .map(|stmt| stmt.columns().iter().map(|c| c.type_().clone()).collect());
 
-        let messages = self.client.simple_query(sql).await.map_err(statement_err)?;
+        // Streamed so rows past MAX_ROWS are counted, not kept. The stream is read to the end
+        // either way, so the connection stays in step for the next statement.
+        let messages = self.client.simple_query_raw(sql).await.map_err(statement_err)?;
+        futures_util::pin_mut!(messages);
 
         let mut columns = Vec::new();
         let mut rows = Vec::new();
         let mut affected = 0;
-        for msg in messages {
+        while let Some(msg) = futures_util::TryStreamExt::try_next(&mut messages).await.map_err(statement_err)? {
             match msg {
                 SimpleQueryMessage::RowDescription(cols) => {
                     columns = cols.iter().map(|c| c.name().to_string()).collect();
                 }
+                SimpleQueryMessage::Row(_) if rows.len() >= crate::session::MAX_ROWS => {}
                 SimpleQueryMessage::Row(row) => {
                     rows.push(
                         (0..row.len())

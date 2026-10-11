@@ -79,6 +79,12 @@ pub trait Driver: Send + Sync {
 static DRIVERS: &[&dyn Driver] = &[
     #[cfg(feature = "postgres")]
     &crate::postgres::DRIVER,
+    #[cfg(feature = "mysql")]
+    &crate::mysql::DRIVER,
+    #[cfg(feature = "mssql")]
+    &crate::mssql::DRIVER,
+    #[cfg(feature = "oracle")]
+    &crate::oracle::DRIVER,
     #[cfg(feature = "sqlite")]
     &crate::sqlite::DRIVER,
 ];

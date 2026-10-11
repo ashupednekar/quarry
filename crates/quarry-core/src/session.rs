@@ -3,7 +3,7 @@
 
 use crate::dialect::Dialect;
 use crate::edits::PendingChanges;
-use crate::schema::{SchemaCatalog, TableInfo, TableSchema};
+use crate::schema::{SchemaCatalog, SchemaObject, TableInfo, TableSchema};
 use crate::value::DbValue;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,10 @@ pub enum DbError {
     Internal(String),
 }
 
+/// Most rows a result keeps in memory. The rest are counted but not kept: page with LIMIT,
+/// or export, to see them all.
+pub const MAX_ROWS: usize = 100_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
@@ -45,6 +49,13 @@ pub struct QueryResult {
     pub rows_affected: u64,
     pub execution_time: Duration,
     pub statement: String,
+}
+
+impl QueryResult {
+    /// Rows were dropped at `MAX_ROWS`; `rows_affected` holds the full count
+    pub fn truncated(&self) -> bool {
+        !self.columns.is_empty() && (self.rows.len() as u64) < self.rows_affected
+    }
 }
 
 /// Transaction state shared by the drivers (E9). `open` tracks whether a transaction is in progress.
@@ -129,6 +140,16 @@ pub trait DatabaseSession: Send + Sync {
     /// from the catalog; drivers that can do better (stored DDL, indexes, constraints) override it.
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
         Ok(TableInfo { ddl: table.create_sql(self.dialect()), indexes: Vec::new() })
+    }
+
+    /// Functions, sequences, triggers and types in `schema`. Fetched when the schema is expanded.
+    async fn objects(&self, _schema: &str) -> Result<Vec<SchemaObject>, DbError> {
+        Ok(Vec::new())
+    }
+
+    /// The definition of one of `objects`, as SQL that would recreate it
+    async fn object_ddl(&self, _schema: &str, obj: &SchemaObject) -> Result<String, DbError> {
+        Err(DbError::Internal(format!("no definition available for {}", obj.name)))
     }
 
     /// Whole-database dump, when the database supports one

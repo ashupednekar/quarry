@@ -146,3 +146,175 @@ fn postgres_conforms() {
     let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
     rt.block_on(quarry_core::conformance::check(&s, "public"));
 }
+
+/// EXPLAIN through the dialect reads back as a plan tree
+#[test]
+fn postgres_explain_reads_as_a_plan() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    let d = s.dialect();
+    let sql = "SELECT * FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = 'x'";
+    let r = rt.block_on(s.execute(&d.explain(sql, true).unwrap())).unwrap();
+    let plan = d.plan(&r).expect("plan");
+    assert!(plan.execution_ms.is_some() && plan.root.ms.is_some() && !plan.root.children.is_empty(), "{plan:?}");
+}
+
+/// Functions, sequences, triggers and types are listed per schema with their definitions
+#[test]
+fn postgres_lists_schema_objects() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    use quarry_core::schema::ObjectKind::*;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    for sql in [
+        "DROP SCHEMA IF EXISTS obj_test CASCADE",
+        "CREATE SCHEMA obj_test",
+        "CREATE TYPE obj_test.mood AS ENUM ('sad', 'ok')",
+        "CREATE DOMAIN obj_test.pos AS int NOT NULL",
+        "CREATE SEQUENCE obj_test.counter START 5",
+        "CREATE TABLE obj_test.t (id int)",
+        "CREATE FUNCTION obj_test.touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$",
+        "CREATE PROCEDURE obj_test.noop(a int) LANGUAGE sql AS $$ SELECT 1 $$",
+        "CREATE TRIGGER t_touch BEFORE INSERT ON obj_test.t FOR EACH ROW EXECUTE FUNCTION obj_test.touch()",
+    ] {
+        rt.block_on(s.execute(sql)).unwrap();
+    }
+    let objects = rt.block_on(s.objects("obj_test")).unwrap();
+    let names: Vec<_> = objects.iter().map(|o| (o.kind, o.name.as_str(), o.detail.as_str())).collect();
+    for want in [(Function, "touch", ""), (Procedure, "noop", "IN a integer"), (Sequence, "counter", ""), (Trigger, "t_touch", "on t"), (Type, "mood", "sad, ok"), (Type, "pos", "integer")] {
+        assert!(names.contains(&want), "{want:?} missing from {names:?}");
+    }
+    for o in &objects {
+        let ddl = rt.block_on(s.object_ddl("obj_test", o)).unwrap();
+        assert!(ddl.starts_with("CREATE"), "{}: {ddl}", o.name);
+    }
+    rt.block_on(s.execute("DROP SCHEMA obj_test CASCADE")).unwrap();
+}
+
+/// Results past MAX_ROWS are counted, not kept, and the connection stays usable
+#[test]
+fn postgres_caps_big_results() {
+    let Ok(url) = std::env::var("QUARRY_PG_URL") else { return };
+    use quarry_core::session::MAX_ROWS;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(PostgresSession::connect(&url, false)).unwrap();
+    let r = rt.block_on(s.execute(&format!("SELECT generate_series(1, {})", MAX_ROWS + 7))).unwrap();
+    assert_eq!((r.rows.len(), r.rows_affected, r.truncated()), (MAX_ROWS, MAX_ROWS as u64 + 7, true));
+    assert_eq!(rt.block_on(s.execute("SELECT 42")).unwrap().rows[0][0], quarry_core::DbValue::Int(42));
+}
+
+/// The MySQL driver passes the shared contract.
+/// Runs only when QUARRY_MYSQL_URL is set, e.g. mysql://root:mysql@127.0.0.1:53306/quarry_test
+#[cfg(feature = "mysql")]
+#[test]
+fn mysql_conforms() {
+    let Ok(url) = std::env::var("QUARRY_MYSQL_URL") else { return };
+    use quarry_core::mysql::MysqlSession;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(MysqlSession::connect(&url, false)).unwrap();
+    rt.block_on(quarry_core::conformance::check(&s, "quarry_test"));
+
+    // Types decode exactly; backslashes and quotes survive the dialect's literals
+    for sql in [
+        "DROP TABLE IF EXISTS types_t",
+        "CREATE TABLE types_t (i BIGINT UNSIGNED, d DECIMAL(30,10), f DOUBLE, j JSON, b VARBINARY(4), t TEXT, dt DATETIME(3))",
+    ] {
+        rt.block_on(s.execute(sql)).unwrap();
+    }
+    let d = s.dialect();
+    let text = quarry_core::DbValue::Text(r"C:\new 'quoted'".into());
+    rt.block_on(s.execute(&format!(
+        "INSERT INTO types_t VALUES (18446744073709551615, 12345678901234567890.0123456789, 1.5, '{{\"a\":1}}', X'00FF', {}, '2026-01-02 03:04:05.678')",
+        d.literal(&text)
+    )))
+    .unwrap();
+    let r = rt.block_on(s.execute("SELECT * FROM types_t")).unwrap();
+    use quarry_core::DbValue::*;
+    assert_eq!(
+        r.rows[0],
+        vec![
+            Decimal("18446744073709551615".into()),
+            Decimal("12345678901234567890.0123456789".into()),
+            Float(1.5),
+            Json(serde_json::json!({"a": 1})),
+            Blob(vec![0, 255]),
+            text,
+            Text("2026-01-02 03:04:05.678".into()),
+        ]
+    );
+    let monitor = s.monitor().unwrap();
+    assert!(matches!(rt.block_on(monitor.snapshot(quarry_core::monitor::ServerView::Activity)), Ok(quarry_core::monitor::Snapshot::Rows(_))));
+    rt.block_on(s.execute("DROP TABLE types_t")).unwrap();
+}
+
+/// SQL Server passes the shared contract.
+/// Runs only when QUARRY_MSSQL_URL is set, e.g. sqlserver://sa:Quarry_test1@127.0.0.1:51433/master
+#[cfg(feature = "mssql")]
+#[test]
+fn mssql_conforms() {
+    let Ok(url) = std::env::var("QUARRY_MSSQL_URL") else { return };
+    use quarry_core::mssql::MssqlSession;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(MssqlSession::connect(&url, false)).unwrap();
+    rt.block_on(quarry_core::conformance::check(&s, "dbo"));
+
+    use quarry_core::DbValue::*;
+    let r = rt.block_on(s.execute(
+        "SELECT CAST(12345678901234567890.0123456789 AS decimal(30,10)), CAST(0x00FF AS varbinary(2)), N'naïve', \
+         CAST('2026-01-02 03:04:05.678' AS datetime2(3)), CAST(1 AS bit), CAST(NULL AS int)",
+    ))
+    .unwrap();
+    assert_eq!(
+        r.rows[0],
+        vec![Decimal("12345678901234567890.0123456789".into()), Blob(vec![0, 255]), Text("naïve".into()), Text("2026-01-02 03:04:05.678".into()), Boolean(true), Null]
+    );
+    // A procedure must be alone in its batch: no rowcount is appended
+    rt.block_on(s.execute("CREATE OR ALTER PROCEDURE dbo.quarry_p AS BEGIN SELECT 1; END")).unwrap();
+    let objects = rt.block_on(s.objects("dbo")).unwrap();
+    let p = objects.iter().find(|o| o.name == "quarry_p").expect("procedure listed");
+    assert!(rt.block_on(s.object_ddl("dbo", p)).unwrap().contains("SELECT 1"));
+    rt.block_on(s.execute("DROP PROCEDURE dbo.quarry_p")).unwrap();
+
+    use quarry_core::monitor::{ServerView, Snapshot};
+    let monitor = s.monitor().unwrap();
+    for view in [ServerView::Activity, ServerView::Locks] {
+        assert!(matches!(rt.block_on(monitor.snapshot(view)), Ok(Snapshot::Rows(_))), "{view:?}");
+    }
+}
+
+/// Oracle passes the shared contract. Needs Instant Client (ORACLE_CLIENT_LIB_DIR).
+/// Runs only when QUARRY_ORACLE_URL is set, e.g. oracle://quarry:quarry@127.0.0.1:51521/FREEPDB1
+#[cfg(feature = "oracle")]
+#[test]
+fn oracle_conforms() {
+    let Ok(url) = std::env::var("QUARRY_ORACLE_URL") else { return };
+    use quarry_core::oracle::OracleSession;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let s = rt.block_on(OracleSession::connect(&url, false)).unwrap();
+    rt.block_on(quarry_core::conformance::check(&s, "QUARRY"));
+
+    use quarry_core::DbValue::*;
+    let r = rt.block_on(s.execute("SELECT 12345678901234567890.0123456789, HEXTORAW('00FF'), 'naïve', CAST(NULL AS NUMBER), 42 FROM dual;")).unwrap();
+    assert_eq!(r.rows[0], vec![Decimal("12345678901234567890.0123456789".into()), Blob(vec![0, 255]), Text("naïve".into()), Null, Int(42)]);
+    // PL/SQL keeps its semicolons; plain SQL loses its trailing one
+    rt.block_on(s.execute("CREATE OR REPLACE PROCEDURE quarry_p AS BEGIN NULL; END;")).unwrap();
+    let objects = rt.block_on(s.objects("QUARRY")).unwrap();
+    let p = objects.iter().find(|o| o.name == "QUARRY_P").expect("procedure listed");
+    assert!(rt.block_on(s.object_ddl("QUARRY", p)).unwrap().contains("PROCEDURE"));
+    rt.block_on(s.execute("DROP PROCEDURE quarry_p")).unwrap();
+}
+
+/// Without Instant Client, connecting explains what to install instead of failing obscurely.
+/// Runs only when QUARRY_ORACLE_NO_CLIENT is set (and no client is findable).
+#[cfg(feature = "oracle")]
+#[test]
+fn oracle_without_client_says_what_to_install() {
+    if std::env::var("QUARRY_ORACLE_NO_CLIENT").is_err() {
+        return;
+    }
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let res = rt.block_on(quarry_core::oracle::OracleSession::connect("oracle://u:p@127.0.0.1:51521/FREEPDB1", false));
+    let msg = res.err().expect("no client, no connection").to_string();
+    assert!(msg.contains("Instant Client isn't installed"), "{msg}");
+}

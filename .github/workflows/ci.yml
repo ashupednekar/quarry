@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Drivers and SQL tooling against real servers: every driver must pass quarry_core::conformance
+  core:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["55432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: mysql
+          MYSQL_DATABASE: quarry_test
+        ports: ["53306:3306"]
+        options: --health-cmd "mysqladmin ping -uroot -pmysql" --health-interval 5s --health-retries 30
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Quarry_test1
+        ports: ["51433:1433"]
+        options: --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P Quarry_test1 -Q 'SELECT 1'" --health-interval 5s --health-retries 30
+      oracle:
+        image: gvenzl/oracle-free:23-slim-faststart
+        env:
+          ORACLE_PASSWORD: oracle
+          APP_USER: quarry
+          APP_USER_PASSWORD: quarry
+        ports: ["51521:1521"]
+        options: --health-cmd healthcheck.sh --health-interval 10s --health-retries 30
+    env:
+      QUARRY_PG_URL: postgres://postgres:postgres@localhost:55432/postgres
+      QUARRY_MYSQL_URL: mysql://root:mysql@127.0.0.1:53306/quarry_test
+      QUARRY_MSSQL_URL: sqlserver://sa:Quarry_test1@127.0.0.1:51433/master
+      QUARRY_ORACLE_URL: oracle://quarry:quarry@127.0.0.1:51521/FREEPDB1
+      ORACLE_CLIENT_LIB_DIR: /opt/oracle/instantclient
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Oracle Instant Client
+        run: |
+          sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1
+          # Ubuntu 24.04 renamed libaio; Instant Client looks for the old name
+          sudo ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1 || true
+          curl -sSL -o ic.zip https://download.oracle.com/otn_software/linux/instantclient/instantclient-basiclite-linuxx64.zip
+          sudo mkdir -p /opt/oracle && sudo unzip -q ic.zip -d /opt/oracle
+          sudo mv /opt/oracle/instantclient_* /opt/oracle/instantclient
+      - name: Unit tests and live drivers
+        run: cargo test -p quarry-core -p quarry-sql
+      - name: Each driver builds alone
+        run: |
+          for f in postgres sqlite mysql mssql oracle; do
+            cargo build -p quarry-core --no-default-features --features $f
+          done
+
+  # The desktop app: build and unit tests on macOS, where it's developed
+  app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p quarry-app

@@ -271,6 +271,28 @@ impl DatabaseSession for SqliteSession {
         Some(self)
     }
 
+    /// SQLite's only schema objects besides tables and views are triggers (and indexes, shown per table)
+    async fn objects(&self, _schema: &str) -> Result<Vec<crate::schema::SchemaObject>, DbError> {
+        let conn = self.conn.lock().await;
+        let r = run_statement(&conn, "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name", Instant::now())?;
+        Ok(r.rows
+            .iter()
+            .map(|row| crate::schema::SchemaObject {
+                kind: crate::schema::ObjectKind::Trigger,
+                name: row[0].to_display_string(),
+                detail: format!("on {}", row[1].to_display_string()),
+                id: String::new(),
+            })
+            .collect())
+    }
+
+    async fn object_ddl(&self, _schema: &str, obj: &crate::schema::SchemaObject) -> Result<String, DbError> {
+        let conn = self.conn.lock().await;
+        let name = obj.name.replace('\'', "''");
+        let r = run_statement(&conn, &format!("SELECT sql FROM sqlite_master WHERE name = '{name}'"), Instant::now())?;
+        r.rows.first().map(|row| format!("{};", row[0].to_display_string())).ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
+    }
+
     /// SQLite keeps each object's DDL
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
         let name = format!("'{}'", table.table_name.replace('\'', "''"));
@@ -318,31 +340,17 @@ fn run_statement(conn: &Connection, sql: &str, start: Instant) -> Result<QueryRe
 
     let mut rows_data = Vec::new();
     let mut rows = stmt.query([]).map_err(sql_err)?;
+    let mut row_count = 0u64;
 
     while let Some(row) = rows.next().map_err(sql_err)? {
-        let mut row_vals = Vec::with_capacity(col_count);
-        for i in 0..col_count {
-            let val = match row.get_ref(i).map_err(sql_err)? {
-                ValueRef::Null => DbValue::Null,
-                ValueRef::Integer(i) => DbValue::Int(i),
-                ValueRef::Real(r) => DbValue::Float(r),
-                ValueRef::Text(t) => {
-                    let s = String::from_utf8_lossy(t).to_string();
-                    // Quick JSON heuristic
-                    let looks_json = (s.starts_with('{') && s.ends_with('}')) || (s.starts_with('[') && s.ends_with(']'));
-                    match looks_json.then(|| serde_json::from_str(&s).ok()).flatten() {
-                        Some(j) => DbValue::Json(j),
-                        None => DbValue::Text(s),
-                    }
-                }
-                ValueRef::Blob(b) => DbValue::Blob(b.to_vec()),
-            };
-            row_vals.push(val);
+        // Past the cap rows are counted, not decoded
+        row_count += 1;
+        if rows_data.len() >= crate::session::MAX_ROWS {
+            continue;
         }
+        let row_vals = (0..col_count).map(|i| row.get_ref(i).map(decode).map_err(sql_err)).collect::<Result<Vec<_>, _>>()?;
         rows_data.push(row_vals);
     }
-
-    let row_count = rows_data.len() as u64;
 
     Ok(QueryResult {
         columns,
@@ -351,4 +359,39 @@ fn run_statement(conn: &Connection, sql: &str, start: Instant) -> Result<QueryRe
         execution_time: start.elapsed(),
         statement: sql.to_string(),
     })
+}
+
+fn decode(v: ValueRef) -> DbValue {
+    match v {
+        ValueRef::Null => DbValue::Null,
+        ValueRef::Integer(i) => DbValue::Int(i),
+        ValueRef::Real(r) => DbValue::Float(r),
+        ValueRef::Text(t) => {
+            let s = String::from_utf8_lossy(t).to_string();
+            // Quick JSON heuristic
+            let looks_json = (s.starts_with('{') && s.ends_with('}')) || (s.starts_with('[') && s.ends_with(']'));
+            match looks_json.then(|| serde_json::from_str(&s).ok()).flatten() {
+                Some(j) => DbValue::Json(j),
+                None => DbValue::Text(s),
+            }
+        }
+        ValueRef::Blob(b) => DbValue::Blob(b.to_vec()),
+    }
+}
+
+impl SqliteSession {
+    /// Hands each row of `sql` to `f` as it's read, keeping none of them (dumps of any size)
+    pub async fn for_each_row(&self, sql: &str, mut f: impl FnMut(&[String], Vec<DbValue>) -> Result<(), String>) -> Result<usize, String> {
+        let conn = self.conn.lock().await;
+        let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+        let cols: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut n = 0;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let vals = (0..cols.len()).map(|i| row.get_ref(i).map(decode)).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
+            f(&cols, vals)?;
+            n += 1;
+        }
+        Ok(n)
+    }
 }

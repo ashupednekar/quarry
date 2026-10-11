@@ -240,7 +240,7 @@ pub async fn run(
             .iter()
             .map(|(src, _)| match row.get(*src).and_then(|v| v.as_deref()) {
                 None => "NULL".into(),
-                Some(v) => format!("'{}'", v.replace('\'', "''")),
+                Some(v) => d.literal(&crate::DbValue::Text(v.to_string())),
             })
             .collect();
         let insert = format!("INSERT INTO {} ({}) VALUES ({}){}", plan.table, cols.join(", "), values.join(", "), suffix);

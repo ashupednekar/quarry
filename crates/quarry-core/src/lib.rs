@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 pub mod conformance;
+pub mod conn_url;
 pub mod dialect;
+pub mod diff;
 pub mod driver;
 pub mod dump;
 pub mod edits;
@@ -10,6 +12,13 @@ pub mod export;
 pub mod import;
 pub mod logged;
 pub mod monitor;
+#[cfg(feature = "oracle")]
+pub mod oracle;
+#[cfg(feature = "mssql")]
+pub mod mssql;
+#[cfg(feature = "mysql")]
+pub mod mysql;
+pub mod plan;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod schema;
@@ -80,7 +89,18 @@ mod tests {
         assert!(info.ddl.starts_with("CREATE TABLE users") && info.ddl.contains("CREATE UNIQUE INDEX users_email"));
         assert_eq!(info.indexes, vec![schema::IndexInfo { name: "users_email".into(), unique: true, columns: "email".into() }]);
 
-        // 7. Verify updated row
+        // 7. Triggers are listed and their SQL comes back
+        session.execute("CREATE TRIGGER users_touch AFTER UPDATE ON users BEGIN SELECT 1; END").await.unwrap();
+        let objects = session.objects("main").await.unwrap();
+        assert_eq!((objects[0].name.as_str(), objects[0].detail.as_str()), ("users_touch", "on users"));
+        assert!(session.object_ddl("main", &objects[0]).await.unwrap().starts_with("CREATE TRIGGER users_touch"));
+
+        // 8. Big results keep MAX_ROWS rows and still report the full count
+        let big = format!("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {}) SELECT i FROM n", session::MAX_ROWS + 5);
+        let r = session.execute(&big).await.unwrap();
+        assert_eq!((r.rows.len(), r.rows_affected, r.truncated()), (session::MAX_ROWS, session::MAX_ROWS as u64 + 5, true));
+
+        // 9. Verify updated row
         let verify = session.execute("SELECT email FROM users WHERE id = 1").await.unwrap();
         assert_eq!(verify.rows[0][0], DbValue::Text("alice.updated@example.com".to_string()));
     }

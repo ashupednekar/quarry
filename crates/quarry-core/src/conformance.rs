@@ -39,7 +39,7 @@ pub async fn check(s: &dyn DatabaseSession, schema: &str) {
     };
     s.execute(&insert(1, "it's")).await.expect("insert");
     s.execute(&insert(2, "b")).await.expect("insert");
-    let r = s.execute(&format!("SELECT {} FROM {t} ORDER BY {} {}", d.quote_ident("name"), d.quote_ident("id"), d.limit_clause(1, 0))).await.expect("select with limit");
+    let r = s.execute(&d.limit(&format!("SELECT {} FROM {t} ORDER BY {}", d.quote_ident("name"), d.quote_ident("id")), 1, 0)).await.expect("select with limit");
     assert_eq!(r.rows, vec![vec![DbValue::Text("it's".into())]], "select: quoting or limit");
 
     // Grid edits apply atomically and refuse to overwrite a row someone else changed
