@@ -543,6 +543,7 @@ impl CommandBar {
         modal_backdrop(
             "command-bar-backdrop",
             cx.listener(move |this, _, window, cx| this.dismiss(&crate::Dismiss, window, cx)),
+            cx,
         )
         .child(
             modal_card("command-bar-card", 640.0, theme)

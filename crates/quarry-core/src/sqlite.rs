@@ -350,9 +350,24 @@ impl DatabaseSession for SqliteSession {
             .map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';')))
             .collect::<Vec<_>>()
             .join("\n\n");
+        let triggers = run_statement(&conn, &format!("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = {name} ORDER BY name"), Instant::now());
+        // Exact count: SQLite keeps no estimate, and local files are small enough
+        let quoted = format!("\"{}\"", table.table_name.replace('"', "\"\""));
+        let stats = run_statement(
+            &conn,
+            &format!("SELECT count(*) AS \"Rows\" FROM {quoted}"),
+            Instant::now(),
+        );
         Ok(TableInfo {
             ddl,
             indexes: crate::schema::index_rows(&indexes),
+            triggers: triggers
+                .map(|r| crate::schema::pair_rows(&r))
+                .unwrap_or_default(),
+            stats: stats
+                .map(|r| crate::schema::labelled_row(&r))
+                .unwrap_or_default(),
+            ..Default::default()
         })
     }
 

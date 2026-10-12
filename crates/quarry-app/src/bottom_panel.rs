@@ -999,7 +999,7 @@ impl QuarryWindow {
             ("Cancel query?", format!("The query running on backend {pid} will be stopped. The session stays connected."), "Cancel query")
         };
         Some(
-            modal_backdrop("kill-backdrop", dismiss_on_click)
+            modal_backdrop("kill-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("kill-card", 380.0, theme)
                         .p_4()

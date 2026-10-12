@@ -82,7 +82,7 @@ impl QuarryWindow {
         let dialog = self.params.as_ref()?;
         let t = &self.theme;
         Some(
-            modal_backdrop("params-card-backdrop", dismiss_on_click)
+            modal_backdrop("params-card-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("params-card", 460.0, t)
                         .overflow_hidden()

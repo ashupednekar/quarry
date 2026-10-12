@@ -332,7 +332,7 @@ impl QuarryWindow {
             );
 
         Some(
-            modal_backdrop("settings-backdrop", dismiss_on_click)
+            modal_backdrop("settings-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("settings-card", 640.0, &t)
                         .max_h(px(640.0))

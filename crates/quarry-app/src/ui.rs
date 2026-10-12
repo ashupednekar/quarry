@@ -14,16 +14,73 @@ pub fn v_flex() -> Div {
     div().flex().flex_col()
 }
 
-/// Dimmed layer behind every modal: blocks the UI underneath, clicking it dismisses
+/// One focus handle for whichever modal is open (there's only ever one)
+struct ModalFocus(FocusHandle);
+impl Global for ModalFocus {}
+
+pub fn init_modal_focus(cx: &mut App) {
+    let focus = cx.focus_handle();
+    cx.set_global(ModalFocus(focus));
+}
+
+/// Dimmed layer behind every modal: blocks the UI underneath, clicking it dismisses.
+/// It also traps focus: Tab / ⇧Tab cycle through the modal's controls instead of wandering into
+/// the window behind, and focus moves into the modal when it opens.
 pub fn modal_backdrop(
     id: &'static str,
     on_dismiss: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> Stateful<Div> {
+    let focus = cx.global::<ModalFocus>().0.clone();
+    let (trap, claim) = (focus.clone(), focus.clone());
     div()
         .id(id)
         .absolute()
         .inset_0()
         .occlude()
+        .track_focus(&focus)
+        .capture_key_down(move |e: &KeyDownEvent, window, cx| {
+            let m = &e.keystroke.modifiers;
+            if e.keystroke.key != "tab" || m.platform || m.control || m.alt {
+                return;
+            }
+            cx.stop_propagation();
+            // Step through the window's tab stops until one is inside the modal again
+            let start = window.focused(cx);
+            for _ in 0..256 {
+                if m.shift {
+                    window.focus_prev(cx);
+                } else {
+                    window.focus_next(cx);
+                }
+                let now = window.focused(cx);
+                if (trap.contains_focused(window, cx) && now.as_ref() != Some(&trap))
+                    || now == start
+                {
+                    break;
+                }
+            }
+        })
+        // On open, pull focus in unless the modal already focused one of its own fields
+        .child(
+            canvas(
+                move |_, window, cx| {
+                    // Only while focus is outside: once inside, nothing is scheduled
+                    if claim.contains_focused(window, cx) {
+                        return;
+                    }
+                    let claim = claim.clone();
+                    window.on_next_frame(move |window, cx| {
+                        if !claim.contains_focused(window, cx) {
+                            claim.focus(window, cx);
+                        }
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0(),
+        )
         // GPUI can't blur what's behind an element; a deep translucent dim plus the card's soft
         // shadow gives the frosted, lifted look instead
         .bg(rgba(0x0a0b0d9c))

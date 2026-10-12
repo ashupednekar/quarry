@@ -27,7 +27,7 @@ pub struct PendingRowDelete {
     pub pks: RowKey,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PendingChanges {
     pub cell_edits: Vec<PendingCellEdit>,
     pub row_inserts: Vec<PendingRowInsert>,

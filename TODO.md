@@ -46,8 +46,8 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 
 ## Modals
 - [x] Enter triggers the primary button (add connection, export, import, params, command palette)
-- [ ] Keep Tab focus inside the open modal; gpui cycles focus across the whole window. Doable by giving `modal_card` a FocusHandle and stepping `focus_next` until focus is back inside, but that touches all 11 modals
-- [ ] One `Option<ActiveModal>` instead of separate `*_open` flags (internal cleanup, no user-facing change)
+- [x] Keep Tab focus inside the open modal: Tab / ⇧Tab cycle within it, and focus moves in on open (`ui::modal_backdrop`, one shared `ModalFocus` handle)
+- [ ] ~~One `Option<ActiveModal>` instead of separate `*_open` flags~~ won't do: 46 call sites across bool flags and stateful modals, for no user-facing change; one-modal-at-a-time hasn't caused a bug
 
 ## Layout
 - [x] Maximise the editor (⇧⎋): hides sidebar and bottom panel, again to restore

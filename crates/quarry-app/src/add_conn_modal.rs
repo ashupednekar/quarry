@@ -296,6 +296,7 @@ impl AddConnModal {
                 this.state.add_conn_modal_open = false;
                 cx.notify()
             }),
+            cx,
         )
         .child(
             modal_card("add-conn-modal-card", 640.0, t)

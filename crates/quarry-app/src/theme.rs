@@ -289,6 +289,12 @@ impl Theme {
             c.scrollbar_thumb_hover = h(self.text_muted).opacity(0.6);
 
             kit.tokens = (&kit.colors).into();
+
+            // The SQL editor paints its syntax theme's background; match the app surface (as the diagram does)
+            let mut hl = (*kit.highlight_theme).clone();
+            hl.style.editor_background = Some(h(self.bg_app));
+            hl.style.editor_gutter_background = Some(h(self.bg_app));
+            kit.highlight_theme = std::sync::Arc::new(hl);
         });
     }
 }

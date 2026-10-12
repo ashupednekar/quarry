@@ -394,6 +394,7 @@ impl QuarryWindow {
                     let toast = match res {
                         Ok((n, table)) => {
                             rs.pending.clear();
+                            rs.forget_history();
                             rs.notice = None;
                             // Re-read what's loaded without jumping to the top
                             rs.fetch(Fetch::Reload, window, cx);

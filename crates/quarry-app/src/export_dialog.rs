@@ -459,7 +459,7 @@ impl QuarryWindow {
             });
 
         Some(
-            modal_backdrop("export-card-backdrop", dismiss_on_click)
+            modal_backdrop("export-card-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("export-card", 560.0, &t)
                         // Enter in any field exports, like the primary button

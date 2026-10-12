@@ -45,3 +45,8 @@ sqlformat = "0.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Dev builds keep our crates debuggable but optimize dependencies: unoptimized gpui/taffy
+# made a 50-card diagram take ~180 ms a frame
+[profile.dev.package."*"]
+opt-level = 2

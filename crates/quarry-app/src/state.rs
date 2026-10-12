@@ -126,7 +126,7 @@ pub enum Tab {
         /// The connection this tab was opened on (tabs keep their own connection)
         connection: Option<ConnectionProfile>,
         view: crate::table_detail::TableView,
-        detail: Option<Result<crate::table_detail::TableDetail, String>>,
+        detail: Option<Result<Box<crate::table_detail::TableDetail>, String>>,
     },
 }
 
@@ -219,6 +219,9 @@ pub struct AppState {
     pub review_modal_open: bool,
     pub review_modal_sql: Vec<String>,
     pub review_modal_table: String,
+    /// What the statements do, shown as a per-row diff; `review_modal_show_sql` flips to the SQL
+    pub review_modal_changes: quarry_core::edits::PendingChanges,
+    pub review_modal_show_sql: bool,
 
     pub add_conn_modal_open: bool,
     /// Driver id picked in the add-connection form
@@ -284,6 +287,8 @@ impl AppState {
             review_modal_open: false,
             review_modal_sql: Vec::new(),
             review_modal_table: String::new(),
+            review_modal_changes: Default::default(),
+            review_modal_show_sql: false,
 
             add_conn_modal_open: false,
             add_conn_driver: "sqlite",

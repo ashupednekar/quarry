@@ -15,9 +15,13 @@ impl ResultSet {
         window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        // Enter inside the editor also bubbles up as EditCell; the open editor must win so it can commit
-        if self.editing.is_some() {
-            return;
+        // Enter inside the editor also bubbles up as EditCell; the open editor must win so it can commit.
+        // Another cell, though, means moving on: save this one and open that.
+        if let Some(ed) = self.editing.as_ref() {
+            if (ed.row, ed.display_col) == (row, display_col) {
+                return;
+            }
+            self.finish_edit(true, cx);
         }
         let col = self.actual(display_col);
         if let Some(reason) = self.read_only_reason() {
@@ -39,22 +43,62 @@ impl ResultSet {
             .map(|v| edit_text(&v))
             .unwrap_or_default();
         let text = seed.clone().unwrap_or_else(|| initial.clone());
-        let input = cx.new(|cx| {
-            let mut state = InputState::new(window, cx).default_value(text.clone());
-            if is_null {
-                state = state.placeholder("<null>");
-            }
-            state
-        });
-        if seed.is_none() {
-            input.update(cx, |i, cx| i.select_all(window, cx));
-        } else {
-            let end = text.chars().count() as u32;
-            input.update(cx, |i, cx| {
-                i.set_cursor_position(Position::new(0, end), window, cx)
-            });
+        let numeric = matches!(
+            self.cell_value(row, col).0,
+            Some(DbValue::Int(_) | DbValue::Float(_) | DbValue::Decimal(_))
+        );
+        // Same setup for either kind of input
+        macro_rules! prime {
+            ($input:expr) => {{
+                let input = $input;
+                if seed.is_none() {
+                    input.update(cx, |i, cx| i.select_all(window, cx));
+                } else {
+                    let end = text.chars().count() as u32;
+                    input.update(cx, |i, cx| {
+                        i.set_cursor_position(Position::new(0, end), window, cx)
+                    });
+                }
+                input.update(cx, |i, cx| i.focus(window, cx));
+                cx.subscribe_in(&input, window, |table, _, ev: &InputEvent, window, cx| {
+                    on_cell_input(table, ev, window, cx)
+                })
+            }};
         }
-        input.update(cx, |i, cx| i.focus(window, cx));
+        let (input, sub) = if numeric {
+            let input = cx.new(|cx| {
+                let mut state = InputState::new(window, cx).default_value(text.clone());
+                if is_null {
+                    state = state.placeholder("<null>");
+                }
+                state
+            });
+            let sub = prime!(input.clone());
+            (CellInput::Number(input), sub)
+        } else {
+            let input = cx.new(|cx| {
+                // Enter commits, ⇧↵ adds a line; grows to 8 rows once it pops out
+                let mut state = TextareaState::new(window, cx)
+                    .auto_grow(1, 8)
+                    .submit_on_enter(true)
+                    .default_value(text.clone());
+                if is_null {
+                    state = state.placeholder("<null>");
+                }
+                state
+            });
+            let sub = prime!(input.clone());
+            (CellInput::Text(input), sub)
+        };
+
+        let date = match (&input, self.column_schema(col).map(|c| c.data_type.clone())) {
+            (CellInput::Text(_), Some(kind @ (ColumnType::Date | ColumnType::Timestamp))) => {
+                Some(DatePick {
+                    timestamp: kind == ColumnType::Timestamp,
+                })
+            }
+            _ => None,
+        };
 
         let error = if seed.is_some() {
             parse_input(&text, self.column_schema(col)).err()
@@ -62,50 +106,13 @@ impl ResultSet {
             None
         };
 
-        let sub = cx.subscribe_in(
-            &input,
-            window,
-            |table, _, ev: &InputEvent, window, cx| match ev {
-                InputEvent::PressEnter { shift, secondary } => {
-                    if *secondary {
-                        table.delegate_mut().finish_edit(true, cx);
-                        window.focus(&table.focus_handle(cx), cx);
-                    } else if *shift {
-                        let (row, display_col) = match table.delegate().editing.as_ref() {
-                            Some(ed) => (ed.row, ed.display_col),
-                            None => (0, 0),
-                        };
-                        table.delegate_mut().finish_edit(true, cx);
-                        table.delegate_mut().inspect(row, display_col, window, cx);
-                    } else {
-                        let (row, display_col) = match table.delegate().editing.as_ref() {
-                            Some(ed) => (ed.row, ed.display_col),
-                            None => (0, 0),
-                        };
-                        table.delegate_mut().finish_edit(true, cx);
-                        let total_rows = table.delegate().rows_count(cx);
-                        if row + 1 < total_rows {
-                            table.set_selected_cell(row + 1, display_col, cx);
-                            table.delegate_mut().selected_cell = Some((row + 1, display_col));
-                            table.scroll_to_row(row + 1, cx);
-                        }
-                        window.focus(&table.focus_handle(cx), cx);
-                    }
-                }
-                InputEvent::Blur => {
-                    table.delegate_mut().finish_edit(true, cx);
-                }
-                InputEvent::Change => {
-                    table.delegate_mut().validate_current_edit(cx);
-                }
-                _ => {}
-            },
-        );
         self.editing = Some(CellEditor {
             row,
             col,
             display_col,
             input,
+            cell_w: Default::default(),
+            date,
             initial,
             error,
             _sub: sub,
@@ -115,13 +122,62 @@ impl ResultSet {
         cx.notify();
     }
 
+    /// "Today" / "Now": the current date, or date and time for a timestamp
+    pub(super) fn pick_now(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let Some(ed) = self.editing.as_ref() else {
+            return;
+        };
+        let (CellInput::Text(input), Some(pick)) = (&ed.input, ed.date.as_ref()) else {
+            return;
+        };
+        let now = chrono::Local::now();
+        let text = if pick.timestamp {
+            now.format("%Y-%m-%d %H:%M:%S").to_string()
+        } else {
+            now.format("%Y-%m-%d").to_string()
+        };
+        input.update(cx, |i, cx| {
+            i.set_value(text, window, cx);
+            i.focus(window, cx);
+        });
+        self.validate_current_edit(cx);
+    }
+
+    /// ↑/↓ in a date cell: steps the year, month, day, hour, minute or second under the caret and
+    /// selects it, so repeated presses keep going. `false` when the text isn't a date (the key
+    /// then does what it normally does).
+    pub(super) fn step_date(
+        &mut self,
+        delta: i64,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> bool {
+        let Some(CellInput::Text(input)) = self
+            .editing
+            .as_ref()
+            .filter(|e| e.date.is_some())
+            .map(|e| &e.input)
+        else {
+            return false;
+        };
+        let (text, caret) = {
+            let i = input.read(cx);
+            (i.value().to_string(), i.cursor())
+        };
+        let Some((next, range)) = step_segment(&text, caret, delta) else {
+            return false;
+        };
+        input.update(cx, |i, cx| {
+            i.set_value(next, window, cx);
+            i.set_selected_range(range, cx);
+        });
+        self.validate_current_edit(cx);
+        true
+    }
+
     pub(super) fn validate_current_edit(&mut self, cx: &mut Context<TableState<Self>>) {
         let (col, text, initial) = match self.editing.as_ref() {
-            Some(ed) => (
-                ed.col,
-                ed.input.read(cx).value().to_string(),
-                ed.initial.clone(),
-            ),
+            Some(ed) => (ed.col, ed.input.value(cx), ed.initial.clone()),
             None => return,
         };
         let error = if text != initial {
@@ -140,7 +196,7 @@ impl ResultSet {
         let Some(ed) = self.editing.take() else {
             return;
         };
-        let text = ed.input.read(cx).value().to_string();
+        let text = ed.input.value(cx);
         if commit && text != ed.initial {
             match parse_input(&text, self.column_schema(ed.col)) {
                 Ok(value) => {
@@ -168,6 +224,7 @@ impl ResultSet {
         if !self.editable() {
             return None;
         }
+        self.checkpoint();
         self.pending.row_inserts.push(PendingRowInsert {
             temp_id: uuid::Uuid::new_v4().to_string(),
             values: Default::default(),
@@ -188,6 +245,7 @@ impl ResultSet {
             .filter(|(_, name)| !pks.contains(name))
             .filter_map(|(col, name)| Some((name.clone(), self.cell_value(row, col).0?)))
             .collect();
+        self.checkpoint();
         self.pending.row_inserts.push(PendingRowInsert {
             temp_id: uuid::Uuid::new_v4().to_string(),
             values,
@@ -200,6 +258,7 @@ impl ResultSet {
         if !self.editable() {
             return;
         }
+        self.checkpoint();
         let loaded = self.loaded_len();
         if row >= loaded {
             if row - loaded < self.pending.row_inserts.len() {
@@ -219,6 +278,7 @@ impl ResultSet {
         let Some(name) = self.column_name(col).map(str::to_string) else {
             return;
         };
+        self.checkpoint();
         let loaded = self.loaded_len();
         if row >= loaded {
             if let Some(insert) = self.pending.row_inserts.get_mut(row - loaded) {
@@ -247,7 +307,9 @@ impl ResultSet {
         }
     }
 
+    /// Drops every pending change; ⌘Z brings them back
     pub fn revert(&mut self) {
+        self.checkpoint();
         self.pending.clear();
         self.editing = None;
         self.notice = None;
@@ -336,21 +398,24 @@ impl ResultSet {
 
     // ── Loading ─────────────────────────────────────────────
 
-    /// Loads the first page (`reset`), the next page, or re-reads what's loaded in place (`reload`).
+    /// Loads the first page (`Reset`, e.g. after a new filter), the page at a row offset, or the
+    /// page on screen again (`Reload`).
     pub fn fetch(&mut self, mode: Fetch, window: &mut Window, cx: &mut Context<TableState<Self>>) {
-        let loaded = self.loaded_len();
-        let page = self.source.as_ref().map_or(500, |s| s.page_size.max(1));
-        let (offset, limit) = match mode {
-            Fetch::Reset => (0, page),
-            Fetch::More => (loaded, page),
-            Fetch::Reload => (0, loaded.max(page)),
-        };
         let Some(src) = self.source.as_mut() else {
             return;
         };
         if src.loading {
             return;
         }
+        let limit = src.page_size.max(1);
+        let offset = match mode {
+            Fetch::Reset => {
+                src.total = None; // the filter or sort may have changed
+                0
+            }
+            Fetch::Page(offset) => offset,
+            Fetch::Reload => src.offset,
+        };
         src.loading = true;
         src.error = None;
         let (session, sql) = (src.session.clone(), src.page_sql(offset, limit));
@@ -369,30 +434,252 @@ impl ResultSet {
                     Ok(mut page) => {
                         src.has_more = page.rows.len() > limit;
                         page.rows.truncate(limit);
-                        match rs.results.first_mut() {
-                            Some(existing) if mode == Fetch::More => {
-                                existing.rows.append(&mut page.rows)
-                            }
-                            _ => rs.set_results(vec![page]),
+                        src.offset = offset;
+                        if !src.has_more {
+                            // The last page tells the total for free
+                            src.total = Some((offset + page.rows.len()) as u64);
                         }
+                        rs.set_results(vec![page]);
                     }
                     Err(e) => src.error = Some(e.to_string()),
                 }
                 table.refresh(cx);
-                if mode == Fetch::Reset {
-                    // A new query starts at the top; otherwise the old offset would trigger load_more at once
+                if mode != Fetch::Reload {
                     table.scroll_to_row(0, cx);
                 }
             },
         );
+    }
+
+    /// Moves to another page. Refused while edits are pending: they belong to the rows on screen.
+    pub fn go_to_page(
+        &mut self,
+        to: PageTo,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let Some(src) = self.source.as_ref() else {
+            return;
+        };
+        if !self.pending.is_empty() {
+            self.notice = Some("Submit or revert the pending changes before changing page".into());
+            cx.notify();
+            return;
+        }
+        let page = src.page_size.max(1);
+        let offset = match to {
+            PageTo::First => 0,
+            PageTo::Prev => src.offset.saturating_sub(page),
+            PageTo::Next => src.offset + page,
+            PageTo::Last => match src.total {
+                Some(total) => last_page_offset(total, page),
+                // Count first, then come back here
+                None => return self.count_rows(true, window, cx),
+            },
+        };
+        self.fetch(Fetch::Page(offset), window, cx);
+    }
+
+    pub fn set_page_size(
+        &mut self,
+        size: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        if let Some(src) = self.source.as_mut() {
+            src.page_size = size;
+        }
+        self.go_to_page(PageTo::First, window, cx);
+    }
+
+    /// Counts the rows matching the filter; `then_last` jumps to the last page afterwards
+    pub fn count_rows(
+        &mut self,
+        then_last: bool,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let Some(src) = self.source.as_mut() else {
+            return;
+        };
+        if src.counting {
+            return;
+        }
+        src.counting = true;
+        let (session, sql) = (src.session.clone(), src.count_sql());
+        cx.notify();
+        run_db(
+            window,
+            cx,
+            async move { session.execute(&sql).await },
+            move |table, res, window, cx| {
+                let rs = table.delegate_mut();
+                let Some(src) = rs.source.as_mut() else {
+                    return;
+                };
+                src.counting = false;
+                match res {
+                    Ok(r) => {
+                        src.total = r
+                            .rows
+                            .first()
+                            .and_then(|row| row.first())
+                            .and_then(|v| v.to_display_string().parse().ok());
+                        if then_last {
+                            rs.go_to_page(PageTo::Last, window, cx);
+                        }
+                    }
+                    Err(e) => src.error = Some(e.to_string()),
+                }
+                cx.notify();
+            },
+        );
+    }
+}
+
+/// Offset of the last full-or-partial page
+pub(super) fn last_page_offset(total: u64, page: usize) -> usize {
+    let total = total as usize;
+    if total == 0 {
+        0
+    } else {
+        (total - 1) / page * page
+    }
+}
+
+/// Enter commits and moves down, ⌘↵ commits in place, ⇧↵ (text only) adds a line; leaving commits
+fn on_cell_input(
+    table: &mut TableState<ResultSet>,
+    ev: &InputEvent,
+    window: &mut Window,
+    cx: &mut Context<TableState<ResultSet>>,
+) {
+    match ev {
+        InputEvent::PressEnter { shift, secondary } => {
+            if *secondary {
+                table.delegate_mut().finish_edit(true, cx);
+                window.focus(&table.focus_handle(cx), cx);
+            } else if *shift {
+                // The newline is already in; keep editing
+            } else {
+                let (row, display_col) = match table.delegate().editing.as_ref() {
+                    Some(ed) => (ed.row, ed.display_col),
+                    None => (0, 0),
+                };
+                table.delegate_mut().finish_edit(true, cx);
+                let total_rows = table.delegate().rows_count(cx);
+                if row + 1 < total_rows {
+                    table.set_selected_cell(row + 1, display_col, cx);
+                    table.delegate_mut().selected_cell = Some((row + 1, display_col));
+                    table.scroll_to_row(row + 1, cx);
+                }
+                window.focus(&table.focus_handle(cx), cx);
+            }
+        }
+        InputEvent::Blur => {
+            table.delegate_mut().finish_edit(true, cx);
+        }
+        InputEvent::Change => {
+            table.delegate_mut().validate_current_edit(cx);
+        }
+        _ => {}
+    }
+}
+
+/// The `YYYY-MM-DD` a date or timestamp text starts with
+pub(super) fn date_part(text: &str) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(text.get(..10)?, "%Y-%m-%d").ok()
+}
+
+/// The `HH:MM:SS` of a `YYYY-MM-DD HH:MM:SS…` text
+fn time_part(text: &str) -> Option<chrono::NaiveTime> {
+    chrono::NaiveTime::parse_from_str(text.get(11..19)?, "%H:%M:%S").ok()
+}
+
+/// Steps the part of a `YYYY-MM-DD[ HH:MM:SS…]` text under byte offset `caret` by `delta`, with
+/// calendar arithmetic (Jan 31 + 1 month = Feb 28; 23:59 + 1 minute is tomorrow). Anything after
+/// the seconds (fraction, zone) is kept. Returns the new text and the stepped part's range.
+pub(super) fn step_segment(
+    text: &str,
+    caret: usize,
+    delta: i64,
+) -> Option<(String, std::ops::Range<usize>)> {
+    use chrono::{Duration, Months};
+    let date = date_part(text)?;
+    let time = time_part(text);
+    let (end, last) = if time.is_some() { (19, 5) } else { (10, 2) };
+    let part = match caret {
+        0..=4 => 0,
+        5..=7 => 1,
+        8..=10 => 2,
+        11..=13 => 3,
+        14..=16 => 4,
+        _ => 5,
+    }
+    .min(last);
+    let at = date.and_time(time.unwrap_or_default());
+    let months = |n: i64| {
+        let m = Months::new(n.unsigned_abs() as u32);
+        if n >= 0 {
+            at.checked_add_months(m)
+        } else {
+            at.checked_sub_months(m)
+        }
+    };
+    let next = match part {
+        0 => months(12 * delta)?,
+        1 => months(delta)?,
+        2 => at + Duration::days(delta),
+        3 => at + Duration::hours(delta),
+        4 => at + Duration::minutes(delta),
+        _ => at + Duration::seconds(delta),
+    };
+    let format = if time.is_some() {
+        "%Y-%m-%d %H:%M:%S"
+    } else {
+        "%Y-%m-%d"
+    };
+    let ranges = [0..4, 5..7, 8..10, 11..13, 14..16, 17..19];
+    Some((
+        format!("{}{}", next.format(format), &text[end..]),
+        ranges[part].clone(),
+    ))
+}
+
+/// The value read back in words ("Fri, 18 Sep 2026 · 13:54:48+00"), and whether it's a date at all
+pub(super) fn date_readout(text: &str) -> (String, bool) {
+    let text = text.trim();
+    if text.is_empty() {
+        return ("Empty".into(), true);
+    }
+    let invalid = || ("Not a date · use YYYY-MM-DD HH:MM:SS".to_string(), false);
+    let Some(date) = date_part(text) else {
+        return invalid();
+    };
+    let day = date.format("%a, %-d %b %Y").to_string();
+    match (text.len(), time_part(text)) {
+        (10, _) => (day, true),
+        (_, Some(time)) => (
+            format!("{day} · {}{}", time.format("%H:%M:%S"), &text[19..]),
+            true,
+        ),
+        _ => invalid(),
     }
 }
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Fetch {
     Reset,
-    More,
+    Page(usize),
     Reload,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PageTo {
+    First,
+    Prev,
+    Next,
+    Last,
 }
 
 /// Text shown in the in-cell editor for a value. NULL edits start empty.

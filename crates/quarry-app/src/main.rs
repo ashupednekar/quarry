@@ -247,6 +247,17 @@ struct QuarryWindow {
     synced_tab: Option<String>,
     /// Tab ids, most recently active first (⌃Tab order)
     tab_mru: Vec<String>,
+    /// Table diagram: foreign-key hops shown (0 = all connected), and the column under the mouse
+    diagram_depth: usize,
+    diagram_hover: Option<(String, String, String)>,
+    /// Diagram canvas: zoom factor, pan offset, the last mouse position while dragging, and the viewport
+    diagram_zoom: f32,
+    /// `None` = centred on the table, recomputed as the view resizes; set once you pan or zoom
+    diagram_pan: Option<Point<Pixels>>,
+    /// Where the centred view put it last frame, so a pan or zoom continues from there
+    diagram_auto_pan: std::cell::Cell<Point<Pixels>>,
+    diagram_drag: Option<Point<Pixels>>,
+    diagram_view: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     /// A query tab's connection being reopened; the tab keeps it instead of following the active one meanwhile
     connecting_for_tab: Option<String>,
     /// Table tabs from last session, waiting for their connection (connection id, table)
@@ -373,6 +384,13 @@ impl QuarryWindow {
             grid_menu: None,
             synced_tab: None,
             tab_mru: Vec::new(),
+            diagram_depth: 1,
+            diagram_hover: None,
+            diagram_zoom: 1.0,
+            diagram_pan: None,
+            diagram_auto_pan: Default::default(),
+            diagram_drag: None,
+            diagram_view: Default::default(),
             connecting_for_tab: None,
             pending_table_tabs: Vec::new(),
             results_expanded: false,
@@ -772,16 +790,18 @@ impl QuarryWindow {
                                     .child("WHERE"),
                             )
                             .child(div().flex_1().child(Input::new(filter).appearance(false)))
-                            .child(
-                                zbutton("filter-clear-btn")
-                                    .pad_xs()
-                                    .label("Clear")
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.clear_filter(window, cx)
-                                    })),
-                            ),
+                            .when(!filter.read(cx).value().is_empty(), |d| {
+                                d.child(
+                                    zbutton("filter-clear-btn")
+                                        .pad_xs()
+                                        .label("Clear")
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.clear_filter(window, cx)
+                                        })),
+                                )
+                            }),
                     )
                     .child(div().flex_1().min_h_0().child(grid))
                     .into_any_element()
@@ -943,7 +963,7 @@ impl QuarryWindow {
             .filter(|s| quarry_core::session::is_mutation(s))
             .count();
         Some(
-            modal_backdrop("prod-backdrop", dismiss_on_click)
+            modal_backdrop("prod-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("prod-card", 460.0, t)
                         .p_4()
@@ -1085,7 +1105,7 @@ impl QuarryWindow {
         let t = &self.theme;
         let count = changes.len();
         Some(
-            modal_backdrop("close-confirm-backdrop", dismiss_on_click)
+            modal_backdrop("close-confirm-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("close-confirm-card", 460.0, t)
                         .p_4()
@@ -1367,6 +1387,8 @@ impl QuarryWindow {
         }
         let filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("WHERE condition, e.g. id > 1"));
+        // Re-render as it's typed in, so Clear shows up once there's something to clear
+        cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         let Some(session) = self.state.session.clone() else {
             return;
         };
@@ -1406,6 +1428,9 @@ impl QuarryWindow {
                 page_size: self.settings.rows_per_page,
                 filter: String::new(),
                 order_by: None,
+                offset: 0,
+                total: None,
+                counting: false,
                 has_more: false,
                 loading: false,
                 error: None,
@@ -1632,14 +1657,17 @@ impl QuarryWindow {
                             table_name.clone(),
                             rs.pending
                                 .generate_sql(&src.qualified_name(), src.dialect()),
+                            rs.pending.clone(),
                         )
                     })
             }
             _ => None,
         };
-        if let Some((table, sqls)) = review_data {
+        if let Some((table, sqls, changes)) = review_data {
             self.state.review_modal_sql = sqls;
             self.state.review_modal_table = table;
+            self.state.review_modal_changes = changes;
+            self.state.review_modal_show_sql = false;
             self.state.review_modal_open = true;
             cx.notify();
         }
@@ -2028,6 +2056,7 @@ fn main() {
             );
             theme::load_fonts(cx);
             bind_keys(cx);
+            ui::init_modal_focus(cx);
             grid::bind_keys(cx);
             set_app_menus(cx);
             let options = WindowOptions {

@@ -211,6 +211,33 @@ pub struct SchemaObject {
 pub struct TableInfo {
     pub ddl: String,
     pub indexes: Vec<IndexInfo>,
+    /// Column name → comment; the table's own comment under ""
+    pub comments: Vec<(String, String)>,
+    /// (name, definition or timing)
+    pub triggers: Vec<(String, String)>,
+    /// (label, value): row estimate, sizes, engine… whatever the database knows cheaply
+    pub stats: Vec<(String, String)>,
+}
+
+/// Two-column rows as (key, value) pairs
+pub fn pair_rows(r: &crate::session::QueryResult) -> Vec<(String, String)> {
+    r.rows
+        .iter()
+        .map(|r| (r[0].to_display_string(), r[1].to_display_string()))
+        .collect()
+}
+
+/// A one-row result as (column name, value) pairs, skipping NULLs
+pub fn labelled_row(r: &crate::session::QueryResult) -> Vec<(String, String)> {
+    let Some(row) = r.rows.first() else {
+        return Vec::new();
+    };
+    r.columns
+        .iter()
+        .zip(row)
+        .filter(|(_, v)| !v.is_null())
+        .map(|(c, v)| (c.clone(), v.to_display_string()))
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -539,6 +539,7 @@ impl DatabaseSession for OracleSession {
                     columns: r[2].clone(),
                 })
                 .collect(),
+            ..Default::default()
         })
     }
 

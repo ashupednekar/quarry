@@ -743,7 +743,7 @@ impl QuarryWindow {
 
         let section = |title: &'static str| section_title(&t, title);
         Some(
-            modal_backdrop("import-card-backdrop", dismiss_on_click)
+            modal_backdrop("import-card-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("import-card", 760.0, &t)
                         // Enter in any field imports, like the primary button

@@ -6,8 +6,11 @@ use crate::theme::Theme;
 use crate::ui::*;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
-use gpui::component::input::{Editor, EditorState, Input, InputEvent, InputState, Position};
-use gpui::component::menu::PopupMenu;
+use gpui::component::input::{
+    Editor, EditorState, Input, InputEvent, InputState, MoveDown, MoveUp, Position, Textarea,
+    TextareaState,
+};
+use gpui::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui::component::tooltip::Tooltip;
 use gpui::component::{ActiveTheme, Disableable, Icon, Sizable};
@@ -23,7 +26,7 @@ mod delegate;
 mod editing;
 
 pub use actions::*;
-pub use editing::Fetch;
+pub use editing::{Fetch, PageTo};
 
 actions!(
     grid,
@@ -41,6 +44,8 @@ actions!(
         ApplyValue,
         SubmitChanges,
         RevertChanges,
+        UndoChange,
+        RedoChange,
         CopyValue,
         CopyRowTsv,
         CopyRowCsv,
@@ -66,7 +71,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-tab", PrevCell, Some("DataTable > Input")),
         KeyBinding::new("secondary-enter", SubmitChanges, Some("DataTable > Input")),
         KeyBinding::new("secondary-alt-n", SetNull, Some("DataTable > Input")),
-        KeyBinding::new("shift-enter", ToggleValueEditor, Some("DataTable > Input")),
         KeyBinding::new("secondary-n", AddRow, Some("DataTable")),
         KeyBinding::new("secondary-d", DuplicateRow, Some("DataTable")),
         KeyBinding::new("secondary-backspace", DeleteRow, Some("DataTable")),
@@ -78,6 +82,9 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-enter", ApplyValue, Some("ValueEditor > Input")),
         KeyBinding::new("secondary-enter", SubmitChanges, Some("DataTable")),
         KeyBinding::new("secondary-alt-z", RevertChanges, Some("DataTable")),
+        // Inside the cell editor ⌘Z is the text's own undo; on the grid it steps through pending changes
+        KeyBinding::new("secondary-z", UndoChange, Some("DataTable")),
+        KeyBinding::new("secondary-shift-z", RedoChange, Some("DataTable")),
         KeyBinding::new("secondary-c", CopyValue, Some("DataTable")),
         KeyBinding::new("secondary-shift-c", CopyRowTsv, Some("DataTable")),
         KeyBinding::new("f4", FollowForeignKey, Some("DataTable")),
@@ -99,6 +106,11 @@ pub struct TableSource {
     pub page_size: usize,
     pub filter: String,
     pub order_by: Option<(String, bool)>, // (column, descending)
+    /// First row of the page on screen (0-based); pages replace each other, like DataGrip
+    pub offset: usize,
+    /// Rows matching the filter, once counted (or known from reaching the last page)
+    pub total: Option<u64>,
+    pub counting: bool,
     pub has_more: bool,
     pub loading: bool,
     pub error: Option<String>,
@@ -129,6 +141,15 @@ impl TableSource {
         sql
     }
 
+    /// `SELECT COUNT(*)` over the tab's filter
+    fn count_sql(&self) -> String {
+        let mut sql = format!("SELECT COUNT(*) FROM {}", self.qualified_name());
+        if !self.filter.trim().is_empty() {
+            sql += &format!(" WHERE {}", self.filter);
+        }
+        sql
+    }
+
     fn page_sql(&self, offset: usize, limit: usize) -> String {
         // One extra row tells us whether another page exists
         self.dialect()
@@ -143,14 +164,39 @@ struct Inspector {
     initial: String,
 }
 
+/// Text edits in a textarea that grows and pops out; a number in a one-line input, which
+/// (unlike the textarea) right-aligns, so the digits stay where the grid drew them
+enum CellInput {
+    Text(Entity<TextareaState>),
+    Number(Entity<InputState>),
+}
+
+impl CellInput {
+    fn value(&self, cx: &App) -> String {
+        match self {
+            CellInput::Text(e) => e.read(cx).value().to_string(),
+            CellInput::Number(e) => e.read(cx).value().to_string(),
+        }
+    }
+}
+
 struct CellEditor {
     row: usize,
     col: usize,
     display_col: usize,
-    input: Entity<InputState>,
+    input: CellInput,
+    /// Cell width from the last paint; the editor pops out over the grid when the text won't fit
+    cell_w: std::rc::Rc<std::cell::Cell<Pixels>>,
     initial: String,
     error: Option<String>,
+    /// Date and timestamp cells: ↑/↓ step the part under the caret, a strip reads the value back
+    date: Option<DatePick>,
     _sub: Subscription,
+}
+
+struct DatePick {
+    /// Timestamps carry a time after the date; "Now" fills both
+    timestamp: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -166,6 +212,9 @@ pub struct ResultSet {
     pub results: Vec<QueryResult>,
     pub active: usize,
     pub pending: PendingChanges,
+    /// Earlier and undone states of `pending`, for ⌘Z / ⇧⌘Z until the changes are submitted
+    undo: Vec<PendingChanges>,
+    redo: Vec<PendingChanges>,
     pub source: Option<TableSource>,
     /// Last validation or commit problem, shown in the toolbar until the next change
     pub notice: Option<String>,
@@ -245,6 +294,8 @@ impl ResultSet {
             results: Vec::new(),
             active: 0,
             pending: PendingChanges::new(),
+            undo: Vec::new(),
+            redo: Vec::new(),
             source,
             notice: None,
             editing: None,
@@ -575,7 +626,40 @@ impl ResultSet {
         }
     }
 
+    /// Call before changing `pending`; repeated calls with nothing changed in between are one step
+    fn checkpoint(&mut self) {
+        if self.undo.last() != Some(&self.pending) {
+            self.undo.push(self.pending.clone());
+        }
+        self.redo.clear();
+    }
+
+    /// One step back (`redo == false`) or forward through pending changes
+    pub fn step_history(&mut self, redo: bool) {
+        let (from, to) = if redo {
+            (&mut self.redo, &mut self.undo)
+        } else {
+            (&mut self.undo, &mut self.redo)
+        };
+        // A checkpoint taken by a change that turned out to be a no-op isn't a step
+        while from.last() == Some(&self.pending) {
+            from.pop();
+        }
+        if let Some(prev) = from.pop() {
+            to.push(std::mem::replace(&mut self.pending, prev));
+            self.editing = None;
+            self.notice = None;
+        }
+    }
+
+    /// After a submit: what was pending is now in the database, nothing to step back to
+    pub fn forget_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
     fn set_value(&mut self, row: usize, col: usize, value: DbValue) {
+        self.checkpoint();
         let Some(name) = self.column_name(col).map(str::to_string) else {
             return;
         };
@@ -592,6 +676,142 @@ impl ResultSet {
             self.pending.set_cell(key, &name, original, value);
         }
     }
+}
+
+/// DataGrip's pager: |< <  1–500 of ?  > >|. The range opens a page-size menu; "?" counts the rows.
+fn pager(
+    grid: &Entity<TableState<ResultSet>>,
+    rs: &ResultSet,
+    theme: &Theme,
+) -> Option<impl IntoElement> {
+    let src = rs.source.as_ref()?;
+    let rows = rs.loaded_len();
+    let (offset, page, has_more, total) = (src.offset, src.page_size, src.has_more, src.total);
+    let busy = src.loading || src.counting;
+    let nav = |id: &'static str, icon: IconName, tip: &'static str, enabled: bool, to: PageTo| {
+        let grid = grid.clone();
+        zbutton(id)
+            .icon(icon)
+            .ghost()
+            .xsmall()
+            .tooltip(tip)
+            .disabled(!enabled || busy)
+            .on_click(move |_, window, cx| {
+                grid.update(cx, |t, cx| t.delegate_mut().go_to_page(to, window, cx))
+            })
+    };
+    let range = if rows == 0 {
+        "0 rows".to_string()
+    } else {
+        format!("{}–{}", group(offset + 1), group(offset + rows))
+    };
+    let sizes = {
+        let grid = grid.clone();
+        zbutton("grid-page-size")
+            .pad_xs()
+            .label(range)
+            .ghost()
+            .xsmall()
+            .tooltip("Rows per page")
+            .dropdown_menu(move |mut menu, _, _| {
+                for n in [100, 250, 500, 1000, 5000] {
+                    let grid = grid.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(format!("{} rows per page", group(n)))
+                            .checked(n == page)
+                            .on_click(move |_, window, cx| {
+                                grid.update(cx, |t, cx| {
+                                    t.delegate_mut().set_page_size(n, window, cx)
+                                })
+                            }),
+                    );
+                }
+                menu
+            })
+    };
+    let of = {
+        let grid = grid.clone();
+        let counted = total.is_some();
+        div()
+            .id("grid-row-count")
+            .px_1()
+            .rounded(px(3.0))
+            .text_xs()
+            .text_color(if counted {
+                theme.text_secondary
+            } else {
+                theme.accent
+            })
+            .when(!counted, |d| {
+                d.cursor_pointer()
+                    .hover(|s| s.bg(theme.bg_hover))
+                    .on_click(move |_, window, cx| {
+                        grid.update(cx, |t, cx| t.delegate_mut().count_rows(false, window, cx))
+                    })
+            })
+            .tooltip(move |window, cx| {
+                Tooltip::new(if counted {
+                    "Rows matching the filter"
+                } else {
+                    "Count rows"
+                })
+                .build(window, cx)
+            })
+            .child(match total {
+                Some(n) => format!("of {}", group(n as usize)),
+                None if src.counting => "of …".to_string(),
+                None => "of ?".to_string(),
+            })
+    };
+    Some(
+        h_flex()
+            .items_center()
+            .gap_0p5()
+            .child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
+            .child(nav(
+                "grid-first",
+                IconName::ChevronsLeft,
+                "First page",
+                offset > 0,
+                PageTo::First,
+            ))
+            .child(nav(
+                "grid-prev",
+                IconName::ChevronLeft,
+                "Previous page",
+                offset > 0,
+                PageTo::Prev,
+            ))
+            .child(sizes)
+            .child(of)
+            .child(nav(
+                "grid-next",
+                IconName::ChevronRight,
+                "Next page",
+                has_more,
+                PageTo::Next,
+            ))
+            .child(nav(
+                "grid-last",
+                IconName::ChevronsRight,
+                "Last page",
+                has_more,
+                PageTo::Last,
+            )),
+    )
+}
+
+/// 12345 → "12,345"
+fn group(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 pub struct DataGrid;
@@ -659,6 +879,7 @@ impl DataGrid {
                     .tooltip("Reload (⌘↵ outside the grid)")
                     .on_click(cx.listener(move |this, _, window, cx| on_refresh(this, window, cx))),
             )
+            .children(pager(grid, rs, theme))
             .child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
             .child(action_button(
                 "grid-add",
@@ -972,6 +1193,26 @@ impl DataGrid {
                     window.focus(&t.focus_handle(cx), cx);
                 })
             })
+            .on_action({
+                let g = grid.clone();
+                move |_: &UndoChange, _, cx| {
+                    g.update(cx, |t, cx| {
+                        t.delegate_mut().step_history(false);
+                        t.refresh(cx);
+                        cx.notify();
+                    })
+                }
+            })
+            .on_action({
+                let g = grid.clone();
+                move |_: &RedoChange, _, cx| {
+                    g.update(cx, |t, cx| {
+                        t.delegate_mut().step_history(true);
+                        t.refresh(cx);
+                        cx.notify();
+                    })
+                }
+            })
             .on_action(move |_: &RevertChanges, _, cx| {
                 grid_revert.update(cx, |t, cx| {
                     t.delegate_mut().revert();
@@ -1113,5 +1354,96 @@ impl DataGrid {
                         )
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's `test` attribute would shadow the std one
+    use super::{PendingRowInsert, ResultSet, Theme};
+
+    #[test]
+    fn date_part_reads_the_leading_date() {
+        let d = |s| super::editing::date_part(s).map(|d| d.to_string());
+        assert_eq!(
+            d("2026-09-18 13:54:48.480843+00").as_deref(),
+            Some("2026-09-18")
+        );
+        assert_eq!(d("2026-02-30"), None);
+        assert_eq!(d("soon"), None);
+    }
+
+    #[test]
+    fn step_segment_moves_the_part_under_the_caret() {
+        let step =
+            |s, caret, d| super::editing::step_segment(s, caret, d).map(|(t, r)| (t, r.start));
+        let ts = "2026-01-31 23:59:58.480843+00";
+        assert_eq!(
+            step(ts, 6, 1),
+            Some(("2026-02-28 23:59:58.480843+00".into(), 5))
+        );
+        assert_eq!(
+            step(ts, 15, 1),
+            Some(("2026-02-01 00:00:58.480843+00".into(), 14))
+        );
+        assert_eq!(
+            step(ts, 2, -1),
+            Some(("2025-01-31 23:59:58.480843+00".into(), 0))
+        );
+        assert_eq!(
+            step(ts, 25, 3),
+            Some(("2026-02-01 00:00:01.480843+00".into(), 17))
+        );
+        assert_eq!(step("2026-03-01", 9, -1), Some(("2026-02-28".into(), 8)));
+        assert_eq!(step("2026-03-01", 30, 1), Some(("2026-03-02".into(), 8)));
+        assert_eq!(step("tomorrow", 2, 1), None);
+    }
+
+    #[test]
+    fn date_readout_spells_it_out() {
+        let r = super::editing::date_readout;
+        assert_eq!(
+            r("2026-09-18 13:54:48.480843+00"),
+            ("Fri, 18 Sep 2026 · 13:54:48.480843+00".into(), true)
+        );
+        assert_eq!(r("2026-09-18"), ("Fri, 18 Sep 2026".into(), true));
+        assert!(!r("2026-13-01").1);
+        assert!(!r("2026-09-18 25:00").1);
+    }
+
+    #[test]
+    fn paging_helpers() {
+        assert_eq!(super::group(1234567), "1,234,567");
+        assert_eq!(super::group(999), "999");
+        assert_eq!(super::editing::last_page_offset(1001, 500), 1000);
+        assert_eq!(super::editing::last_page_offset(1000, 500), 500);
+        assert_eq!(super::editing::last_page_offset(0, 500), 0);
+    }
+
+    #[test]
+    fn undo_redo_steps_through_pending() {
+        let mut rs = ResultSet::new(&Theme::dark(), None);
+        let insert = |n: &str| PendingRowInsert {
+            temp_id: n.into(),
+            values: Default::default(),
+        };
+        rs.checkpoint();
+        rs.pending.row_inserts.push(insert("a"));
+        rs.checkpoint();
+        rs.checkpoint(); // no-op change: not a step
+        rs.pending.row_inserts.push(insert("b"));
+        rs.step_history(false);
+        assert_eq!(rs.pending.row_inserts.len(), 1);
+        rs.step_history(false);
+        assert!(rs.pending.is_empty());
+        rs.step_history(false); // nothing left
+        assert!(rs.pending.is_empty());
+        rs.step_history(true);
+        rs.step_history(true);
+        assert_eq!(rs.pending.row_inserts.len(), 2);
+        rs.step_history(false);
+        rs.checkpoint(); // a new change drops the redo branch
+        rs.step_history(true);
+        assert_eq!(rs.pending.row_inserts.len(), 1);
     }
 }

@@ -418,7 +418,44 @@ impl DatabaseSession for MysqlSession {
                 columns: r[2].to_display_string(),
             })
             .collect();
-        Ok(TableInfo { ddl, indexes })
+        let (sch, tbl) = (
+            sql_string(&table.schema_name),
+            sql_string(&table.table_name),
+        );
+        // Extras are best-effort: a missing privilege shouldn't hide the DDL
+        let comments = self
+            .run(&format!(
+                "SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS \
+             WHERE TABLE_SCHEMA = {sch} AND TABLE_NAME = {tbl} AND COLUMN_COMMENT <> '' \
+             UNION ALL SELECT '', TABLE_COMMENT FROM information_schema.TABLES \
+             WHERE TABLE_SCHEMA = {sch} AND TABLE_NAME = {tbl} AND TABLE_COMMENT <> ''"
+            ))
+            .await;
+        let triggers = self.run(&format!(
+            "SELECT TRIGGER_NAME, CONCAT(ACTION_TIMING, ' ', EVENT_MANIPULATION, ' FOR EACH ', ACTION_ORIENTATION) \
+             FROM information_schema.TRIGGERS WHERE EVENT_OBJECT_SCHEMA = {sch} AND EVENT_OBJECT_TABLE = {tbl} ORDER BY 1"
+        )).await;
+        let stats = self.run(&format!(
+            "SELECT ENGINE AS `Engine`, CAST(TABLE_ROWS AS CHAR) AS `Rows (estimate)`, \
+             CONCAT(ROUND(DATA_LENGTH / 1048576, 1), ' MB') AS `Table size`, \
+             CONCAT(ROUND(INDEX_LENGTH / 1048576, 1), ' MB') AS `Index size`, \
+             CAST(AUTO_INCREMENT AS CHAR) AS `Next auto-increment`, TABLE_COLLATION AS `Collation`, \
+             CAST(CREATE_TIME AS CHAR) AS `Created`, CAST(UPDATE_TIME AS CHAR) AS `Updated` \
+             FROM information_schema.TABLES WHERE TABLE_SCHEMA = {sch} AND TABLE_NAME = {tbl}"
+        )).await;
+        Ok(TableInfo {
+            ddl,
+            indexes,
+            comments: comments
+                .map(|r| crate::schema::pair_rows(&r))
+                .unwrap_or_default(),
+            triggers: triggers
+                .map(|r| crate::schema::pair_rows(&r))
+                .unwrap_or_default(),
+            stats: stats
+                .map(|r| crate::schema::labelled_row(&r))
+                .unwrap_or_default(),
+        })
     }
 
     async fn objects(&self, schema: &str) -> Result<Vec<SchemaObject>, DbError> {

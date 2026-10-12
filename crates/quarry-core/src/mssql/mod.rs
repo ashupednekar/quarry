@@ -507,6 +507,7 @@ impl DatabaseSession for MssqlSession {
                     columns: r[2].clone(),
                 })
                 .collect(),
+            ..Default::default()
         })
     }
 

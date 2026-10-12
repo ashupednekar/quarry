@@ -140,6 +140,7 @@ pub struct PostgresSession {
     read_only: bool,
     database_name: String,
     tx: TxState,
+    type_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<Type>>>,
 }
 
 impl PostgresSession {
@@ -174,6 +175,7 @@ impl PostgresSession {
             read_only,
             database_name,
             tx: TxState::default(),
+            type_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -352,9 +354,36 @@ impl DatabaseSession for PostgresSession {
                 .iter()
                 .map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';'))),
         );
+        // Extras are best-effort: a missing privilege shouldn't hide the DDL
+        let comments = self.run_statement(&format!(
+            "SELECT attname, col_description(attrelid, attnum) FROM pg_attribute \
+             WHERE attrelid = {rel} AND attnum > 0 AND NOT attisdropped AND col_description(attrelid, attnum) IS NOT NULL \
+             UNION ALL SELECT '', obj_description({rel}, 'pg_class') WHERE obj_description({rel}, 'pg_class') IS NOT NULL"
+        )).await;
+        let triggers = self.run_statement(&format!(
+            "SELECT tgname, pg_get_triggerdef(oid) FROM pg_trigger WHERE tgrelid = {rel} AND NOT tgisinternal ORDER BY 1"
+        )).await;
+        let stats = self.run_statement(&format!(
+            "SELECT CASE WHEN c.reltuples < 0 THEN 'not analyzed' ELSE c.reltuples::bigint::text END AS \"Rows (estimate)\", \
+             pg_size_pretty(pg_total_relation_size(c.oid)) AS \"Total size\", \
+             pg_size_pretty(pg_relation_size(c.oid)) AS \"Table size\", \
+             pg_size_pretty(pg_indexes_size(c.oid)) AS \"Index size\", \
+             coalesce(greatest(s.last_vacuum, s.last_autovacuum)::text, 'never') AS \"Last vacuum\", \
+             coalesce(greatest(s.last_analyze, s.last_autoanalyze)::text, 'never') AS \"Last analyze\" \
+             FROM pg_class c LEFT JOIN pg_stat_all_tables s ON s.relid = c.oid WHERE c.oid = {rel}"
+        )).await;
         Ok(TableInfo {
             ddl: parts.join("\n\n"),
             indexes: crate::schema::index_rows(&indexes),
+            comments: comments
+                .map(|r| crate::schema::pair_rows(&r))
+                .unwrap_or_default(),
+            triggers: triggers
+                .map(|r| crate::schema::pair_rows(&r))
+                .unwrap_or_default(),
+            stats: stats
+                .map(|r| crate::schema::labelled_row(&r))
+                .unwrap_or_default(),
         })
     }
 
@@ -382,14 +411,41 @@ impl PostgresSession {
     async fn run_statement(&self, sql: &str) -> Result<QueryResult, DbError> {
         let start = Instant::now();
 
-        // Types come from a side-effect-free prepare; values come back over the text protocol,
-        // which every Postgres type supports, so nothing can fail to decode or lose precision.
-        let types: Option<Vec<Type>> = self
-            .client
-            .prepare(sql)
-            .await
-            .ok()
-            .map(|stmt| stmt.columns().iter().map(|c| c.type_().clone()).collect());
+        // Determine whether this statement could return rows. Mutations without RETURNING
+        // never return row descriptions, so we bypass prepare() entirely to avoid an extra RTT.
+        let is_mutation_stmt = is_mutation(sql);
+        let might_return_rows = !is_mutation_stmt || has_returning(sql);
+
+        // Types come from a side-effect-free prepare (cached when possible); values come back
+        // over the text protocol, which every Postgres type supports without failing or losing precision.
+        let types: Option<Vec<Type>> = if might_return_rows {
+            let cached = self
+                .type_cache
+                .lock()
+                .ok()
+                .and_then(|c| c.get(sql).cloned());
+            if cached.is_some() {
+                cached
+            } else {
+                let fetched: Option<Vec<Type>> = self
+                    .client
+                    .prepare(sql)
+                    .await
+                    .ok()
+                    .map(|stmt| stmt.columns().iter().map(|c| c.type_().clone()).collect());
+                if let Some(ref t) = fetched {
+                    if let Ok(mut cache) = self.type_cache.lock() {
+                        if cache.len() >= 256 {
+                            cache.clear();
+                        }
+                        cache.insert(sql.to_string(), t.clone());
+                    }
+                }
+                fetched
+            }
+        } else {
+            None
+        };
 
         // Streamed so rows past MAX_ROWS are counted, not kept. The stream is read to the end
         // either way, so the connection stays in step for the next statement.
@@ -434,11 +490,28 @@ impl PostgresSession {
     }
 }
 
+/// Checks whether a mutation statement contains a RETURNING clause
+fn has_returning(sql: &str) -> bool {
+    crate::session::sql_tokens(sql)
+        .iter()
+        .any(|tok| tok.eq_ignore_ascii_case("RETURNING"))
+}
+
 /// Converts a text-protocol value into a typed DbValue. Unknown types stay as their exact text.
 fn decode_text(text: Option<&str>, ty: Option<&Type>) -> DbValue {
     let Some(t) = text else { return DbValue::Null };
     let text = || DbValue::Text(t.to_string());
-    let Some(ty) = ty else { return text() };
+    let Some(ty) = ty else {
+        // Fallback heuristic if type information is unavailable (e.g. non-preparable statements)
+        let looks_json =
+            (t.starts_with('{') && t.ends_with('}')) || (t.starts_with('[') && t.ends_with(']'));
+        if looks_json {
+            if let Ok(j) = serde_json::from_str(t) {
+                return DbValue::Json(j);
+            }
+        }
+        return text();
+    };
     match *ty {
         Type::BOOL => DbValue::Boolean(t == "t"),
         Type::INT2 | Type::INT4 | Type::INT8 | Type::OID => {
@@ -681,6 +754,49 @@ mod tests {
         assert_eq!(
             error_position("db error: ERROR: relation \"x\" does not exist"),
             None
+        );
+    }
+
+    #[test]
+    fn detects_has_returning_safely() {
+        assert!(has_returning(
+            "INSERT INTO users (name) VALUES ('a') RETURNING id"
+        ));
+        assert!(has_returning("UPDATE users SET name = 'b' returning *;"));
+        assert!(has_returning(
+            "DELETE FROM users WHERE id = 1 RETURNING id, name"
+        ));
+        // Does not trigger for strings or comments
+        assert!(!has_returning(
+            "INSERT INTO users (name) VALUES ('RETURNING')"
+        ));
+        assert!(!has_returning(
+            "/* RETURNING */ INSERT INTO users (name) VALUES ('a')"
+        ));
+        assert!(!has_returning(
+            "-- RETURNING\nINSERT INTO users (name) VALUES ('a')"
+        ));
+        assert!(!has_returning("INSERT INTO users (name) VALUES ('a')"));
+    }
+
+    #[test]
+    fn decodes_without_type_info_with_fallback() {
+        assert_eq!(decode_text(None, None), DbValue::Null);
+        assert_eq!(
+            decode_text(Some("hello"), None),
+            DbValue::Text("hello".into())
+        );
+        assert_eq!(
+            decode_text(Some("{\"a\": 1}"), None),
+            DbValue::Json(serde_json::json!({"a": 1}))
+        );
+        assert_eq!(
+            decode_text(Some("[1, 2]"), None),
+            DbValue::Json(serde_json::json!([1, 2]))
+        );
+        assert_eq!(
+            decode_text(Some("{not valid json}"), None),
+            DbValue::Text("{not valid json}".into())
         );
     }
 }

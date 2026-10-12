@@ -115,16 +115,6 @@ impl TableDelegate for ResultSet {
         self.source.as_ref().is_some_and(|s| s.loading) && self.results.is_empty()
     }
 
-    fn has_more(&self, _: &App) -> bool {
-        self.source
-            .as_ref()
-            .is_some_and(|s| s.has_more && !s.loading)
-    }
-
-    fn load_more(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) {
-        self.fetch(Fetch::More, window, cx);
-    }
-
     fn move_column(
         &mut self,
         col_ix: usize,
@@ -180,24 +170,64 @@ impl TableDelegate for ResultSet {
                 .is_some_and(|c| c.data_type == ColumnType::Boolean);
             let is_nullable = self.column_schema(col_ix).is_none_or(|c| c.is_nullable);
 
-            let input_widget = div()
-                .flex_1()
-                .h_full()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .child(
-                    Input::new(&ed.input)
-                        .appearance(false)
-                        .bordered(false)
-                        .focus_bordered(false)
-                        .font_family(mono.clone())
-                        .text_color(c.text)
-                        .px_0()
-                        .py_0()
-                        .h_full()
-                        .w_full(),
-                );
+            // Aligned like the value it replaces, so editing never moves the text
+            let numeric = matches!(ed.input, CellInput::Number(_));
+            let text = ed.input.value(cx);
+            // Widest line as the grid draws it: decides when text pops out
+            let line_w = {
+                let mut style = window.text_style();
+                style.font_family = mono.clone();
+                let size = style.font_size.to_pixels(window.rem_size());
+                text.lines()
+                    .map(|l| {
+                        let run = style.to_run(l.len());
+                        window
+                            .text_system()
+                            .shape_line(l.to_string().into(), size, &[run], None)
+                            .width
+                    })
+                    .fold(px(0.), Pixels::max)
+            };
+            let text_w = line_w + px(32.0);
+            let cell_w = ed.cell_w.get();
+            // Numbers stay in the cell: a one-line input scrolls instead
+            let popped = !numeric && (text.contains('\n') || (cell_w > px(0.) && text_w > cell_w));
+            let textarea = match &ed.input {
+                CellInput::Text(e) => Textarea::new(e)
+                    .appearance(false)
+                    .bordered(false)
+                    .font_family(mono.clone())
+                    .text_color(c.text)
+                    .px_0()
+                    .py_0()
+                    .w_full()
+                    .into_any_element(),
+                CellInput::Number(e) => Input::new(e)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .font_family(mono.clone())
+                    .text_color(c.text)
+                    .text_right()
+                    .px_0()
+                    .py_0()
+                    .w_full()
+                    .into_any_element(),
+            };
+            let measure = {
+                let cell = ed.cell_w.clone();
+                canvas(
+                    move |bounds, window, _| {
+                        if cell.replace(bounds.size.width) != bounds.size.width {
+                            window.refresh();
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
+            };
+            let border = if has_error { c.danger } else { c.accent };
 
             let error_badge = error.map(|err| {
                 div()
@@ -318,9 +348,7 @@ impl TableDelegate for ResultSet {
                 .rounded(px(3.0))
                 .text_color(c.muted)
                 .hover(|s| s.bg(c.token_bg).text_color(c.accent))
-                .tooltip(move |window, cx| {
-                    Tooltip::new("Open in Value Editor (⇧↵)").build(window, cx)
-                })
+                .tooltip(move |window, cx| Tooltip::new("Open in Value Editor").build(window, cx))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |table, _, window, cx| {
@@ -334,17 +362,155 @@ impl TableDelegate for ResultSet {
                 )
                 .child(Icon::new(IconName::PanelRight).xsmall());
 
-            return div()
-                .id("grid-cell-editor")
+            // Fits the cell exactly: same padding and font as the value, just an accent outline (DataGrip)
+            let inline = div()
                 .absolute()
                 .top(px(-4.0))
                 .bottom(px(-4.0))
                 .left(px(-8.0))
                 .right(px(-8.0))
                 .bg(c.editor_bg)
-                .border_2()
-                .border_color(if has_error { c.danger } else { c.accent })
-                .rounded(px(2.0))
+                .border_1()
+                .border_color(border)
+                .flex()
+                .items_center()
+                .px(px(7.0))
+                .font_family(mono)
+                .child(measure);
+            // Dates: one slim line under the cell reads the value back in words (so a swapped
+            // month/day or a typo shows before saving) and holds the shortcuts. No calendar: in a
+            // grid you nudge or paste dates, and ↑/↓ on the part under the caret does the nudging.
+            // NULL sits here when there's a strip, else on the popout.
+            let (strip_null, null_button) = if ed.date.is_some() {
+                (null_button, None)
+            } else {
+                (None, null_button)
+            };
+            let strip = ed.date.as_ref().map(|pick| {
+                let (readout, valid) = super::editing::date_readout(&text);
+                h_flex()
+                    .id("cell-date-strip")
+                    .items_center()
+                    // The readout gets the first line to itself; shortcuts wrap under it
+                    .flex_wrap()
+                    .gap_x_2()
+                    .gap_y_1()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .w_full()
+                            .text_color(if valid { c.text } else { c.danger })
+                            .child(readout),
+                    )
+                    .child(
+                        div()
+                            .id("cell-date-now")
+                            .flex_shrink_0()
+                            .px_1p5()
+                            .py_0p5()
+                            .rounded(px(3.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .cursor_pointer()
+                            .text_color(c.accent)
+                            .bg(c.token_bg)
+                            .hover(|s| s.bg(c.accent).text_color(c.on_fill))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|table, _, window, cx| {
+                                    table.delegate_mut().pick_now(window, cx);
+                                    cx.notify();
+                                }),
+                            )
+                            .child(if pick.timestamp { "Now" } else { "Today" }),
+                    )
+                    .children(strip_null)
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(c.muted)
+                            .child("↑↓ adjusts the part at the caret"),
+                    )
+            });
+            let (calendar, docked_calendar) = match strip {
+                Some(strip) if !popped => (
+                    Some(
+                        div().absolute().top_full().left(px(-1.0)).child(deferred(
+                            anchored().snap_to_window_with_margin(px(8.0)).child(
+                                strip
+                                    .mt_1()
+                                    .min_w(px(300.0))
+                                    .bg(c.editor_bg)
+                                    .border_1()
+                                    .border_color(c.grid_line)
+                                    .rounded(px(4.0))
+                                    .shadow(vec![BoxShadow {
+                                        color: hsla(0., 0., 0., 0.3),
+                                        offset: point(px(0.), px(2.)),
+                                        blur_radius: px(6.),
+                                        spread_radius: px(0.),
+                                        inset: false,
+                                    }]),
+                            ),
+                        )),
+                    ),
+                    None,
+                ),
+                Some(strip) => (None, Some(strip.border_t_1().border_color(c.grid_line))),
+                None => (None, None),
+            };
+            // ↑/↓ step the date part under the caret; when the text isn't a date they do what they did
+            let textarea = div()
+                .size_full()
+                .when(ed.date.is_some(), |d| {
+                    // The textarea binds ↑/↓ to MoveUp/MoveDown, so catch those before it does
+                    d.capture_action(cx.listener(|table, _: &MoveUp, window, cx| {
+                        // Handled: stop here, or the textarea's own MoveUp runs too and moves the caret
+                        if table.delegate_mut().step_date(1, window, cx) {
+                            cx.stop_propagation();
+                        } else {
+                            cx.propagate();
+                        }
+                    }))
+                    .capture_action(cx.listener(
+                        |table, _: &MoveDown, window, cx| {
+                            if table.delegate_mut().step_date(-1, window, cx) {
+                                cx.stop_propagation();
+                            } else {
+                                cx.propagate();
+                            }
+                        },
+                    ))
+                })
+                .child(textarea);
+            if !popped {
+                return inline
+                    .children(calendar)
+                    .id("grid-cell-editor")
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            // A right-aligned one-line input paints ~10px past its box; pull the digits
+                            // back to where the grid draws them (measured on screen)
+                            .when(numeric, |d| d.pr(px(10.0)))
+                            .child(textarea),
+                    )
+                    .children(error_badge)
+                    .into_any_element();
+            }
+            // Too long or multi-line: a box floats over the cell from its top-left corner and grows
+            let w = text_w.max(cell_w).min(px(480.0));
+            let popout = v_flex()
+                .id("grid-cell-editor")
+                .w(w)
+                .bg(c.editor_bg)
+                .border_1()
+                .border_color(border)
+                .rounded(px(3.0))
                 .shadow(vec![BoxShadow {
                     color: hsla(0., 0., 0., 0.4),
                     offset: point(px(0.), px(2.)),
@@ -352,23 +518,29 @@ impl TableDelegate for ResultSet {
                     spread_radius: px(0.),
                     inset: false,
                 }])
-                .flex()
-                .items_center()
-                .justify_between()
-                .overflow_hidden()
-                .font_family(mono)
-                .pl_2()
-                .child(input_widget)
+                .child(div().px(px(7.0)).py(px(3.0)).child(textarea))
                 .child(
                     h_flex()
-                        .flex_shrink_0()
-                        .items_center()
+                        .justify_end()
                         .gap_1()
-                        .pr_1p5()
+                        .px_1()
+                        .pb_1()
                         .children(error_badge)
                         .children(bool_actions)
                         .children(null_button)
                         .child(expand_button),
+                )
+                .children(docked_calendar);
+            return inline
+                .id("grid-cell-editor-anchor")
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(-1.0))
+                        .left(px(-1.0))
+                        .child(deferred(
+                            anchored().snap_to_window_with_margin(px(8.0)).child(popout),
+                        )),
                 )
                 .into_any_element();
         }
