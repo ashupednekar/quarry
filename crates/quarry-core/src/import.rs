@@ -282,14 +282,11 @@ pub async fn run(
             .ok_or("This database can't skip duplicate rows")?,
         _ => "",
     };
+    let supports_release = d.supports_release_savepoint();
     let mut report = ImportReport::default();
-    for (i, row) in data.rows.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
-            abort(nested).await.ok();
-            report.cancelled = true;
-            return Ok(report);
-        }
-        let values: Vec<String> = plan
+
+    let row_values = |row: &[Option<String>]| -> String {
+        let vals: Vec<String> = plan
             .mapping
             .iter()
             .map(|(src, _)| match row.get(*src).and_then(|v| v.as_deref()) {
@@ -297,46 +294,126 @@ pub async fn run(
                 Some(v) => d.literal(&crate::DbValue::Text(v.to_string())),
             })
             .collect();
-        let insert = format!(
-            "INSERT INTO {} ({}) VALUES ({}){}",
-            plan.table,
-            cols.join(", "),
-            values.join(", "),
-            suffix
-        );
-        if !plan.all_or_nothing {
-            exec("SAVEPOINT quarry_row".into()).await?;
-        }
-        match session
-            .execute_quiet(&insert)
-            .await
-            .map_err(|e| e.to_string())
-        {
-            // ON CONFLICT DO NOTHING reports 0 affected rows for a duplicate
-            Ok(r) if r.rows_affected == 0 => report.skipped += 1,
-            Ok(_) => report.inserted += 1,
-            Err(e) if plan.all_or_nothing => {
+        format!("({})", vals.join(", "))
+    };
+
+    // All-or-nothing fast-path: batch multi-row inserts to minimize network roundtrips.
+    // If a batch fails, fall back to row-by-row probing to pinpoint the exact failure index.
+    const BATCH_SIZE: usize = 100;
+    if plan.all_or_nothing
+        && plan.on_conflict == OnConflict::Error
+        && d.name() != "oracle"
+        && data.rows.len() > 1
+    {
+        let mut i = 0;
+        while i < data.rows.len() {
+            if cancel.load(Ordering::Relaxed) {
                 abort(nested).await.ok();
-                report.failures.push((i + 1, e));
-                report.rolled_back = true;
+                report.cancelled = true;
                 return Ok(report);
             }
-            Err(e) => {
-                exec("ROLLBACK TO SAVEPOINT quarry_row".into()).await?;
-                report.failures.push((i + 1, e));
+            let end = (i + BATCH_SIZE).min(data.rows.len());
+            let batch = &data.rows[i..end];
+
+            if supports_release {
+                exec("SAVEPOINT quarry_batch".into()).await?;
+            }
+
+            let batch_values: Vec<String> = batch.iter().map(|r| row_values(r)).collect();
+            let insert = format!(
+                "INSERT INTO {} ({}) VALUES {}{}",
+                plan.table,
+                cols.join(", "),
+                batch_values.join(", "),
+                suffix
+            );
+
+            match session.execute_quiet(&insert).await {
+                Ok(_) => {
+                    if supports_release {
+                        exec("RELEASE SAVEPOINT quarry_batch".into()).await?;
+                    }
+                    report.inserted += batch.len();
+                    progress.store(end, Ordering::Relaxed);
+                    i = end;
+                }
+                Err(_) => {
+                    // Probe row by row within this batch to pinpoint the exact failing row
+                    if supports_release {
+                        exec("ROLLBACK TO SAVEPOINT quarry_batch".into()).await?;
+                    }
+                    for (probe_offset, row) in batch.iter().enumerate() {
+                        let single_insert = format!(
+                            "INSERT INTO {} ({}) VALUES {}{}",
+                            plan.table,
+                            cols.join(", "),
+                            row_values(row),
+                            suffix
+                        );
+                        if let Err(e) = session.execute_quiet(&single_insert).await {
+                            abort(nested).await.ok();
+                            report.failures.push((i + probe_offset + 1, e.to_string()));
+                            report.rolled_back = true;
+                            return Ok(report);
+                        }
+                    }
+                    // If probe unexpectedly succeeded (e.g. batch size limit), advance
+                    report.inserted += batch.len();
+                    progress.store(end, Ordering::Relaxed);
+                    i = end;
+                }
             }
         }
-        if !plan.all_or_nothing {
-            exec("RELEASE SAVEPOINT quarry_row".into()).await?;
-        }
-        progress.store(i + 1, Ordering::Relaxed);
-    }
-    exec(if nested {
-        "RELEASE SAVEPOINT quarry_import".into()
     } else {
-        "COMMIT".into()
-    })
-    .await?;
+        for (i, row) in data.rows.iter().enumerate() {
+            if cancel.load(Ordering::Relaxed) {
+                abort(nested).await.ok();
+                report.cancelled = true;
+                return Ok(report);
+            }
+            let insert = format!(
+                "INSERT INTO {} ({}) VALUES {}{}",
+                plan.table,
+                cols.join(", "),
+                row_values(row),
+                suffix
+            );
+            if !plan.all_or_nothing {
+                exec("SAVEPOINT quarry_row".into()).await?;
+            }
+            match session
+                .execute_quiet(&insert)
+                .await
+                .map_err(|e| e.to_string())
+            {
+                // ON CONFLICT DO NOTHING reports 0 affected rows for a duplicate
+                Ok(r) if r.rows_affected == 0 => report.skipped += 1,
+                Ok(_) => report.inserted += 1,
+                Err(e) if plan.all_or_nothing => {
+                    abort(nested).await.ok();
+                    report.failures.push((i + 1, e));
+                    report.rolled_back = true;
+                    return Ok(report);
+                }
+                Err(e) => {
+                    exec("ROLLBACK TO SAVEPOINT quarry_row".into()).await?;
+                    report.failures.push((i + 1, e));
+                }
+            }
+            if !plan.all_or_nothing && supports_release {
+                exec("RELEASE SAVEPOINT quarry_row".into()).await?;
+            }
+            progress.store(i + 1, Ordering::Relaxed);
+        }
+    }
+
+    if nested {
+        if supports_release {
+            exec("RELEASE SAVEPOINT quarry_import".into()).await?;
+        }
+    } else {
+        exec("COMMIT".into()).await?;
+    }
     Ok(report)
 }
 

@@ -64,10 +64,16 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
         }
 
         // Single-line comment: -- ... (or # ... where the dialect says so)
-        if (i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-')
-            || (rules.hash_comments && bytes[i] == b'#')
-        {
+        if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
             i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if rules.hash_comments && bytes[i] == b'#' {
+            i += 1;
             while i < len && bytes[i] != b'\n' {
                 i += 1;
             }
@@ -91,7 +97,11 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
             i += 1;
             while i < len {
                 if rules.backslash_escapes && bytes[i] == b'\\' {
-                    i += 2;
+                    i += 1;
+                    if i < len {
+                        let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
+                        i += ch_len;
+                    }
                     continue;
                 }
                 if bytes[i] == b'\'' {
@@ -102,7 +112,8 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
                         break;
                     }
                 } else {
-                    i += 1;
+                    let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    i += ch_len;
                 }
             }
             continue;
@@ -121,7 +132,8 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
                         break;
                     }
                 } else {
-                    i += 1;
+                    let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
+                    i += ch_len;
                 }
             }
             continue;
@@ -163,7 +175,8 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
             continue;
         }
 
-        i += 1;
+        let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
+        i += ch_len;
     }
 
     // Trailing statement without trailing semicolon
@@ -369,5 +382,25 @@ mod dialect_tests {
     fn hash_is_an_operator_in_postgres() {
         let sql = "select '{\"a\":1}'::jsonb #> '{a}'; select 2";
         assert_eq!(split_statements(sql).len(), 2);
+    }
+
+    #[test]
+    fn mysql_hash_comment_on_newline_does_not_swallow_next_statement() {
+        let sql = "#\nSELECT 1;\n# comment\nSELECT 2;";
+        let parts: Vec<String> = split_statements_with(sql, MYSQL)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(parts, vec!["#\nSELECT 1", "# comment\nSELECT 2"]);
+    }
+
+    #[test]
+    fn mysql_multibyte_utf8_backslash_escapes_do_not_panic() {
+        let sql = "SELECT 'hello\\🦀'; SELECT 2;";
+        let parts: Vec<String> = split_statements_with(sql, MYSQL)
+            .into_iter()
+            .map(|s| s.sql)
+            .collect();
+        assert_eq!(parts, vec!["SELECT 'hello\\🦀'", "SELECT 2"]);
     }
 }

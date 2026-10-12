@@ -146,6 +146,12 @@ pub trait Dialect: Send + Sync {
     fn insert_ignore_suffix(&self) -> Option<&'static str> {
         Some(" ON CONFLICT DO NOTHING")
     }
+
+    /// Whether this dialect supports the `RELEASE SAVEPOINT <name>` SQL statement.
+    /// False for T-SQL (SQL Server) and Oracle.
+    fn supports_release_savepoint(&self) -> bool {
+        true
+    }
 }
 
 pub struct Postgres;
@@ -378,6 +384,10 @@ impl Dialect for Mssql {
         None
     }
 
+    fn supports_release_savepoint(&self) -> bool {
+        false
+    }
+
     fn split_rules(&self) -> SplitRules {
         SplitRules {
             go_batches: true,
@@ -449,6 +459,10 @@ impl Dialect for Oracle {
 
     fn insert_ignore_suffix(&self) -> Option<&'static str> {
         None
+    }
+
+    fn supports_release_savepoint(&self) -> bool {
+        false
     }
 
     fn split_rules(&self) -> SplitRules {

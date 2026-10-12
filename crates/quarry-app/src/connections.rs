@@ -70,7 +70,13 @@ pub fn save(profiles: &[ConnectionProfile]) -> Result<(), String> {
     let path = config_path().ok_or("no home directory")?;
     std::fs::create_dir_all(path.parent().expect("has parent")).map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
-    std::fs::write(path, json).map_err(|e| e.to_string())
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// Where a connection points, without user or password (the driver decides the form)

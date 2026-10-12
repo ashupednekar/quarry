@@ -52,7 +52,7 @@ impl Default for ExportOptions {
 
 /// Streaming writer: `begin`, any number of `rows`, then `finish`.
 pub struct Exporter<W: Write> {
-    out: W,
+    out: io::BufWriter<W>,
     opts: ExportOptions,
     names: Vec<String>,
     picked: Vec<usize>,
@@ -60,7 +60,8 @@ pub struct Exporter<W: Write> {
 }
 
 impl<W: Write> Exporter<W> {
-    pub fn begin(mut out: W, columns: &[String], opts: ExportOptions) -> io::Result<Self> {
+    pub fn begin(out: W, columns: &[String], opts: ExportOptions) -> io::Result<Self> {
+        let mut out = io::BufWriter::new(out);
         let picked = opts
             .columns
             .clone()

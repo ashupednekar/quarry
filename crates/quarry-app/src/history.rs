@@ -47,11 +47,14 @@ pub fn append(item: &QueryHistoryItem) {
         return;
     };
     let _ = std::fs::create_dir_all(path.parent().expect("has parent"));
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(path) {
         let _ = writeln!(f, "{line}");
     }
 }

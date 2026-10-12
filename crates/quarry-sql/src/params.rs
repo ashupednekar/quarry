@@ -85,13 +85,14 @@ pub fn literal(value: &str) -> String {
     let v = value.trim();
     if v.eq_ignore_ascii_case("null") {
         "NULL".into()
-    } else if v.parse::<f64>().is_ok()
-        || v.eq_ignore_ascii_case("true")
-        || v.eq_ignore_ascii_case("false")
+    } else if v.parse::<f64>().is_ok_and(|f| f.is_finite())
+        && !(v.len() > 1 && v.starts_with('0') && !v.starts_with("0."))
     {
         v.to_string()
+    } else if v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("false") {
+        v.to_ascii_uppercase()
     } else {
-        format!("'{}'", value.replace('\'', "''"))
+        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
     }
 }
 

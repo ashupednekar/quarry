@@ -6,8 +6,9 @@ use gpui::{Context, Window};
 /// One long-lived runtime for all DB I/O. Postgres connection drivers live here, so it must outlive every session.
 pub static DB_RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
     std::sync::LazyLock::new(|| {
+        let workers = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(4, 16));
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
+            .worker_threads(workers)
             .enable_all()
             .build()
             .expect("failed to start DB runtime")

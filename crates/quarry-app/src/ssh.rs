@@ -31,8 +31,23 @@ impl Drop for Tunnel {
 }
 
 impl Tunnel {
-    /// Forwards a free local port to `remote_host:remote_port` as seen from the SSH server
+    /// Forwards a free local port to `remote_host:remote_port` as seen from the SSH server.
+    /// Retries up to 3 times to prevent transient port allocation race conditions (TOCTOU).
     pub fn open(cfg: &SshConfig, remote_host: &str, remote_port: u16) -> Result<Tunnel, String> {
+        let mut last_err = String::new();
+        for _ in 0..3 {
+            match Self::try_open(cfg, remote_host, remote_port) {
+                Ok(tunnel) => return Ok(tunnel),
+                Err(e) => {
+                    last_err = e;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    fn try_open(cfg: &SshConfig, remote_host: &str, remote_port: u16) -> Result<Tunnel, String> {
         let local_port = TcpListener::bind("127.0.0.1:0")
             .and_then(|l| l.local_addr())
             .map_err(|e| e.to_string())?
@@ -95,6 +110,7 @@ impl Tunnel {
 
 /// Drop only runs on a clean exit. This watchdog stops ssh if Quarry is killed or crashes,
 /// and exits on its own once the tunnel is closed normally.
+#[cfg(unix)]
 fn watch(app_pid: u32, ssh_pid: u32) {
     let script = format!("while kill -0 {app_pid} 2>/dev/null && kill -0 {ssh_pid} 2>/dev/null; do sleep 2; done; kill {ssh_pid} 2>/dev/null");
     let _ = Command::new("sh")
@@ -105,9 +121,14 @@ fn watch(app_pid: u32, ssh_pid: u32) {
         .spawn();
 }
 
+#[cfg(not(unix))]
+fn watch(_app_pid: u32, _ssh_pid: u32) {}
+
 fn expand_home(path: &str) -> String {
-    match path.strip_prefix("~/") {
+    let stripped = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match stripped {
         Some(rest) => std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
             .map(|h| format!("{h}/{rest}"))
             .unwrap_or_else(|_| path.to_string()),
         None => path.to_string(),
