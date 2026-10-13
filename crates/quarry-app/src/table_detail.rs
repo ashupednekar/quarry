@@ -84,6 +84,7 @@ impl QuarryWindow {
                     EditorState::new(window, cx)
                         .language("sql")
                         .line_number(true)
+                        .folding(true)
                         .default_value(info.ddl)
                 });
                 let indexes = info

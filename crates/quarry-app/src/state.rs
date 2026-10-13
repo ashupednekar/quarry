@@ -94,6 +94,24 @@ pub struct QueryHistoryItem {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VimMode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+}
+
+impl VimMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            VimMode::Normal => "-- NORMAL --",
+            VimMode::Insert => "-- INSERT --",
+            VimMode::Visual => "-- VISUAL --",
+        }
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub enum Tab {
@@ -116,6 +134,8 @@ pub enum Tab {
         error_message: Option<String>,
         /// The last run was an EXPLAIN the dialect could read: shown as a tree instead of the grid
         plan: Option<std::rc::Rc<quarry_core::plan::Plan>>,
+        /// Modal editing mode when vim_mode setting is active
+        vim_mode: VimMode,
     },
     Table {
         id: String,

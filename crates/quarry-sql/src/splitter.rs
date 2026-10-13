@@ -130,6 +130,73 @@ pub fn find_statement_at_offset_with(
     statements.first().cloned()
 }
 
+/// AST-based statement splitting using Tree-sitter SQL grammar
+pub fn tree_sitter_split_statements(input: &str) -> Vec<StatementSpan> {
+    let mut parser = tree_sitter::Parser::new();
+    let language: tree_sitter::Language = tree_sitter_sequel::LANGUAGE.into();
+    if parser.set_language(&language).is_err() {
+        return split_statements(input);
+    }
+    let Some(tree) = parser.parse(input, None) else {
+        return split_statements(input);
+    };
+
+    let root = tree.root_node();
+    let mut statements = Vec::new();
+    let mut cursor = root.walk();
+
+    for child in root.children(&mut cursor) {
+        let kind = child.kind();
+        if kind == ";" || kind == "comment" || kind == "marginalia" {
+            continue;
+        }
+
+        let start = child.start_byte();
+        let mut end = child.end_byte();
+
+        if end < input.len() && input.as_bytes()[end] == b';' {
+            end += 1;
+        }
+
+        let sql_part = input[start..end].trim();
+        if !sql_part.is_empty() {
+            statements.push(StatementSpan {
+                start,
+                end,
+                sql: sql_part.to_string(),
+            });
+        }
+    }
+
+    if statements.is_empty() && !input.trim().is_empty() {
+        return split_statements(input);
+    }
+
+    statements
+}
+
+/// Finds the statement at the given cursor byte offset using Tree-sitter AST boundaries
+pub fn tree_sitter_statement_at_offset(input: &str, cursor_offset: usize) -> Option<StatementSpan> {
+    let statements = tree_sitter_split_statements(input);
+    if statements.is_empty() {
+        return None;
+    }
+
+    for stmt in &statements {
+        if cursor_offset >= stmt.start && cursor_offset <= stmt.end {
+            return Some(stmt.clone());
+        }
+    }
+
+    if let Some(last) = statements.last() {
+        if cursor_offset >= last.end {
+            return Some(last.clone());
+        }
+    }
+
+    statements.first().cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +348,23 @@ mod dialect_tests {
             .map(|s| s.sql)
             .collect();
         assert_eq!(parts, vec!["SELECT 'hello\\🦀'", "SELECT 2"]);
+    }
+
+    #[test]
+    fn test_tree_sitter_split_statements() {
+        let sql =
+            "SELECT * FROM users WHERE active = true;\n\nINSERT INTO logs (msg) VALUES ('test');";
+        let spans = tree_sitter_split_statements(sql);
+        assert_eq!(spans.len(), 2);
+        assert!(spans[0].sql.starts_with("SELECT"));
+        assert!(spans[1].sql.starts_with("INSERT"));
+
+        let at_first = tree_sitter_statement_at_offset(sql, 10);
+        assert!(at_first.is_some());
+        assert!(at_first.unwrap().sql.starts_with("SELECT"));
+
+        let at_second = tree_sitter_statement_at_offset(sql, 55);
+        assert!(at_second.is_some());
+        assert!(at_second.unwrap().sql.starts_with("INSERT"));
     }
 }

@@ -115,6 +115,7 @@ actions!(
         IncreaseFontSize,
         DecreaseFontSize,
         ResetFontSize,
+        SelectNextOccurrence,
     ]
 );
 
@@ -568,6 +569,7 @@ impl QuarryWindow {
                 schema,
                 row_limit,
                 plan,
+                vim_mode,
                 ..
             } => {
                 let conn = self
@@ -586,6 +588,7 @@ impl QuarryWindow {
                     schema_label,
                     *row_limit,
                     self.state.dialect().split_rules(),
+                    self.settings.vim_mode.then_some(*vim_mode),
                     &self.theme,
                     cx,
                 );
@@ -1251,7 +1254,13 @@ impl QuarryWindow {
                 .language(language)
                 .line_number(self.settings.line_numbers)
                 .soft_wrap(self.settings.soft_wrap)
-                .tab_size(gpui::base::input::TabSize { tab_size: self.settings.tab_size.max(1), hard_tabs: false })
+                .folding(self.settings.code_folding)
+                .smart_indent(true)
+                .auto_close(true)
+                .tab_size(gpui::base::input::TabSize {
+                    tab_size: self.settings.tab_size.max(1),
+                    hard_tabs: false,
+                })
                 .placeholder("Write SQL here. ⌘↵ runs the selection or the statement at the cursor; ⌥↵ shows actions.")
                 .default_value(sql.to_string())
         });
@@ -1327,6 +1336,7 @@ impl QuarryWindow {
             is_running: false,
             error_message: None,
             plan: None,
+            vim_mode: state::VimMode::Normal,
         });
         self.state.active_tab_index = self.state.tabs.len() - 1;
         self.schedule_session_save(cx);
@@ -1691,6 +1701,246 @@ impl QuarryWindow {
             *connection_id = current;
         }
     }
+
+    fn select_next_occurrence(
+        &mut self,
+        _: &SelectNextOccurrence,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(Tab::Query { editor, .. }) = self.state.active_tab() else {
+            return;
+        };
+        let editor = editor.clone();
+        editor.update(cx, |ed, cx| {
+            let val = ed.value();
+            let text = val.as_str();
+            let range = ed.selected_range();
+            if range.start < range.end && range.end <= text.len() {
+                if let Some(needle) = text.get(range.start..range.end) {
+                    let search_from = range.end;
+                    let found = text[search_from..]
+                        .find(needle)
+                        .map(|offset| search_from + offset)
+                        .or_else(|| text[..range.start].find(needle));
+                    if let Some(start) = found {
+                        let end = start + needle.len();
+                        ed.set_selected_range(start..end, cx);
+                    }
+                }
+            } else {
+                let cursor = range.start.min(text.len());
+                let bytes = text.as_bytes();
+                let mut start = cursor;
+                while start > 0
+                    && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+                {
+                    start -= 1;
+                }
+                let mut end = cursor;
+                while end < bytes.len()
+                    && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                {
+                    end += 1;
+                }
+                if start < end {
+                    ed.set_selected_range(start..end, cx);
+                }
+            }
+        });
+    }
+
+    pub fn handle_vim_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let active_idx = self.state.active_tab_index;
+        let Some(Tab::Query { vim_mode, .. }) = self.state.tabs.get_mut(active_idx) else {
+            return false;
+        };
+        let current_mode = *vim_mode;
+        let ks = &event.keystroke;
+
+        match current_mode {
+            state::VimMode::Insert => {
+                if ks.key == "escape" || (ks.modifiers.control && (ks.key == "[" || ks.key == "c"))
+                {
+                    *vim_mode = state::VimMode::Normal;
+                    cx.notify();
+                    return true;
+                }
+                false
+            }
+            state::VimMode::Visual => {
+                if ks.key == "escape" {
+                    *vim_mode = state::VimMode::Normal;
+                    cx.notify();
+                    return true;
+                }
+                if ks.key == "y" {
+                    window.dispatch_action(Box::new(gpui::component::input::Copy), cx);
+                    *vim_mode = state::VimMode::Normal;
+                    cx.notify();
+                    return true;
+                }
+                if ks.key == "d" || ks.key == "x" {
+                    window.dispatch_action(Box::new(gpui::component::input::Cut), cx);
+                    *vim_mode = state::VimMode::Normal;
+                    cx.notify();
+                    return true;
+                }
+                if ks.key == "c" {
+                    window.dispatch_action(Box::new(gpui::component::input::Cut), cx);
+                    *vim_mode = state::VimMode::Insert;
+                    cx.notify();
+                    return true;
+                }
+                if ks.key == "v" {
+                    *vim_mode = state::VimMode::Normal;
+                    cx.notify();
+                    return true;
+                }
+                true
+            }
+            state::VimMode::Normal => {
+                if ks.modifiers.platform || ks.modifiers.alt {
+                    return false;
+                }
+                if ks.modifiers.control {
+                    if ks.key == "r" {
+                        window.dispatch_action(Box::new(gpui::component::input::Redo), cx);
+                        return true;
+                    }
+                    if ks.key == "[" || ks.key == "c" {
+                        return true;
+                    }
+                    return false;
+                }
+
+                let key_str = ks.key.as_str();
+                let is_shift = ks.modifiers.shift;
+
+                if key_str == "A" || (is_shift && key_str == "a") {
+                    window.dispatch_action(Box::new(gpui::component::input::MoveToEndOfLine), cx);
+                    *vim_mode = state::VimMode::Insert;
+                    cx.notify();
+                    return true;
+                }
+                if key_str == "I" || (is_shift && key_str == "i") {
+                    window.dispatch_action(Box::new(gpui::component::input::MoveToStartOfLine), cx);
+                    *vim_mode = state::VimMode::Insert;
+                    cx.notify();
+                    return true;
+                }
+                if key_str == "O" || (is_shift && key_str == "o") {
+                    window.dispatch_action(Box::new(gpui::component::input::MoveToStartOfLine), cx);
+                    window.dispatch_action(
+                        Box::new(gpui::component::input::Enter {
+                            secondary: false,
+                            shift: false,
+                        }),
+                        cx,
+                    );
+                    window.dispatch_action(Box::new(gpui::component::input::MoveUp), cx);
+                    *vim_mode = state::VimMode::Insert;
+                    cx.notify();
+                    return true;
+                }
+                if key_str == "G" || (is_shift && key_str == "g") {
+                    window.dispatch_action(Box::new(gpui::component::input::MoveToEnd), cx);
+                    return true;
+                }
+                if key_str == "$" || (is_shift && key_str == "4") {
+                    window.dispatch_action(Box::new(gpui::component::input::MoveToEndOfLine), cx);
+                    return true;
+                }
+
+                match key_str {
+                    "i" => {
+                        *vim_mode = state::VimMode::Insert;
+                        cx.notify();
+                        true
+                    }
+                    "a" => {
+                        window.dispatch_action(Box::new(gpui::component::input::MoveRight), cx);
+                        *vim_mode = state::VimMode::Insert;
+                        cx.notify();
+                        true
+                    }
+                    "o" => {
+                        window
+                            .dispatch_action(Box::new(gpui::component::input::MoveToEndOfLine), cx);
+                        window.dispatch_action(
+                            Box::new(gpui::component::input::Enter {
+                                secondary: false,
+                                shift: false,
+                            }),
+                            cx,
+                        );
+                        *vim_mode = state::VimMode::Insert;
+                        cx.notify();
+                        true
+                    }
+                    "v" => {
+                        *vim_mode = state::VimMode::Visual;
+                        cx.notify();
+                        true
+                    }
+                    "h" => {
+                        window.dispatch_action(Box::new(gpui::component::input::MoveLeft), cx);
+                        true
+                    }
+                    "l" => {
+                        window.dispatch_action(Box::new(gpui::component::input::MoveRight), cx);
+                        true
+                    }
+                    "j" => {
+                        window.dispatch_action(Box::new(gpui::component::input::MoveDown), cx);
+                        true
+                    }
+                    "k" => {
+                        window.dispatch_action(Box::new(gpui::component::input::MoveUp), cx);
+                        true
+                    }
+                    "w" => {
+                        window
+                            .dispatch_action(Box::new(gpui::component::input::MoveToNextWord), cx);
+                        true
+                    }
+                    "b" => {
+                        window.dispatch_action(
+                            Box::new(gpui::component::input::MoveToPreviousWord),
+                            cx,
+                        );
+                        true
+                    }
+                    "0" => {
+                        window.dispatch_action(
+                            Box::new(gpui::component::input::MoveToStartOfLine),
+                            cx,
+                        );
+                        true
+                    }
+                    "x" => {
+                        window.dispatch_action(Box::new(gpui::component::input::Delete), cx);
+                        true
+                    }
+                    "u" => {
+                        window.dispatch_action(Box::new(gpui::component::input::Undo), cx);
+                        true
+                    }
+                    "p" => {
+                        window.dispatch_action(Box::new(gpui::component::input::Paste), cx);
+                        true
+                    }
+                    "escape" => true,
+                    _ => ks.key_char.is_some(),
+                }
+            }
+        }
+    }
 }
 
 impl Render for QuarryWindow {
@@ -1812,6 +2062,7 @@ impl Render for QuarryWindow {
             }))
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
+            .on_action(cx.listener(Self::select_next_occurrence))
             // Drop a SQLite file anywhere to open it (C3, U11)
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {

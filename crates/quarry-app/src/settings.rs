@@ -28,6 +28,10 @@ pub struct Settings {
     pub highlight_current_statement: bool,
     /// Schema-aware completions in the SQL editor
     pub autocomplete: bool,
+    /// Tree-sitter AST-based syntax folding
+    pub code_folding: bool,
+    /// Vim modal editing in the SQL editor
+    pub vim_mode: bool,
 
     // Data grid
     /// Rows fetched per page in table tabs
@@ -58,6 +62,8 @@ impl Default for Settings {
             line_numbers: true,
             highlight_current_statement: true,
             autocomplete: true,
+            code_folding: true,
+            vim_mode: false,
             rows_per_page: 500,
             null_display: "NULL".into(),
             max_column_width: 420.0,

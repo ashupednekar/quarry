@@ -28,6 +28,7 @@ impl QueryEditor {
         row_limit: Option<u32>,
         // How the connection's dialect splits statements, for the ▶ buttons
         rules: quarry_sql::SplitRules,
+        vim_mode: Option<crate::state::VimMode>,
         theme: &Theme,
         cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
@@ -127,6 +128,24 @@ impl QueryEditor {
                     .child(conn_label)
                     .children(schema_picker)
                     .child(limit_picker)
+                    .children(vim_mode.map(|mode| {
+                        div()
+                            .id("vim-mode-badge")
+                            .px_2()
+                            .h(px(22.0))
+                            .rounded(px(3.0))
+                            .flex()
+                            .items_center()
+                            .bg(theme.bg_hover)
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(match mode {
+                                crate::state::VimMode::Normal => theme.accent,
+                                crate::state::VimMode::Insert => theme.success,
+                                crate::state::VimMode::Visual => theme.warning,
+                            })
+                            .child(mode.label())
+                    }))
                     .child(div().flex_1())
                     .child(toolbar_button(
                         "btn-save",
@@ -171,6 +190,13 @@ impl QueryEditor {
                     .min_h_0()
                     .pl(px(RUN_COL_W))
                     .bg(theme.bg_app)
+                    .when(vim_mode.is_some(), |d| {
+                        d.on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                            if this.handle_vim_key(event, window, cx) {
+                                cx.stop_propagation();
+                            }
+                        }))
+                    })
                     .child(Editor::new(editor).h_full().bordered(false)),
             )
             .children(run_gutter_buttons(
@@ -206,10 +232,17 @@ fn run_gutter_buttons(
     let scroll_y = e.scroll_offset().y;
     let sql = e.value();
     let area = e.input_bounds();
-    let starts: Vec<usize> = quarry_sql::split_statements_with(&sql, rules)
-        .into_iter()
-        .map(|s| s.start)
-        .collect();
+    let starts: Vec<usize> = if rules.go_batches || rules.slash_blocks {
+        quarry_sql::split_statements_with(&sql, rules)
+            .into_iter()
+            .map(|s| s.start)
+            .collect()
+    } else {
+        quarry_sql::tree_sitter_split_statements(&sql)
+            .into_iter()
+            .map(|s| s.start)
+            .collect()
+    };
     let lines: Vec<usize> = sql.split('\n').map(|l| l.chars().count()).collect();
     let wrap_cols = (area.size.width / (line_height * 0.45)).floor() as usize;
     let fits = |line: usize| {

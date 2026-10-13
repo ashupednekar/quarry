@@ -14,5 +14,6 @@ pub use params::{bind_params, find_params};
 pub use rewrites::{rewrites, with_limit};
 pub use splitter::{
     find_statement_at_offset, find_statement_at_offset_with, split_statements,
-    split_statements_with, SplitRules, StatementSpan,
+    split_statements_with, tree_sitter_split_statements, tree_sitter_statement_at_offset,
+    SplitRules, StatementSpan,
 };

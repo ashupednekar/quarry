@@ -20,6 +20,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-b", ToggleSidebar, None),
         KeyBinding::new("secondary-j", ToggleBottomPanel, None),
         KeyBinding::new("secondary-n", NewQuery, None),
+        KeyBinding::new("secondary-d", SelectNextOccurrence, None),
+        KeyBinding::new("secondary-d", SelectNextOccurrence, Some("Input")),
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("escape", Dismiss, None),
         // Standard macOS window/app shortcuts (also shown in the menu bar)
@@ -115,6 +117,8 @@ pub fn set_app_menus(cx: &mut App) {
                 MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
                 MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
                 MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
+                MenuItem::separator(),
+                MenuItem::action("Select Next Occurrence", SelectNextOccurrence),
             ],
             disabled: false,
         },

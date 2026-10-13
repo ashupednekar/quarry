@@ -70,9 +70,9 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 - [x] Microbenchmarks suite (`criterion`): benchmark SQL statement splitting throughput, completion lookup on 1,000+ tables, fuzzy matching, and grid row decoding (`benches/`)
 
 ## Editor Intelligence & Power Editing
-- [ ] Tree-sitter SQL integration: use Tree-sitter queries (already enabled in `gpui-kit`) for AST-based statement boundaries and syntax folding (`quarry_sql::splitter`, `editor.rs`)
-- [ ] Multi-cursor selection: support secondary carets (`⌥⌘↑`/`⌥⌘↓` or `⌘D` for next occurrence) in SQL editor (`editor::QueryEditor`)
-- [ ] Vim mode toggle: optional modal editing (`settings: vim_mode`) for normal/insert/visual command navigation (`settings.rs`, `editor.rs`)
+- [x] Tree-sitter SQL integration: use Tree-sitter queries (already enabled in `gpui-kit`) for AST-based statement boundaries and syntax folding (`quarry_sql::splitter`, `editor.rs`)
+- [x] Multi-cursor selection: support secondary carets (`⌥⌘↑`/`⌥⌘↓` or `⌘D` for next occurrence) in SQL editor (`editor::QueryEditor`)
+- [x] Vim mode toggle: optional modal editing (`settings: vim_mode`) for normal/insert/visual command navigation (`settings.rs`, `editor.rs`)
 
 ## Configuration & Tooling
 - [x] Atomic connection profile permissions: create `connections.json` with `0o600` mode atomically on Unix to prevent TOCTOU permission leaks (`connections::save`)
