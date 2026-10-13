@@ -11,9 +11,58 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 
+/// Leads a driver's raw connect error with what it means and what to check.
+/// Text matching because each driver words these differently; unknown errors pass through as is.
+pub fn explain_connect_error(raw: &str) -> String {
+    let m = raw.to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| m.contains(n));
+    let hint = if has(&[
+        "password authentication failed",
+        "access denied for user",
+        "login failed for user",
+        "ora-01017",
+        "invalid username/password",
+    ]) {
+        "Wrong user name or password."
+    } else if has(&["role \"", "ora-01918"]) && m.contains("does not exist") {
+        "That user doesn't exist on this server."
+    } else if has(&["unknown database", "cannot open database", "ora-12514"])
+        || (m.contains("database \"") && m.contains("does not exist"))
+    {
+        "That database (or Oracle service) doesn't exist on this server. Check its name."
+    } else if has(&["no pg_hba.conf entry"]) {
+        "The server doesn't allow connections from this machine or user (pg_hba.conf)."
+    } else if has(&[
+        "connection refused",
+        "ora-12541",
+        "os error 61",
+        "os error 111",
+        "actively refused",
+    ]) {
+        "Nothing is accepting connections at that host and port. Is the server running, and is the port right?"
+    } else if has(&[
+        "failed to lookup address",
+        "nodename nor servname",
+        "name or service not known",
+        "no such host",
+        "ora-12545",
+    ]) {
+        "Couldn't find that host. Check the host name."
+    } else if has(&["timed out", "timeout", "ora-12170"]) {
+        "The server didn't answer in time. Check the host, port, and any firewall or VPN."
+    } else if has(&["tls", "ssl", "certificate"]) {
+        "The server and Quarry couldn't agree on encryption (SSL/TLS)."
+    } else if has(&["too many connections", "ora-12516", "ora-12519"]) {
+        "The server has no free connections right now. Try again shortly."
+    } else {
+        return raw.to_string();
+    };
+    format!("{hint}\n{raw}")
+}
+
 #[derive(Error, Debug, Clone)]
 pub enum DbError {
-    #[error("Connection failed: {0}")]
+    #[error("{}", explain_connect_error(.0))]
     ConnectionFailed(String),
 
     #[error("Connection lost")]
@@ -460,5 +509,25 @@ mod tests {
         assert!(!is_mutation(
             "WITH summary AS (SELECT count(*) as c FROM users) SELECT * FROM summary;"
         ));
+    }
+}
+
+#[cfg(test)]
+mod explain_tests {
+    use super::explain_connect_error as x;
+
+    #[test]
+    fn explains_common_connect_failures() {
+        assert!(x("password authentication failed for user \"bob\"").starts_with("Wrong user name"));
+        assert!(x("Access denied for user 'root'@'localhost'").starts_with("Wrong user name"));
+        assert!(x("role \"bob\" does not exist").starts_with("That user doesn't"));
+        assert!(x("database \"nope\" does not exist").starts_with("That database"));
+        assert!(x("ORA-12541: Cannot connect. No listener").starts_with("Nothing is accepting"));
+        assert!(
+            x("error connecting to server: Connection refused (os error 61)")
+                .starts_with("Nothing is accepting")
+        );
+        // Unknown errors pass through untouched
+        assert_eq!(x("something odd"), "something odd");
     }
 }

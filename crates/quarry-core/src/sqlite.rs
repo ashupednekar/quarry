@@ -255,7 +255,8 @@ impl DatabaseSession for SqliteSession {
     async fn ping(&self) -> Result<Duration, DbError> {
         let start = Instant::now();
         self.with(|conn| {
-            conn.execute("SELECT 1", []).map_err(sql_err)?;
+            conn.query_row("SELECT 1", [], |_| Ok(()))
+                .map_err(sql_err)?;
             Ok(())
         })
         .await?;
@@ -609,5 +610,17 @@ impl SqliteSession {
             n += 1;
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // "Test connection" pings; a ping that runs SELECT through execute() fails on every SQLite file
+    #[tokio::test]
+    async fn ping_succeeds() {
+        let s = SqliteSession::open_in_memory().unwrap();
+        assert!(s.ping().await.is_ok());
     }
 }

@@ -176,7 +176,7 @@ impl PostgresSession {
                     tracing::debug!("TLS connection attempt failed ({e}), falling back to NoTls");
                     let (client, connection) = tokio_postgres::connect(connection_str, NoTls)
                         .await
-                        .map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
+                        .map_err(|e| DbError::ConnectionFailed(pg_message(&e)))?;
                     tokio::spawn(async move {
                         if let Err(e) = connection.await {
                             tracing::error!("PostgreSQL connection error: {}", e);
@@ -184,7 +184,7 @@ impl PostgresSession {
                     });
                     client
                 } else {
-                    return Err(DbError::ConnectionFailed(e.to_string()));
+                    return Err(DbError::ConnectionFailed(pg_message(&e)));
                 }
             }
         };
@@ -221,9 +221,33 @@ impl PostgresSession {
 fn statement_err(e: tokio_postgres::Error) -> DbError {
     use tokio_postgres::error::ErrorPosition;
     match e.as_db_error().and_then(|d| d.position()) {
-        Some(ErrorPosition::Original(at)) => DbError::SqlError(format!("{e} (at character {at})")),
-        _ => DbError::SqlError(e.to_string()),
+        Some(ErrorPosition::Original(at)) => {
+            DbError::SqlError(format!("{} (at character {at})", pg_message(&e)))
+        }
+        _ => DbError::SqlError(pg_message(&e)),
     }
+}
+
+/// tokio-postgres prints server errors as a bare "db error"; the server's message, detail and hint are what help
+fn pg_message(e: &tokio_postgres::Error) -> String {
+    if let Some(db) = e.as_db_error() {
+        let mut msg = db.message().to_string();
+        if let Some(d) = db.detail() {
+            msg.push_str(&format!("\n{d}"));
+        }
+        if let Some(h) = db.hint() {
+            msg.push_str(&format!("\nHint: {h}"));
+        }
+        return msg;
+    }
+    // IO and protocol errors also hide their cause behind a short label
+    let mut msg = e.to_string();
+    let mut src = std::error::Error::source(e);
+    while let Some(s) = src {
+        msg.push_str(&format!(": {s}"));
+        src = s.source();
+    }
+    msg
 }
 
 fn sql_string(s: &str) -> String {
