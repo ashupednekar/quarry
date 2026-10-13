@@ -314,11 +314,8 @@ impl QuarryWindow {
                             .child("Open themes folder")
                             .on_click(cx.listener(|_, _, _, cx| {
                                 if let Some(dir) = crate::theme::themes_dir() {
-                                    let example = dir.join("example.json");
                                     if !dir.exists() {
                                         let _ = std::fs::create_dir_all(&dir);
-                                        let _ =
-                                            std::fs::write(&example, crate::theme::EXAMPLE_THEME);
                                     }
                                     cx.reveal_path(&dir);
                                 }

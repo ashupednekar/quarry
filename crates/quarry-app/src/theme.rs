@@ -326,22 +326,16 @@ pub fn available() -> Vec<String> {
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
             })
-            .filter(|n| !names.iter().any(|b| b.eq_ignore_ascii_case(n)))
+            .filter(|n| {
+                !n.eq_ignore_ascii_case("example")
+                    && !names.iter().any(|b| b.eq_ignore_ascii_case(n))
+            })
             .collect();
         user.sort();
         names.extend(user);
     }
     names
 }
-
-/// A commented example the first time the themes folder is opened
-pub const EXAMPLE_THEME: &str = r##"{
-  "base": "dark",
-  "accent": "#c084fc",
-  "accent_hover": "#d8b4fe",
-  "bg_selected": "#3b2a52"
-}
-"##;
 
 /// Interface text
 pub const UI_FONT: &str = "Space Grotesk";
