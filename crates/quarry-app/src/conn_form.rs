@@ -239,6 +239,22 @@ impl QuarryWindow {
             if let Some(slot) = self.state.saved_connections.iter_mut().find(|c| c.id == id) {
                 *slot = profile.clone();
             }
+            // Open tabs and the active connection hold copies; refresh them so an edit
+            // (prod/staging, name, read-only) shows at once, e.g. the prod line along the top
+            for tab in &mut self.state.tabs {
+                if let Tab::Table {
+                    connection: Some(c),
+                    ..
+                } = tab
+                {
+                    if c.id == id {
+                        *c = profile.clone();
+                    }
+                }
+            }
+            if let Some(c) = self.state.active_connection.as_mut().filter(|c| c.id == id) {
+                *c = profile.clone();
+            }
             if let Err(e) = connections::save(&self.state.saved_connections) {
                 self.toast(format!("Could not save connection: {e}"), true, cx);
             }

@@ -57,7 +57,13 @@ impl QuarryWindow {
             .border_b_1()
             .border_color(t.border)
             .items_center()
-            .child(div().flex_1())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .pr_3()
+                    .children(self.render_breadcrumb()),
+            )
             .child(
                 h_flex()
                     .id("omnibox-trigger-btn")
@@ -90,6 +96,81 @@ impl QuarryWindow {
                     .child(div().text_xs().text_color(t.text_muted).child("⌘K")),
             )
             .child(div().flex_1())
+    }
+
+    /// Where the active tab points, DataGrip-style: `quarry-db › postgres › public › tables › ▦ users`.
+    /// Hover for the full address.
+    fn render_breadcrumb(&self) -> Option<impl IntoElement> {
+        let t = &self.theme;
+        let (conn, schema, table) = match self.state.active_tab()? {
+            Tab::Table {
+                connection,
+                schema_name,
+                table_name,
+                ..
+            } => (
+                connection.as_ref()?,
+                Some(schema_name.clone()),
+                Some(table_name.clone()),
+            ),
+            Tab::Query { schema, .. } => {
+                (self.state.active_connection.as_ref()?, schema.clone(), None)
+            }
+        };
+        let address = crate::connections::display_address(conn);
+        // The database is the address's last part: `localhost:5432/postgres`, or a SQLite file name
+        let database = address
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|d| !d.is_empty() && *d != conn.name)
+            .map(str::to_string);
+        let mut parts: Vec<String> = vec![conn.name.clone()];
+        parts.extend(database);
+        parts.extend(schema);
+        if table.is_some() {
+            parts.push("tables".into());
+        }
+        let sep = || {
+            Icon::new(IconName::ChevronRight)
+                .xsmall()
+                .text_color(t.text_muted)
+                .flex_shrink_0()
+        };
+        let tip = address.clone();
+        Some(
+            h_flex()
+                .id("breadcrumb")
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .overflow_hidden()
+                .text_xs()
+                .text_color(t.text_muted)
+                .tooltip(move |window, cx| {
+                    gpui::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
+                .children(parts.into_iter().enumerate().flat_map(|(i, part)| {
+                    let label = div().flex_shrink_0().child(part);
+                    if i == 0 {
+                        vec![label.into_any_element()]
+                    } else {
+                        vec![sep().into_any_element(), label.into_any_element()]
+                    }
+                }))
+                .children(table.map(|name| {
+                    h_flex()
+                        .items_center()
+                        .gap_1()
+                        .min_w_0()
+                        .child(sep())
+                        .child(
+                            Icon::new(IconName::Table)
+                                .xsmall()
+                                .text_color(t.text_secondary),
+                        )
+                        .child(div().truncate().text_color(t.text_primary).child(name))
+                })),
+        )
     }
 
     /// Icon + title + close per tab; hidden when nothing is open

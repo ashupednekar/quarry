@@ -1864,12 +1864,6 @@ impl Render for QuarryWindow {
             .size_full()
             .bg(t.bg_app)
             .text_color(t.text_primary)
-            .when_some(
-                current_conn
-                    .as_ref()
-                    .filter(|c| c.env != Environment::Local),
-                |this, c| this.child(div().h(px(2.0)).w_full().bg(editor::env_color(c.env, &t))),
-            )
             .child(titlebar)
             .child(
                 div().flex_1().min_h_0().child(
