@@ -7,7 +7,7 @@ use crate::schema::{
     ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema,
 };
 use crate::session::{
-    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState,
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryChunk, QueryResult, TxState,
 };
 use crate::value::DbValue;
 use crate::RowBuffer;
@@ -288,6 +288,98 @@ impl DatabaseSession for SqliteSession {
             .await?;
         self.tx.set_open(is_open);
         Ok(result)
+    }
+
+    async fn execute_stream(
+        &self,
+        sql: &str,
+        chunk_size: usize,
+        tx: tokio::sync::mpsc::Sender<Result<QueryChunk, DbError>>,
+    ) -> Result<(), DbError> {
+        if self.read_only && is_mutation(sql) {
+            return Err(DbError::ReadOnlyViolation);
+        }
+
+        let start = Instant::now();
+        let sql = sql.to_string();
+        let manual = self.tx.manual();
+        let opens = manual && tx_verb(&sql).is_none() && !is_read(&sql);
+        let conn_arc = self.conn.clone();
+
+        let is_open = tokio::task::spawn_blocking(move || -> Result<bool, DbError> {
+            let conn = conn_arc.lock().unwrap();
+            if opens && conn.is_autocommit() {
+                conn.execute_batch("BEGIN").map_err(sql_err)?;
+            }
+            let mut stmt = conn.prepare(&sql).map_err(sql_err)?;
+            let col_count = stmt.column_count();
+            if col_count == 0 {
+                let affected = stmt.execute([]).map_err(sql_err)? as u64;
+                let chunk = QueryChunk {
+                    statement_index: 0,
+                    columns: Vec::new(),
+                    rows: RowBuffer::default(),
+                    rows_affected: affected,
+                    is_last: true,
+                    execution_time: start.elapsed(),
+                    statement: sql,
+                };
+                let _ = tx.blocking_send(Ok(chunk));
+                return Ok(!conn.is_autocommit());
+            }
+
+            let columns: Vec<String> = stmt
+                .column_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+
+            let mut row_buffer = RowBuffer::new(col_count);
+            let mut rows = stmt.query([]).map_err(sql_err)?;
+            let mut row_count = 0u64;
+
+            while let Some(row) = rows.next().map_err(sql_err)? {
+                row_count += 1;
+                if row_count <= crate::session::MAX_ROWS as u64 {
+                    for i in 0..col_count {
+                        let val = row.get_ref(i).map(decode).map_err(sql_err)?;
+                        row_buffer.column_mut(i).push(val);
+                    }
+                    row_buffer.increment_row_count();
+                }
+                if row_buffer.len() >= chunk_size {
+                    let chunk = QueryChunk {
+                        statement_index: 0,
+                        columns: columns.clone(),
+                        rows: std::mem::replace(&mut row_buffer, RowBuffer::new(col_count)),
+                        rows_affected: row_count,
+                        is_last: false,
+                        execution_time: start.elapsed(),
+                        statement: sql.clone(),
+                    };
+                    if tx.blocking_send(Ok(chunk)).is_err() {
+                        return Ok(!conn.is_autocommit());
+                    }
+                }
+            }
+
+            let chunk = QueryChunk {
+                statement_index: 0,
+                columns,
+                rows: row_buffer,
+                rows_affected: row_count,
+                is_last: true,
+                execution_time: start.elapsed(),
+                statement: sql,
+            };
+            let _ = tx.blocking_send(Ok(chunk));
+            Ok(!conn.is_autocommit())
+        })
+        .await
+        .map_err(|e| DbError::Internal(e.to_string()))??;
+
+        self.tx.set_open(is_open);
+        Ok(())
     }
 
     async fn apply_edits(

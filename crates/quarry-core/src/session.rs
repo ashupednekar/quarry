@@ -58,6 +58,28 @@ impl QueryResult {
     }
 }
 
+/// Default batch size for streaming query cursors.
+pub const STREAM_CHUNK_SIZE: usize = 1000;
+
+/// A batch of rows streamed progressively from an in-flight query cursor.
+#[derive(Debug, Clone)]
+pub struct QueryChunk {
+    /// Zero-based statement index in the multi-statement execution batch.
+    pub statement_index: usize,
+    /// Column names for the result set.
+    pub columns: Vec<String>,
+    /// Columnar rows contained in this chunk.
+    pub rows: RowBuffer,
+    /// Total rows affected or rows seen so far.
+    pub rows_affected: u64,
+    /// True if this is the final chunk for this statement.
+    pub is_last: bool,
+    /// Execution duration up to this chunk.
+    pub execution_time: Duration,
+    /// Original SQL statement text.
+    pub statement: String,
+}
+
 /// Transaction state shared by the drivers (E9). `open` tracks whether a transaction is in progress.
 #[derive(Default)]
 pub struct TxState {
@@ -277,6 +299,57 @@ pub trait DatabaseSession: Send + Sync {
 
     /// Executes an arbitrary SQL query or statement
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError>;
+
+    /// Executes a statement and streams row chunks via `tx` as they arrive from the database cursor.
+    /// Drivers can stream directly from their wire protocol / cursor; the default implementation
+    /// runs `execute(sql)` and emits the result as chunk(s).
+    async fn execute_stream(
+        &self,
+        sql: &str,
+        chunk_size: usize,
+        tx: tokio::sync::mpsc::Sender<Result<QueryChunk, DbError>>,
+    ) -> Result<(), DbError> {
+        let res = self.execute(sql).await?;
+        if res.rows.is_empty() {
+            let chunk = QueryChunk {
+                statement_index: 0,
+                columns: res.columns,
+                rows: RowBuffer::default(),
+                rows_affected: res.rows_affected,
+                is_last: true,
+                execution_time: res.execution_time,
+                statement: res.statement,
+            };
+            let _ = tx.send(Ok(chunk)).await;
+            return Ok(());
+        }
+
+        let total_rows = res.rows.len();
+        let num_cols = res.columns.len();
+        let mut offset = 0;
+        while offset < total_rows {
+            let end = (offset + chunk_size).min(total_rows);
+            let mut chunk_buf = RowBuffer::new(num_cols);
+            for r in offset..end {
+                chunk_buf.push_row(res.rows.row(r).iter().cloned());
+            }
+            let is_last = end == total_rows;
+            let chunk = QueryChunk {
+                statement_index: 0,
+                columns: res.columns.clone(),
+                rows: chunk_buf,
+                rows_affected: res.rows_affected,
+                is_last,
+                execution_time: res.execution_time,
+                statement: res.statement.clone(),
+            };
+            if tx.send(Ok(chunk)).await.is_err() {
+                break;
+            }
+            offset = end;
+        }
+        Ok(())
+    }
 
     /// Like `execute`, but not recorded in the activity log (background monitoring polls)
     async fn execute_quiet(&self, sql: &str) -> Result<QueryResult, DbError> {

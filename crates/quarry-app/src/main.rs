@@ -54,7 +54,7 @@ use gpui::*;
 use grid::{DataGrid, Fetch, ResultSet, TableSource};
 use quarry_core::DatabaseSession;
 use review_modal::ReviewModal;
-use runtime::{run_db, run_db_bg, DB_RUNTIME};
+use runtime::{run_db, run_db_bg, stream_db, DB_RUNTIME};
 use sidebar::Sidebar;
 use state::{open_session, AppState, ConnectionProfile, Environment, Tab};
 use status_bar::StatusBar;

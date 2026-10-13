@@ -235,6 +235,8 @@ pub struct ResultSet {
     pub level_column: Option<usize>,
     /// Right-click menu on a column header: where, the menu, and its dismiss subscription
     header_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
+    /// Currently active streaming statement index
+    streaming_stmt: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -305,6 +307,7 @@ impl ResultSet {
             sort: None,
             level_column: None,
             header_menu: None,
+            streaming_stmt: None,
             colors: CellColors::from(theme),
         }
     }
@@ -323,11 +326,53 @@ impl ResultSet {
         self.active = 0;
         self.editing = None;
         self.selected_cell = None;
+        self.streaming_stmt = None;
         // New query results arrive unsorted; table tabs keep sorting on the server
         if self.source.is_none() {
             self.sort = None;
         }
         self.inspector = None;
+    }
+
+    /// Receives a streaming chunk for statement `chunk.statement_index`.
+    /// If this is the first chunk for the statement, initializes or updates the corresponding `QueryResult`.
+    /// If subsequent chunk, appends rows to the existing `QueryResult`.
+    pub fn append_chunk(&mut self, chunk: quarry_core::QueryChunk) {
+        if chunk.columns.is_empty() {
+            return;
+        }
+        let is_new = self.streaming_stmt != Some(chunk.statement_index);
+        if is_new {
+            self.streaming_stmt = Some(chunk.statement_index);
+            let same_columns = self.result().map(|r| &r.columns) == Some(&chunk.columns);
+            if !same_columns && self.results.is_empty() {
+                self.order = None;
+            }
+            if self.results.is_empty() {
+                self.active = 0;
+                self.editing = None;
+                self.selected_cell = None;
+                if self.source.is_none() {
+                    self.sort = None;
+                }
+                self.inspector = None;
+            }
+            self.results.push(QueryResult {
+                columns: chunk.columns,
+                rows: chunk.rows,
+                rows_affected: chunk.rows_affected,
+                execution_time: chunk.execution_time,
+                statement: chunk.statement,
+            });
+        } else if let Some(last) = self.results.last_mut() {
+            last.rows.append(&chunk.rows);
+            last.rows_affected = chunk.rows_affected;
+            last.execution_time = chunk.execution_time;
+        }
+
+        if chunk.is_last {
+            self.streaming_stmt = None;
+        }
     }
 
     /// Switches between result sub-tabs

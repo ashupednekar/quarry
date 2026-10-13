@@ -38,7 +38,7 @@ pub use logged::{ActivityLog, LogEntry, LoggedSession};
 pub use postgres::PostgresSession;
 pub use row_buffer::{RowBuffer, RowIter, RowRef};
 pub use schema::{ColumnSchema, ColumnType, SchemaCatalog, TableSchema};
-pub use session::{DatabaseSession, DbError, QueryResult, TxState};
+pub use session::{DatabaseSession, DbError, QueryChunk, QueryResult, TxState, STREAM_CHUNK_SIZE};
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteSession;
 pub use value::DbValue;
@@ -166,5 +166,43 @@ mod tests {
             verify.rows[(0, 0)],
             DbValue::Text("alice.updated@example.com".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_streaming_cursor() {
+        let session = std::sync::Arc::new(SqliteSession::open_in_memory().unwrap());
+        session
+            .execute("CREATE TABLE stream_t (id INTEGER PRIMARY KEY, v TEXT);")
+            .await
+            .unwrap();
+
+        for i in 1..=25 {
+            session
+                .execute(&format!("INSERT INTO stream_t VALUES ({i}, 'val_{i}');"))
+                .await
+                .unwrap();
+        }
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let s = session.clone();
+        tokio::spawn(async move {
+            s.execute_stream("SELECT id, v FROM stream_t ORDER BY id", 10, tx)
+                .await
+                .unwrap();
+        });
+
+        let mut chunks = Vec::new();
+        while let Some(res) = rx.recv().await {
+            chunks.push(res.unwrap());
+        }
+
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].rows.len(), 10);
+        assert!(!chunks[0].is_last);
+        assert_eq!(chunks[1].rows.len(), 10);
+        assert!(!chunks[1].is_last);
+        assert_eq!(chunks[2].rows.len(), 5);
+        assert!(chunks[2].is_last);
+        assert_eq!(chunks[0].columns, vec!["id", "v"]);
     }
 }

@@ -181,113 +181,187 @@ impl QuarryWindow {
         let search_path = dialect.set_schema(schema.as_deref());
         cx.notify();
 
-        let stmts = statements.clone();
-        let fut = async move {
-            if let Some(sp) = search_path {
-                if let Err(e) = session.execute_quiet(&sp).await {
-                    return (Vec::new(), Some((0, e.to_string())));
-                }
-            }
-            let mut done = Vec::new();
-            for (ix, sql) in stmts.iter().enumerate() {
-                match session.execute(sql).await {
-                    Ok(res) => done.push(res),
-                    Err(e) => return (done, Some((ix, e.to_string()))),
-                }
-            }
-            (done, None)
-        };
-        run_db(window, cx, fut, move |this, (done, failure), window, cx| {
-            let conn_name = this
-                .state
-                .active_connection
-                .as_ref()
-                .map_or_else(|| "active".to_string(), |c| c.name.clone());
-            for res in &done {
-                let stmt_line = res
-                    .statement
-                    .lines()
-                    .next()
-                    .unwrap_or(&res.statement)
-                    .trim();
-                tracing::info!(
-                    "[{conn_name}] Executed in {:.2}ms ({} rows affected): \"{stmt_line}\"",
-                    res.execution_time.as_secs_f64() * 1000.0,
-                    res.rows_affected
-                );
-                this.state.messages.push(format!(
-                    "Ran: \"{}\" -> {} rows in {:.2}ms",
-                    res.statement,
-                    res.rows_affected,
-                    res.execution_time.as_secs_f64() * 1000.0
-                ));
-                this.state.record_history(
-                    res.statement.clone(),
-                    res.execution_time,
-                    res.rows_affected,
-                    None,
-                );
-            }
-            let failed_ix = failure.as_ref().map(|(ix, _)| *ix);
-            let failure_msg = failure.map(|(ix, err)| {
-                tracing::error!("[{conn_name}] Error on statement {}: {err}", ix + 1);
-                this.state.record_history(
-                    statements[ix].clone(),
-                    Default::default(),
-                    0,
-                    Some(err.clone()),
-                );
-                let msg = if statements.len() > 1 {
-                    format!("Statement {} failed: {}", ix + 1, err)
-                } else {
-                    err
-                };
-                this.state.messages.push(format!("Error: {}", msg));
-                msg
-            });
-
-            let row_sets: Vec<_> = done.into_iter().filter(|r| !r.columns.is_empty()).collect();
-            let explained = statements
-                .iter()
-                .any(|s| s.trim_start().to_ascii_uppercase().starts_with("EXPLAIN"));
-            let new_plan = explained
-                .then(|| row_sets.iter().find_map(|r| dialect.plan(r)))
-                .flatten()
-                .map(std::rc::Rc::new);
-            grid.update(cx, |t, cx| {
-                t.delegate_mut().set_results(row_sets);
-                t.refresh(cx);
-                cx.notify();
-            });
-            if let Some(Tab::Query {
-                is_running,
-                error_message,
-                editor,
-                plan,
-                ..
-            }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id)
-            {
-                *is_running = false;
-                *plan = new_plan;
-                if let (Some(msg), Some(ix)) = (&failure_msg, failed_ix) {
-                    let at = quarry_core::session::error_position(msg);
-                    completion::mark_run_error(editor, &statements[ix], at, msg, cx);
-                }
-                *error_message = failure_msg;
-            }
-            // Schema changed: keep the sidebar and command bar in sync (S6)
-            let is_ddl = |s: &String| {
-                let verb = s
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_ascii_uppercase();
-                matches!(verb.as_str(), "CREATE" | "DROP" | "ALTER")
-            };
-            if statements.iter().any(is_ddl) {
-                this.refresh_catalog(window, cx);
-            }
+        grid.update(cx, |t, cx| {
+            t.delegate_mut().set_results(Vec::new());
+            t.refresh(cx);
+            cx.notify();
         });
+
+        let stmts = statements.clone();
+        let tab_id_chunk = tab_id.clone();
+        let grid_chunk = grid.clone();
+        stream_db(
+            window,
+            cx,
+            move |app_tx| async move {
+                if let Some(sp) = search_path {
+                    if let Err(e) = session.execute_quiet(&sp).await {
+                        return (Vec::new(), Some((0, e.to_string())));
+                    }
+                }
+                let mut done = Vec::new();
+                for (ix, sql) in stmts.iter().enumerate() {
+                    let (stmt_tx, mut stmt_rx) = tokio::sync::mpsc::channel(16);
+                    let s = session.clone();
+                    let sql_str = sql.clone();
+
+                    let exec_handle = tokio::spawn(async move {
+                        s.execute_stream(&sql_str, quarry_core::STREAM_CHUNK_SIZE, stmt_tx)
+                            .await
+                    });
+
+                    let mut stmt_result = quarry_core::QueryResult {
+                        columns: Vec::new(),
+                        rows: quarry_core::RowBuffer::default(),
+                        rows_affected: 0,
+                        execution_time: std::time::Duration::default(),
+                        statement: sql.clone(),
+                    };
+
+                    let mut stream_err = None;
+                    while let Some(chunk_res) = stmt_rx.recv().await {
+                        match chunk_res {
+                            Ok(mut chunk) => {
+                                chunk.statement_index = ix;
+                                if stmt_result.columns.is_empty() && !chunk.columns.is_empty() {
+                                    stmt_result.columns = chunk.columns.clone();
+                                }
+                                stmt_result.rows.append(&chunk.rows);
+                                stmt_result.rows_affected = chunk.rows_affected;
+                                stmt_result.execution_time = chunk.execution_time;
+                                if app_tx.send(chunk).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                stream_err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+
+                    match exec_handle.await {
+                        Ok(Ok(())) => {
+                            if let Some(err) = stream_err {
+                                return (done, Some((ix, err.to_string())));
+                            }
+                            done.push(stmt_result);
+                        }
+                        Ok(Err(err)) => {
+                            return (done, Some((ix, err.to_string())));
+                        }
+                        Err(join_err) => {
+                            return (done, Some((ix, join_err.to_string())));
+                        }
+                    }
+                }
+                (done, None)
+            },
+            move |this, chunk, _window, cx| {
+                if this.state.tabs.iter().any(|t| t.id() == tab_id_chunk) {
+                    grid_chunk.update(cx, |t, cx| {
+                        t.delegate_mut().append_chunk(chunk);
+                        t.refresh(cx);
+                        cx.notify();
+                    });
+                }
+            },
+            move |this, (done, failure), window, cx| {
+                let conn_name = this
+                    .state
+                    .active_connection
+                    .as_ref()
+                    .map_or_else(|| "active".to_string(), |c| c.name.clone());
+                for res in &done {
+                    let stmt_line = res
+                        .statement
+                        .lines()
+                        .next()
+                        .unwrap_or(&res.statement)
+                        .trim();
+                    tracing::info!(
+                        "[{conn_name}] Executed in {:.2}ms ({} rows affected): \"{stmt_line}\"",
+                        res.execution_time.as_secs_f64() * 1000.0,
+                        res.rows_affected
+                    );
+                    this.state.messages.push(format!(
+                        "Ran: \"{}\" -> {} rows in {:.2}ms",
+                        res.statement,
+                        res.rows_affected,
+                        res.execution_time.as_secs_f64() * 1000.0
+                    ));
+                    this.state.record_history(
+                        res.statement.clone(),
+                        res.execution_time,
+                        res.rows_affected,
+                        None,
+                    );
+                }
+                let failed_ix = failure.as_ref().map(|(ix, _)| *ix);
+                let failure_msg = failure.map(|(ix, err)| {
+                    tracing::error!("[{conn_name}] Error on statement {}: {err}", ix + 1);
+                    this.state.record_history(
+                        statements[ix].clone(),
+                        Default::default(),
+                        0,
+                        Some(err.clone()),
+                    );
+                    let msg = if statements.len() > 1 {
+                        format!("Statement {} failed: {}", ix + 1, err)
+                    } else {
+                        err
+                    };
+                    this.state.messages.push(format!("Error: {}", msg));
+                    msg
+                });
+
+                let row_sets: Vec<_> = done.into_iter().filter(|r| !r.columns.is_empty()).collect();
+                let explained = statements
+                    .iter()
+                    .any(|s| s.trim_start().to_ascii_uppercase().starts_with("EXPLAIN"));
+                let new_plan = explained
+                    .then(|| row_sets.iter().find_map(|r| dialect.plan(r)))
+                    .flatten()
+                    .map(std::rc::Rc::new);
+                grid.update(cx, |t, cx| {
+                    if t.delegate_mut().results.is_empty() && !row_sets.is_empty() {
+                        t.delegate_mut().set_results(row_sets);
+                    } else if row_sets.is_empty() {
+                        t.delegate_mut().set_results(Vec::new());
+                    }
+                    t.refresh(cx);
+                    cx.notify();
+                });
+                if let Some(Tab::Query {
+                    is_running,
+                    error_message,
+                    editor,
+                    plan,
+                    ..
+                }) = this.state.tabs.iter_mut().find(|t| t.id() == tab_id)
+                {
+                    *is_running = false;
+                    *plan = new_plan;
+                    if let (Some(msg), Some(ix)) = (&failure_msg, failed_ix) {
+                        let at = quarry_core::session::error_position(msg);
+                        completion::mark_run_error(editor, &statements[ix], at, msg, cx);
+                    }
+                    *error_message = failure_msg;
+                }
+                // Schema changed: keep the sidebar and command bar in sync (S6)
+                let is_ddl = |s: &String| {
+                    let verb = s
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .to_ascii_uppercase();
+                    matches!(verb.as_str(), "CREATE" | "DROP" | "ALTER")
+                };
+                if statements.iter().any(is_ddl) {
+                    this.refresh_catalog(window, cx);
+                }
+            },
+        );
     }
 
     /// Auto-commit ⇄ manual commit for the active connection (E9)

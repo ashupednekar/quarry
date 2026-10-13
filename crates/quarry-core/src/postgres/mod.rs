@@ -15,7 +15,8 @@ use crate::schema::{
     ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableInfo, TableSchema, EAGER_SCHEMAS,
 };
 use crate::session::{
-    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb,
+    is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryChunk, QueryResult, TxState,
+    TxVerb,
 };
 use crate::value::DbValue;
 use crate::RowBuffer;
@@ -284,6 +285,32 @@ impl DatabaseSession for PostgresSession {
         result
     }
 
+    async fn execute_stream(
+        &self,
+        sql: &str,
+        chunk_size: usize,
+        tx: tokio::sync::mpsc::Sender<Result<QueryChunk, DbError>>,
+    ) -> Result<(), DbError> {
+        if self.read_only && is_mutation(sql) {
+            return Err(DbError::ReadOnlyViolation);
+        }
+        let verb = tx_verb(sql);
+        if self.tx.manual() && !self.tx.open() && verb.is_none() && !is_read(sql) {
+            self.client
+                .batch_execute("BEGIN")
+                .await
+                .map_err(|e| DbError::SqlError(e.to_string()))?;
+            self.tx.set_open(true);
+        }
+        let result = self.run_statement_stream(sql, chunk_size, tx).await;
+        match verb {
+            Some(TxVerb::Begin) if result.is_ok() => self.tx.set_open(true),
+            Some(TxVerb::End) => self.tx.set_open(false),
+            _ => {}
+        }
+        result
+    }
+
     async fn apply_edits(
         &self,
         table_name: &str,
@@ -440,17 +467,10 @@ impl PostgresSession {
             .map_err(|e| DbError::SqlError(e.to_string()))
     }
 
-    async fn run_statement(&self, sql: &str) -> Result<QueryResult, DbError> {
-        let start = Instant::now();
-
-        // Determine whether this statement could return rows. Mutations without RETURNING
-        // never return row descriptions, so we bypass prepare() entirely to avoid an extra RTT.
+    async fn get_types(&self, sql: &str) -> Option<Vec<Type>> {
         let is_mutation_stmt = is_mutation(sql);
         let might_return_rows = !is_mutation_stmt || has_returning(sql);
-
-        // Types come from a side-effect-free prepare (cached when possible); values come back
-        // over the text protocol, which every Postgres type supports without failing or losing precision.
-        let types: Option<Vec<Type>> = if might_return_rows {
+        if might_return_rows {
             let cached = self
                 .type_cache
                 .lock()
@@ -477,7 +497,12 @@ impl PostgresSession {
             }
         } else {
             None
-        };
+        }
+    }
+
+    async fn run_statement(&self, sql: &str) -> Result<QueryResult, DbError> {
+        let start = Instant::now();
+        let types = self.get_types(sql).await;
 
         // Streamed so rows past MAX_ROWS are counted, not kept. The stream is read to the end
         // either way, so the connection stays in step for the next statement.
@@ -520,6 +545,84 @@ impl PostgresSession {
             execution_time: start.elapsed(),
             statement: sql.to_string(),
         })
+    }
+
+    async fn run_statement_stream(
+        &self,
+        sql: &str,
+        chunk_size: usize,
+        tx: tokio::sync::mpsc::Sender<Result<QueryChunk, DbError>>,
+    ) -> Result<(), DbError> {
+        let sql = sql.trim().trim_end_matches(';');
+        if self.read_only && is_mutation(sql) && !has_returning(sql) {
+            return Err(DbError::ReadOnlyViolation);
+        }
+
+        let start = Instant::now();
+        let types = self.get_types(sql).await;
+
+        let messages = self
+            .client
+            .simple_query_raw(sql)
+            .await
+            .map_err(statement_err)?;
+        futures_util::pin_mut!(messages);
+
+        let mut columns = Vec::new();
+        let mut row_buffer = RowBuffer::default();
+        let mut affected = 0;
+        let mut total_seen = 0u64;
+
+        while let Some(msg) = futures_util::TryStreamExt::try_next(&mut messages)
+            .await
+            .map_err(statement_err)?
+        {
+            match msg {
+                SimpleQueryMessage::RowDescription(cols) => {
+                    columns = cols.iter().map(|c| c.name().to_string()).collect();
+                    row_buffer = RowBuffer::new(columns.len());
+                }
+                SimpleQueryMessage::Row(row) => {
+                    total_seen += 1;
+                    if total_seen <= crate::session::MAX_ROWS as u64 {
+                        for i in 0..row.len() {
+                            let val =
+                                decode_text(row.get(i), types.as_ref().and_then(|t| t.get(i)));
+                            row_buffer.column_mut(i).push(val);
+                        }
+                        row_buffer.increment_row_count();
+                    }
+                    if row_buffer.len() >= chunk_size {
+                        let chunk = QueryChunk {
+                            statement_index: 0,
+                            columns: columns.clone(),
+                            rows: std::mem::replace(&mut row_buffer, RowBuffer::new(columns.len())),
+                            rows_affected: total_seen,
+                            is_last: false,
+                            execution_time: start.elapsed(),
+                            statement: sql.to_string(),
+                        };
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            return Ok(());
+                        }
+                    }
+                }
+                SimpleQueryMessage::CommandComplete(n) => affected = n,
+                _ => {}
+            }
+        }
+
+        let chunk = QueryChunk {
+            statement_index: 0,
+            columns,
+            rows: row_buffer,
+            rows_affected: if total_seen > 0 { total_seen } else { affected },
+            is_last: true,
+            execution_time: start.elapsed(),
+            statement: sql.to_string(),
+        };
+        let _ = tx.send(Ok(chunk)).await;
+        Ok(())
     }
 }
 
