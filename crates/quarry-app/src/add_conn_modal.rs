@@ -42,19 +42,6 @@ impl AddConnModal {
             .gap_6()
             .child(field(
                 t,
-                "Database",
-                None,
-                chip_group().children(quarry_core::drivers().iter().enumerate().map(|(i, d)| {
-                    let id = d.id();
-                    chip(t, ("kind", i), d.name(), id == driver.id()).on_click(
-                        cx.listener(move |this, _, window, cx| {
-                            this.pick_conn_driver(id, window, cx)
-                        }),
-                    )
-                })),
-            ))
-            .child(field(
-                t,
                 "Instance name",
                 Some("Shown in the sidebar and status bar. Blank uses the address."),
                 form_input(name_input),
@@ -172,6 +159,7 @@ impl AddConnModal {
                 .gap_6()
                 .border_b_1()
                 .border_color(t.border)
+                .flex_shrink_0()
                 .children(["General", "SSH", "Advanced"].into_iter().enumerate().map(
                     |(i, label)| {
                         underline_tab(t, ("conn-tab", i), label, tab as usize == i).on_click(
@@ -290,6 +278,96 @@ impl AddConnModal {
                     ),
             );
 
+        let left_pane =
+            v_flex()
+                .id("add-conn-db-list")
+                .w(px(210.0))
+                .flex_shrink_0()
+                .h_full()
+                .border_r_1()
+                .border_color(t.border)
+                .bg(t.bg_sidebar)
+                .py_3()
+                .px_2()
+                .gap_1()
+                .overflow_y_scroll()
+                .child(
+                    div()
+                        .px_2()
+                        .pt_1()
+                        .pb_2()
+                        .text_xs()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(t.text_muted)
+                        .child("SUPPORTED DATABASES"),
+                )
+                .children(quarry_core::drivers().iter().enumerate().map(|(i, d)| {
+                    let id = d.id();
+                    let is_selected = id == driver.id();
+                    h_flex()
+                        .id(("engine", i))
+                        .h(px(36.0))
+                        .px_2p5()
+                        .gap_2p5()
+                        .items_center()
+                        .rounded(px(6.0))
+                        .cursor_pointer()
+                        .when(is_selected, |s| s.bg(t.bg_selected))
+                        .when(!is_selected, |s| s.hover(|h| h.bg(t.bg_hover)))
+                        .child(crate::db_icons::database_icon_sized(
+                            id,
+                            px(18.0),
+                            if is_selected {
+                                t.accent
+                            } else {
+                                t.text_secondary
+                            },
+                        ))
+                        .child(
+                            div()
+                                .flex_1()
+                                .text_sm()
+                                .font_weight(if is_selected {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if is_selected {
+                                    t.text_primary
+                                } else {
+                                    t.text_secondary
+                                })
+                                .child(d.name()),
+                        )
+                        .when(is_selected, |s| {
+                            s.child(div().size(px(6.0)).rounded_full().bg(t.accent))
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.pick_conn_driver(id, window, cx)
+                        }))
+                }));
+
+        let right_pane = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(t.bg_panel)
+            .child(tabs)
+            .child(
+                v_flex()
+                    .id("add-conn-options-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .px_6()
+                    .py_4()
+                    .child(match tab {
+                        1 => ssh,
+                        2 => advanced,
+                        _ => general,
+                    }),
+            );
+
         modal_backdrop(
             "add-conn-backdrop",
             cx.listener(move |this, _, _, cx| {
@@ -299,7 +377,7 @@ impl AddConnModal {
             cx,
         )
         .child(
-            modal_card("add-conn-modal-card", 640.0, t)
+            modal_card("add-conn-modal-card", 760.0, t)
                 // Enter in any field connects, like the primary button
                 .on_action(cx.listener(
                     move |this, _: &gpui::component::input::Enter, window, cx| {
@@ -317,23 +395,20 @@ impl AddConnModal {
                     Some(if editing {
                         "Changes reconnect this instance".into()
                     } else {
-                        "Paste a URL or a file path; the type is picked for you".into()
+                        "Select a database engine or paste a connection URL".into()
                     }),
                     cx.listener(move |this, _, _, cx| {
                         this.state.add_conn_modal_open = false;
                         cx.notify()
                     }),
                 ))
-                .child(tabs)
                 .child(
-                    modal_body("add-conn-body")
-                        .h(px(480.0))
-                        .pt_6()
-                        .child(match tab {
-                            1 => ssh,
-                            2 => advanced,
-                            _ => general,
-                        }),
+                    h_flex()
+                        .id("add-conn-two-pane")
+                        .h(px(490.0))
+                        .overflow_hidden()
+                        .child(left_pane)
+                        .child(right_pane),
                 )
                 .children(client_offer)
                 .child(footer),
