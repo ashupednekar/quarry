@@ -7,7 +7,8 @@ use gpui::component::input::{CompletionProvider, HoverProvider, Rope, RopeExt};
 use gpui::{App, Task, Window};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
-    Hover, HoverContents, MarkupContent, MarkupKind, TextEdit,
+    Hover, HoverContents, InlineCompletionContext, InlineCompletionItem, InlineCompletionResponse,
+    MarkupContent, MarkupKind, TextEdit,
 };
 use quarry_core::SchemaCatalog;
 use quarry_sql::{CompletionKind, SchemaCompleter};
@@ -107,6 +108,92 @@ impl CompletionProvider for SchemaCompletions {
             .chars()
             .last()
             .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+    }
+
+    fn inline_completion_debounce(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(50)
+    }
+
+    fn inline_completion(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _: InlineCompletionContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<anyhow::Result<InlineCompletionResponse>> {
+        let (sql, local_offset, _) = slice_completion_context(text, offset);
+        let catalog = self.0.borrow().clone();
+        cx.background_executor().spawn(async move {
+            if local_offset == 0 || local_offset > sql.len() {
+                return Ok(InlineCompletionResponse::Array(vec![]));
+            }
+
+            let before_cursor = &sql[..local_offset];
+            let last_char = before_cursor.chars().last();
+            let is_typing_token =
+                last_char.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+            if !is_typing_token {
+                return Ok(InlineCompletionResponse::Array(vec![]));
+            }
+
+            let prefix_start = before_cursor
+                .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .map_or(0, |i| i + 1);
+            let prefix = &before_cursor[prefix_start..];
+
+            let completions = SchemaCompleter::complete(&sql, local_offset, &catalog);
+            let Some(best) = completions.into_iter().next() else {
+                return Ok(InlineCompletionResponse::Array(vec![]));
+            };
+
+            let insert_text = if prefix.is_empty() {
+                if before_cursor.ends_with('.') {
+                    Some(best.label)
+                } else {
+                    None
+                }
+            } else if best
+                .label
+                .to_lowercase()
+                .starts_with(&prefix.to_lowercase())
+                && best.label.len() > prefix.len()
+            {
+                let raw_suffix = &best.label[prefix.len()..];
+                let is_all_upper = prefix
+                    .chars()
+                    .all(|c| !c.is_alphabetic() || c.is_uppercase());
+                let is_all_lower = prefix
+                    .chars()
+                    .all(|c| !c.is_alphabetic() || c.is_lowercase());
+                let suffix = if is_all_upper {
+                    raw_suffix.to_uppercase()
+                } else if is_all_lower {
+                    raw_suffix.to_lowercase()
+                } else {
+                    raw_suffix.to_string()
+                };
+                Some(suffix)
+            } else {
+                None
+            };
+
+            if let Some(insert_text) = insert_text {
+                if !insert_text.is_empty() {
+                    return Ok(InlineCompletionResponse::Array(vec![
+                        InlineCompletionItem {
+                            insert_text,
+                            filter_text: None,
+                            range: None,
+                            command: None,
+                            insert_text_format: None,
+                        },
+                    ]));
+                }
+            }
+
+            Ok(InlineCompletionResponse::Array(vec![]))
+        })
     }
 }
 
