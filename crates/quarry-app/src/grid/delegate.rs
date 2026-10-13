@@ -40,7 +40,10 @@ impl TableDelegate for ResultSet {
             .iter()
             .take(50)
             .filter_map(|row| row.get(col_ix))
-            .map(|v| v.to_display_cow().chars().count())
+            .map(|v| {
+                let cow = v.to_display_cow();
+                cow.lines().next().map_or(0, |l| l.chars().count())
+            })
             .chain([name.chars().count() + 4])
             .max()
             .unwrap_or(8);
@@ -565,20 +568,55 @@ impl TableDelegate for ResultSet {
             Some(DbValue::Boolean(true)) => token("true".into(), c.success).into_any_element(),
             Some(DbValue::Boolean(false)) => token("false".into(), c.danger).into_any_element(),
             Some(v) => {
-                let text: SharedString = SharedString::from(v.to_display_cow().as_ref());
-                div()
-                    .text_color(if state == RowState::Deleted {
-                        c.muted
-                    } else if self.is_error_row(row_ix) {
-                        c.danger
-                    } else {
-                        c.text
-                    })
-                    .when(state == RowState::Deleted, |d| d.line_through())
-                    .when(is_fk && state != RowState::Deleted, |d| d.underline())
-                    .truncate()
-                    .child(text)
-                    .into_any_element()
+                let cow = v.to_display_cow();
+                let is_multiline = cow.contains('\n') || cow.contains('\r');
+                let text_color = if state == RowState::Deleted {
+                    c.muted
+                } else if self.is_error_row(row_ix) {
+                    c.danger
+                } else {
+                    c.text
+                };
+
+                if is_multiline {
+                    let first_line = cow
+                        .lines()
+                        .map(str::trim_end)
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or_else(|| cow.lines().next().unwrap_or(""));
+                    let text: SharedString = SharedString::from(first_line.to_string());
+                    h_flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .text_color(text_color)
+                                .when(state == RowState::Deleted, |d| d.line_through())
+                                .when(is_fk && state != RowState::Deleted, |d| d.underline())
+                                .truncate()
+                                .child(text),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_color(c.muted)
+                                .child(Icon::new(IconName::CornerDownLeft).xsmall()),
+                        )
+                        .into_any_element()
+                } else {
+                    let text: SharedString = SharedString::from(cow.as_ref());
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_color(text_color)
+                        .when(state == RowState::Deleted, |d| d.line_through())
+                        .when(is_fk && state != RowState::Deleted, |d| d.underline())
+                        .truncate()
+                        .child(text)
+                        .into_any_element()
+                }
             }
         };
         // Column divider on the cell's true right edge: the table pads cells 8px sideways and 4px up and down (Size::Medium)
