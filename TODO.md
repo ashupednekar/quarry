@@ -67,7 +67,7 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 - [x] Retained ER diagram layout: cache BFS graph topology and card coordinates in component state instead of re-running graph traversal on every single frame render (`er_view.rs`)
 - [x] Consolidate SQL lexers: share tokenization state machines between `quarry_core::session::sql_tokens` and `quarry_sql::splitter` (`quarry_core::dialect`, `quarry_sql`)
 - [ ] Driver TLS support (`rustls`): secure direct connections to cloud databases (RDS, Neon, Supabase) without requiring SSH tunnels (`quarry-core/Cargo.toml`, `postgres`, `mysql`)
-- [ ] Microbenchmarks suite (`criterion`): benchmark SQL statement splitting throughput, completion lookup on 1,000+ tables, fuzzy matching, and grid row decoding (`benches/`)
+- [x] Microbenchmarks suite (`criterion`): benchmark SQL statement splitting throughput, completion lookup on 1,000+ tables, fuzzy matching, and grid row decoding (`benches/`)
 
 ## Editor Intelligence & Power Editing
 - [ ] Tree-sitter SQL integration: use Tree-sitter queries (already enabled in `gpui-kit`) for AST-based statement boundaries and syntax folding (`quarry_sql::splitter`, `editor.rs`)

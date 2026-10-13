@@ -14,3 +14,10 @@ anyhow = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "sql_benchmarks"
+harness = false
+
+[dev-dependencies]
+criterion = { workspace = true }
