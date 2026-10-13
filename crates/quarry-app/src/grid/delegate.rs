@@ -588,10 +588,13 @@ impl TableDelegate for ResultSet {
                     h_flex()
                         .items_center()
                         .gap(px(4.0))
+                        .size_full()
                         .min_w_0()
                         .overflow_hidden()
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .text_color(text_color)
                                 .when(state == RowState::Deleted, |d| d.line_through())
                                 .when(is_fk && state != RowState::Deleted, |d| d.underline())
@@ -602,6 +605,7 @@ impl TableDelegate for ResultSet {
                             div()
                                 .flex_shrink_0()
                                 .text_color(c.muted)
+                                .opacity(0.55)
                                 .child(Icon::new(IconName::CornerDownLeft).xsmall()),
                         )
                         .into_any_element()
