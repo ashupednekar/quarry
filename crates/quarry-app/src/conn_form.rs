@@ -416,7 +416,7 @@ impl QuarryWindow {
                         ),
                         false,
                     ),
-                    Err(e) => (format!("Failed: {}", e), true),
+                    Err(e) => (e, true),
                 });
             },
         );

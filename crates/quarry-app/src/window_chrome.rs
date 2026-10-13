@@ -55,7 +55,7 @@ impl QuarryWindow {
         let t = &self.theme;
         // macOS: clear the traffic lights; elsewhere a normal gutter
         #[cfg(target_os = "macos")]
-        let titlebar_left_pad = px(78.0);
+        let titlebar_left_pad = px(88.0);
         #[cfg(not(target_os = "macos"))]
         let titlebar_left_pad = px(12.0);
         h_flex()
@@ -77,7 +77,10 @@ impl QuarryWindow {
             .child(
                 h_flex()
                     .id("omnibox-trigger-btn")
+                    // Shrinks before it overlaps the breadcrumb, never below a usable width
                     .w(px(360.0))
+                    .min_w(px(180.0))
+                    .flex_shrink(1.0)
                     .h(px(26.0))
                     .px_2p5()
                     .gap_2()
@@ -99,22 +102,25 @@ impl QuarryWindow {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .text_xs()
                             .text_color(t.text_muted)
-                            .child("Search tables, run SQL, or type > for commands"),
+                            .child("Commands, tables, SQL…"),
                     )
                     .child(
                         div()
                             .text_xs()
                             .text_color(t.text_muted)
+                            .flex_shrink_0()
                             .child(crate::ui::format_keys("⌘K")),
                     ),
             )
-            .child(div().flex_1())
+            .child(div().flex_1().min_w_0())
     }
 
-    /// Where the active tab points, DataGrip-style: `quarry-db › postgres › public › tables › ▦ users`.
-    /// Hover for the full address.
+    /// Where the active tab points: `● connection › schema › ▦ table`.
+    /// The database and full address are in the tooltip; the crumbs stay short.
     fn render_breadcrumb(&self) -> Option<impl IntoElement> {
         let t = &self.theme;
         let (conn, schema, table) = match self.state.active_tab()? {
@@ -132,31 +138,18 @@ impl QuarryWindow {
                 (self.state.active_connection.as_ref()?, schema.clone(), None)
             }
         };
-        let address = crate::connections::display_address(conn);
-        // The database is the address's last part: `localhost:5432/postgres`, or a SQLite file name
-        let database = address
-            .rsplit(['/', '\\'])
-            .next()
-            .filter(|d| !d.is_empty() && *d != conn.name)
-            .map(str::to_string);
-        let mut parts: Vec<String> = vec![conn.name.clone()];
-        parts.extend(database);
-        parts.extend(schema);
-        if table.is_some() {
-            parts.push("tables".into());
-        }
-        let sep = || {
-            Icon::new(IconName::ChevronRight)
-                .xsmall()
-                .text_color(t.text_muted)
-                .flex_shrink_0()
+        let env_color = match conn.env {
+            Environment::Local => t.success,
+            Environment::Staging => t.warning,
+            Environment::Prod => t.danger,
         };
-        let tip = address.clone();
+        let sep = || div().flex_shrink_0().text_color(t.border).child("/");
+        let tip = crate::connections::display_address(conn);
         Some(
             h_flex()
                 .id("breadcrumb")
                 .items_center()
-                .gap_1()
+                .gap_2()
                 .min_w_0()
                 .overflow_hidden()
                 .text_xs()
@@ -164,26 +157,48 @@ impl QuarryWindow {
                 .tooltip(move |window, cx| {
                     gpui::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
-                .children(parts.into_iter().enumerate().flat_map(|(i, part)| {
-                    let label = div().flex_shrink_0().child(part);
-                    if i == 0 {
-                        vec![label.into_any_element()]
-                    } else {
-                        vec![sep().into_any_element(), label.into_any_element()]
-                    }
+                // Connection: env dot + name, truncates last-but-one
+                .child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .min_w(px(48.0))
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .size(px(6.0))
+                                .rounded_full()
+                                .bg(env_color),
+                        )
+                        .child(div().truncate().child(conn.name.clone())),
+                )
+                .children(schema.map(|s| {
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .min_w(px(32.0))
+                        .child(sep())
+                        .child(div().truncate().child(s))
                 }))
                 .children(table.map(|name| {
                     h_flex()
                         .items_center()
-                        .gap_1()
-                        .min_w_0()
+                        .gap_2()
+                        .flex_shrink_0()
+                        .max_w(px(240.0))
                         .child(sep())
                         .child(
                             Icon::new(IconName::Table)
                                 .xsmall()
                                 .text_color(t.text_secondary),
                         )
-                        .child(div().truncate().text_color(t.text_primary).child(name))
+                        .child(
+                            div()
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(t.text_primary)
+                                .child(name),
+                        )
                 })),
         )
     }
@@ -281,6 +296,19 @@ impl QuarryWindow {
                             .on_click(cx.listener(|this, _, window, cx| this.new_query(&NewQuery, window, cx))),
                     ),
                 )
+                // Split toggle at the strip's far end; lit while a split is showing
+                .child(div().flex_1())
+                .child(
+                    h_flex().h(px(CONTROL_H)).px_1().items_center().child(
+                        zbutton("tab-split-btn")
+                            .icon(IconName::Columns2)
+                            .ghost()
+                            .xsmall()
+                            .when(self.split_tab().is_some(), |b| b.text_color(t.accent))
+                            .tooltip(crate::ui::format_keys("Split view (⌘\\)"))
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_split(cx))),
+                    ),
+                )
         })
     }
 
@@ -294,23 +322,36 @@ impl QuarryWindow {
             None if self.state.session.is_none() => self.render_onboarding(cx),
             None => self.render_launcher(cx),
             Some(tab) => match self.split_tab().filter(|_| self.state.tabs.len() > 1) {
-                // Split view (U8): the active tab on the left, the split tab on the right
+                // Split view (U8): two tabs side by side; clicking the inactive pane activates it in place
                 Some(split) => {
-                    let left = self.render_tab_view(tab, cx);
-                    let right = self.render_tab_view(&split, cx);
+                    let active = self.render_tab_view(tab, cx);
+                    let other = div()
+                        .size_full()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.swap_split(cx)),
+                        )
+                        .child(self.render_tab_view(&split, cx))
+                        .into_any_element();
+                    let (left, right) = if self.split_active_right {
+                        (other, active)
+                    } else {
+                        (active, other)
+                    };
                     h_resizable("split-view")
-                        .child(resizable_panel().child(left))
+                        // Each pane clips: a toolbar wider than its half must not paint over the other
+                        .child(
+                            resizable_panel()
+                                .child(div().size_full().min_w_0().overflow_hidden().child(left)),
+                        )
                         .child(
                             resizable_panel().child(
                                 div()
                                     .size_full()
+                                    .min_w_0()
+                                    .overflow_hidden()
                                     .border_l_1()
                                     .border_color(t.border)
-                                    // Working in the right pane makes it the active one
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _, _, cx| this.swap_split(cx)),
-                                    )
                                     .child(right),
                             ),
                         )

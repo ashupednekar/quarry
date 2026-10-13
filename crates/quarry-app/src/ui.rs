@@ -283,6 +283,17 @@ pub fn chip_group() -> Div {
     h_flex().gap_0p5().flex_wrap()
 }
 
+/// Chips on a bordered track, read as one segmented control
+pub fn segmented(t: &crate::theme::Theme) -> Div {
+    chip_group()
+        .flex_nowrap()
+        .p_0p5()
+        .rounded(px(7.0))
+        .bg(t.bg_sidebar)
+        .border_1()
+        .border_color(t.border)
+}
+
 /// Underline tabs (connection modal: General / SSH / Advanced); the caller adds `.on_click`
 pub fn underline_tab(
     t: &crate::theme::Theme,

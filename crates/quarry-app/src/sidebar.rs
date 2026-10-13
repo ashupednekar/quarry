@@ -7,6 +7,7 @@ use crate::theme::Theme;
 use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::assets::IconName;
+use gpui::component::button::ButtonVariants;
 use gpui::component::{Icon, Sizable};
 use gpui::*;
 
@@ -285,8 +286,7 @@ impl Sidebar {
                                 } else {
                                     theme.text_secondary
                                 },
-                            ))
-                            .child(muted(tbl.columns.len().to_string())),
+                            )),
                     );
                 }
 
@@ -499,16 +499,16 @@ impl Sidebar {
                     .justify_between()
                     .child(section_title("DATABASE"))
                     .child(
-                        div()
-                            .id("sidebar-add-conn")
-                            .p_1()
-                            .rounded(px(3.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.bg_hover))
+                        zbutton("sidebar-add-conn")
+                            .pad_xs()
+                            .icon(IconName::Plus)
+                            .label("New")
+                            .ghost()
+                            .xsmall()
+                            .tooltip(format_keys("New connection (⇧⌘N)"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_add_conn(window, cx)
-                            }))
-                            .child(icon(IconName::Plus, theme.text_muted)),
+                            })),
                     ),
             )
             .child(

@@ -176,6 +176,9 @@ impl QuarryWindow {
             self.open_config_file(true, window, cx);
         } else if action_id == "action:pin" {
             self.pin_current_tab(cx);
+        } else if action_id == "action:close_all" {
+            self.close_all_tabs(cx);
+            self.refocus_root(window, cx);
         } else if action_id == "action:split" {
             self.toggle_split(cx);
         } else if action_id == "action:reopen_tab" {

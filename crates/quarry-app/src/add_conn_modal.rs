@@ -39,49 +39,69 @@ impl AddConnModal {
             (Environment::Prod, "Production", t.danger),
         ];
         let general = v_flex()
-            .gap_6()
-            .child(field(
-                t,
-                "Instance name",
-                Some("Shown in the sidebar and status bar. Blank uses the address."),
-                form_input(name_input),
-            ))
+            .gap_4()
             // One field is the connection string itself (a file path); typing a URL there switches driver
             .when(fields.len() == 1, |d| {
                 d.child(field(
                     t,
                     fields[0].label,
                     Some(fields[0].placeholder),
-                    form_input(path_input),
+                    compact_input(path_input),
                 ))
             })
-            // Several fields: the URL they make is shown too, and pasting one fills them
+            // Several fields: pasting a URL first fills them, and edits to them rewrite it
             .when(fields.len() > 1, |d| {
-                d.children(field_rows(t, fields, field_inputs, editing))
-                    .child(field(
-                        t,
-                        "URL",
-                        Some("Paste a URL to fill the fields above"),
-                        form_input(path_input),
-                    ))
+                d.child(field(
+                    t,
+                    "URL",
+                    Some("Paste a URL to fill the fields below"),
+                    compact_input(path_input),
+                ))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .child(div().flex_1().h(px(1.0)).bg(t.border))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(t.text_muted)
+                                .child("or enter details"),
+                        )
+                        .child(div().flex_1().h(px(1.0)).bg(t.border)),
+                )
+                .children(field_rows(t, fields, field_inputs, editing))
             })
+            .child(field(
+                t,
+                "Instance name",
+                Some("Shown in the sidebar and status bar. Blank uses the address."),
+                compact_input(name_input),
+            ))
             .child(field(
                 t,
                 "Environment",
                 Some("Production asks before anything that changes data"),
-                chip_group().children(envs.into_iter().enumerate().map(
-                    |(i, (env, label, color))| {
-                        let on = state.add_conn_env == env;
-                        chip(t, ("env", i), label, on)
-                            .child(div().ml_1p5().size(px(6.0)).rounded_full().bg(color))
-                            .flex_row_reverse()
-                            .gap_1p5()
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.state.add_conn_env = env;
-                                cx.notify()
-                            }))
-                    },
-                )),
+                segmented(t)
+                    .w_full()
+                    .children(
+                        envs.into_iter()
+                            .enumerate()
+                            .map(|(i, (env, label, color))| {
+                                let on = state.add_conn_env == env;
+                                chip(t, ("env", i), label, on)
+                                    .flex_1()
+                                    .justify_center()
+                                    .when(on, |c| c.bg(Rgba { a: 0.16, ..color }))
+                                    .child(div().ml_1p5().size(px(6.0)).rounded_full().bg(color))
+                                    .flex_row_reverse()
+                                    .gap_1p5()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.state.add_conn_env = env;
+                                        cx.notify()
+                                    }))
+                            }),
+                    ),
             ));
 
         // SSH: a database behind a bastion
@@ -113,20 +133,20 @@ impl AddConnModal {
                                 t,
                                 "Host",
                                 None,
-                                form_input(&ssh_inputs[0]),
+                                compact_input(&ssh_inputs[0]),
                             )))
                             .child(div().w(px(160.0)).child(field(
                                 t,
                                 "User",
                                 None,
-                                form_input(&ssh_inputs[1]),
+                                compact_input(&ssh_inputs[1]),
                             ))),
                     )
                     .child(field(
                         t,
                         "Private key",
                         Some("Blank uses ssh-agent and ~/.ssh/config"),
-                        form_input(&ssh_inputs[2]),
+                        compact_input(&ssh_inputs[2]),
                     ))
                 })
         };
@@ -138,7 +158,7 @@ impl AddConnModal {
                 t,
                 "Statement timeout (seconds)",
                 Some("Blank uses the default from Settings"),
-                div().w(px(160.0)).child(form_input(timeout_input)),
+                div().w(px(160.0)).child(compact_input(timeout_input)),
             ))
             .child(setting_row(
                 t,
@@ -181,18 +201,30 @@ impl AddConnModal {
             .as_ref()
             .filter(|_| !needs_client)
             .map(|(msg, is_error)| {
+                let is_error = *is_error;
+                // Drivers nest "failed" prefixes; the code and reason are what matter
+                let msg: SharedString = msg.clone().into();
+                let copy = msg.clone();
                 h_flex()
-                    .gap_1p5()
-                    .min_w_0()
-                    .items_center()
+                    .px_6()
+                    .py_2p5()
+                    .gap_2()
+                    .items_start()
+                    .border_t_1()
+                    .border_color(t.border)
+                    .bg(Rgba {
+                        a: 0.08,
+                        ..if is_error { t.danger } else { t.success }
+                    })
                     .child(
-                        Icon::new(if *is_error {
+                        Icon::new(if is_error {
                             IconName::CircleAlert
                         } else {
                             IconName::CircleCheck
                         })
                         .xsmall()
-                        .text_color(if *is_error {
+                        .mt_0p5()
+                        .text_color(if is_error {
                             t.danger
                         } else {
                             t.success
@@ -200,15 +232,25 @@ impl AddConnModal {
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .text_xs()
-                            .truncate()
-                            .text_color(if *is_error {
-                                t.danger
-                            } else {
-                                t.text_secondary
-                            })
-                            .child(msg.clone()),
+                            .text_color(if is_error { t.danger } else { t.text_secondary })
+                            .child(msg),
                     )
+                    .when(is_error, |d| {
+                        d.child(
+                            zbutton("btn-copy-conn-error")
+                                .icon(IconName::Copy)
+                                .ghost()
+                                .xsmall()
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        copy.to_string(),
+                                    ))
+                                }),
+                        )
+                    })
             });
         // Oracle without its client library: a strip above the footer offers Oracle's download, never started unasked
         let client_offer = needs_client
@@ -232,21 +274,18 @@ impl AddConnModal {
         let footer = modal_footer(t)
             .justify_between()
             .child(
-                h_flex()
-                    .gap_3()
-                    .min_w_0()
-                    .flex_1()
-                    .child(
-                        zbutton("btn-test-conn")
-                            .pad_sm()
-                            .label("Test connection")
-                            .ghost()
-                            .small()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.test_add_conn_modal(window, cx)
-                            })),
-                    )
-                    .children(feedback),
+                h_flex().gap_3().min_w_0().flex_1().child(
+                    zbutton("btn-test-conn")
+                        .pad_sm()
+                        .label("Test connection")
+                        .outline()
+                        .border_1()
+                        .border_color(t.border)
+                        .small()
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.test_add_conn_modal(window, cx)
+                        })),
+                ),
             )
             .child(
                 h_flex()
@@ -281,7 +320,7 @@ impl AddConnModal {
         let left_pane =
             v_flex()
                 .id("add-conn-db-list")
-                .w(px(210.0))
+                .w(px(168.0))
                 .flex_shrink_0()
                 .h_full()
                 .border_r_1()
@@ -299,7 +338,7 @@ impl AddConnModal {
                         .text_xs()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.text_muted)
-                        .child("SUPPORTED DATABASES"),
+                        .child("DATABASES"),
                 )
                 .children(quarry_core::drivers().iter().enumerate().map(|(i, d)| {
                     let id = d.id();
@@ -339,9 +378,6 @@ impl AddConnModal {
                                 })
                                 .child(d.name()),
                         )
-                        .when(is_selected, |s| {
-                            s.child(div().size(px(6.0)).rounded_full().bg(t.accent))
-                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.pick_conn_driver(id, window, cx)
                         }))
@@ -359,7 +395,7 @@ impl AddConnModal {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .px_6()
+                    .px_5()
                     .py_4()
                     .child(match tab {
                         1 => ssh,
@@ -377,7 +413,7 @@ impl AddConnModal {
             cx,
         )
         .child(
-            modal_card("add-conn-modal-card", 760.0, t)
+            modal_card("add-conn-modal-card", 680.0, t)
                 // Enter in any field connects, like the primary button
                 .on_action(cx.listener(
                     move |this, _: &gpui::component::input::Enter, window, cx| {
@@ -395,7 +431,7 @@ impl AddConnModal {
                     Some(if editing {
                         "Changes reconnect this instance".into()
                     } else {
-                        "Select a database engine or paste a connection URL".into()
+                        format!("{} · enter details or paste a URL", driver.name()).into()
                     }),
                     cx.listener(move |this, _, _, cx| {
                         this.state.add_conn_modal_open = false;
@@ -405,11 +441,12 @@ impl AddConnModal {
                 .child(
                     h_flex()
                         .id("add-conn-two-pane")
-                        .h(px(490.0))
+                        .h(px(430.0))
                         .overflow_hidden()
                         .child(left_pane)
                         .child(right_pane),
                 )
+                .children(feedback)
                 .children(client_offer)
                 .child(footer),
         )
@@ -429,20 +466,15 @@ fn field_rows(
         let control = if f.secret {
             div().child(
                 Input::new(input)
-                    .large()
                     .text_sm()
                     .px_3p5()
                     .content_type(InputContentType::Password)
                     .mask_toggle(),
             )
         } else {
-            form_input(input)
+            compact_input(input)
         };
-        let hint = match (f.secret, editing) {
-            (true, true) => Some("Blank keeps the saved password"),
-            (true, false) => Some("Stored in the keychain"),
-            _ => None,
-        };
+        let hint = (f.secret && editing).then_some("Blank keeps the saved password");
         let cell = match f.width {
             Some(w) => div().w(px(w)),
             None => div().flex_1().min_w_0(),
@@ -455,5 +487,27 @@ fn field_rows(
             _ => rows.push((f.row, h_flex().gap_3().items_start().child(cell))),
         }
     }
-    rows.into_iter().map(|(_, line)| line).collect()
+    let secret_row = fields.iter().find(|f| f.secret).map(|f| f.row);
+    rows.into_iter()
+        .map(|(row, line)| {
+            if !editing && Some(row) == secret_row {
+                v_flex().gap_2().child(line).child(
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .text_xs()
+                        .text_color(t.text_muted)
+                        .child(Icon::new(IconName::Lock).xsmall())
+                        .child("Password is stored in the keychain"),
+                )
+            } else {
+                line
+            }
+        })
+        .collect()
+}
+
+/// Default-height input: the modal's dense form doesn't need form_input's 44px
+fn compact_input(state: &Entity<InputState>) -> Div {
+    div().child(Input::new(state).text_sm().px_3())
 }

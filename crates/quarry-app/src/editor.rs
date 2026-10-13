@@ -75,6 +75,8 @@ impl QueryEditor {
                 .child(div().size(px(6.0)).rounded_full().bg(env_color(env, theme)))
                 .child(
                     div()
+                        .max_w(px(160.0))
+                        .truncate()
                         .text_xs()
                         .text_color(theme.text_secondary)
                         .child(name.to_string()),
@@ -95,6 +97,8 @@ impl QueryEditor {
         };
         let conn_label = conn_label
             .id("btn-connection")
+            // Never narrower than its contents (they'd paint over the schema picker); the name caps instead
+            .flex_shrink_0()
             .gap_1p5()
             .items_center()
             .h(px(24.0))
@@ -110,9 +114,13 @@ impl QueryEditor {
             );
         v_flex()
             .size_full()
+            .min_w_0()
             .bg(theme.bg_panel)
             .child(
+                // min_w_0: a flex item defaults to its content's width, so without it the bar never narrows
                 h_flex()
+                    .w_full()
+                    .min_w_0()
                     .h(px(BAR_H))
                     .px_3()
                     // A faint red wash on prod, so it's obvious before you run anything
@@ -125,64 +133,77 @@ impl QueryEditor {
                     .border_color(theme.border)
                     .gap_1()
                     .items_center()
-                    .child(conn_label)
-                    .children(schema_picker)
-                    .child(limit_picker)
-                    .children(vim_mode.map(|mode| {
-                        div()
-                            .id("vim-mode-badge")
-                            .px_2()
-                            .h(px(22.0))
-                            .rounded(px(3.0))
-                            .flex()
-                            .items_center()
-                            .bg(theme.bg_hover)
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(match mode {
-                                crate::state::VimMode::Normal => theme.accent,
-                                crate::state::VimMode::Insert => theme.success,
-                                crate::state::VimMode::Visual => theme.warning,
-                            })
-                            .child(mode.label())
-                    }))
-                    .child(div().flex_1())
-                    .child(toolbar_button(
-                        "btn-save",
-                        IconName::Save,
-                        "Save",
-                        "Save (⌘S)",
-                        Box::new(crate::SaveFile),
-                    ))
-                    .child(toolbar_button(
-                        "btn-format",
-                        IconName::Wand,
-                        "Format",
-                        "Format (⇧⌥F)",
-                        Box::new(crate::FormatSql),
-                    ))
-                    .child(toolbar_button(
-                        "btn-explain",
-                        IconName::ListTree,
-                        "Explain",
-                        "Explain (⌥⌘E)",
-                        Box::new(crate::Explain),
-                    ))
                     .child(
-                        zbutton("btn-run-query")
-                            .h(px(24.0))
-                            .px_2p5()
-                            .ml_1()
-                            .icon(IconName::Play)
-                            .label(if is_running { "Running…" } else { "Run" })
-                            .tooltip(crate::ui::format_keys(
-                                "Run the selection, or the statement at the cursor (⌘↵)",
-                            ))
-                            .primary()
-                            .xsmall()
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.refresh_active_tab(window, cx)
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .gap_1()
+                            .items_center()
+                            .child(conn_label)
+                            .children(schema_picker.map(|p| p.flex_shrink_0()))
+                            .child(limit_picker.flex_shrink_0())
+                            .children(vim_mode.map(|mode| {
+                                div()
+                                    .id("vim-mode-badge")
+                                    .px_2()
+                                    .h(px(22.0))
+                                    .rounded(px(3.0))
+                                    .flex()
+                                    .items_center()
+                                    .bg(theme.bg_hover)
+                                    .text_xs()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(match mode {
+                                        crate::state::VimMode::Normal => theme.accent,
+                                        crate::state::VimMode::Insert => theme.success,
+                                        crate::state::VimMode::Visual => theme.warning,
+                                    })
+                                    .child(mode.label())
                             })),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap_1()
+                            .items_center()
+                            .child(toolbar_button(
+                                "btn-save",
+                                IconName::Save,
+                                "Save",
+                                "Save (⌘S)",
+                                Box::new(crate::SaveFile),
+                            ))
+                            .child(toolbar_button(
+                                "btn-format",
+                                IconName::Wand,
+                                "Format",
+                                "Format (⇧⌥F)",
+                                Box::new(crate::FormatSql),
+                            ))
+                            .child(toolbar_button(
+                                "btn-explain",
+                                IconName::ListTree,
+                                "Explain",
+                                "Explain (⌥⌘E)",
+                                Box::new(crate::Explain),
+                            ))
+                            .child(
+                                zbutton("btn-run-query")
+                                    .h(px(24.0))
+                                    .px_2p5()
+                                    .ml_1()
+                                    .icon(IconName::Play)
+                                    .label(if is_running { "Running…" } else { "Run" })
+                                    .tooltip(crate::ui::format_keys(
+                                        "Run the selection, or the statement at the cursor (⌘↵)",
+                                    ))
+                                    .primary()
+                                    .xsmall()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.refresh_active_tab(window, cx)
+                                    })),
+                            ),
                     ),
             )
             // The left padding is the ▶ column, so the button never sits on the line numbers
@@ -198,6 +219,26 @@ impl QueryEditor {
                                 cx.stop_propagation();
                             }
                         }))
+                    })
+                    // Tab picks the highlighted suggestion when the menu is open, like Enter; otherwise it indents
+                    .capture_action({
+                        let editor = editor.clone();
+                        move |_: &gpui::component::input::IndentInline, window, cx| {
+                            let handled = editor.update(cx, |state, cx| {
+                                state.completion_menu_state().open
+                                    && state.route_overlay_action(
+                                        Box::new(gpui::component::input::Enter {
+                                            secondary: false,
+                                            shift: false,
+                                        }),
+                                        window,
+                                        cx,
+                                    )
+                            });
+                            if handled {
+                                cx.stop_propagation();
+                            }
+                        }
                     })
                     .child(Editor::new(editor).h_full().bordered(false)),
             )

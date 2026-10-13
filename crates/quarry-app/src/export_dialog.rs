@@ -8,7 +8,7 @@ use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::component::button::ButtonVariants;
 use gpui::component::input::InputState;
-use gpui::component::Sizable;
+use gpui::component::{Disableable, Sizable};
 use gpui::*;
 use quarry_core::export::{ExportFormat, ExportOptions, Exporter};
 use quarry_core::DatabaseSession;
@@ -272,6 +272,7 @@ impl QuarryWindow {
                     .map(|r| r.rows.len())
             })
             .unwrap_or(0);
+        let picked = e.columns.iter().filter(|c| c.1).count();
         let running = e
             .running
             .as_ref()
@@ -283,7 +284,7 @@ impl QuarryWindow {
             chip(&t, id, label, on).when(busy, |d| d.opacity(0.5))
         };
         let row = |label: &'static str| {
-            h_flex().gap_4().items_center().child(
+            h_flex().gap_4().items_center().min_h(px(32.0)).child(
                 div()
                     .w(px(104.0))
                     .flex_shrink_0()
@@ -297,24 +298,26 @@ impl QuarryWindow {
         let body = v_flex()
             .gap_4()
             .child(
-                row("Format").children(
-                    [
-                        (ExportFormat::Csv, "CSV"),
-                        (ExportFormat::Json, "JSON"),
-                        (ExportFormat::Sql, "SQL INSERT"),
-                    ]
-                    .map(|(f, label)| {
-                        choice(label, label, e.format == f).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.export.format = f;
-                                cx.notify();
-                            },
-                        ))
-                    }),
+                row("Format").child(
+                    segmented(&t).children(
+                        [
+                            (ExportFormat::Csv, "CSV"),
+                            (ExportFormat::Json, "JSON"),
+                            (ExportFormat::Sql, "SQL INSERT"),
+                        ]
+                        .map(|(f, label)| {
+                            choice(label, label, e.format == f).on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.export.format = f;
+                                    cx.notify();
+                                },
+                            ))
+                        }),
+                    ),
                 ),
             )
             .when(e.format == ExportFormat::Csv, |this| {
-                this.child(row("Delimiter").children(
+                this.child(row("Delimiter").child(segmented(&t).children(
                     [(',', "Comma"), (';', "Semicolon"), ('\t', "Tab")].map(|(d, label)| {
                         choice(label, label, e.delimiter == d).on_click(cx.listener(
                             move |this, _, _, cx| {
@@ -323,16 +326,21 @@ impl QuarryWindow {
                             },
                         ))
                     }),
-                ))
+                )))
+                // An on/off setting is a switch, not a lone chip
                 .child(
-                    row("Header row").child(choice("header-yes", "Include", e.header).on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.export.header = !this.export.header;
-                            cx.notify();
-                        }),
-                    )),
+                    row("Header row").child(
+                        gpui::component::switch::Switch::new("export-header")
+                            .checked(e.header)
+                            .small()
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _: &bool, _, cx| {
+                                this.export.header = !this.export.header;
+                                cx.notify();
+                            })),
+                    ),
                 )
-                .child(row("NULL as").children(
+                .child(row("NULL as").child(segmented(&t).children(
                     [("", "Empty"), ("NULL", "NULL"), ("\\N", "\\N")].map(|(n, label)| {
                         choice(label, label, e.null_text == n).on_click(cx.listener(
                             move |this, _, _, cx| {
@@ -341,31 +349,37 @@ impl QuarryWindow {
                             },
                         ))
                     }),
-                ))
+                )))
             })
+            .child(div().h(px(1.0)).bg(t.border))
             .child(
                 row("Rows")
                     .child(
-                        choice("rows-loaded", "Loaded rows", !e.whole_table).on_click(cx.listener(
-                            |this, _, _, cx| {
-                                this.export.whole_table = false;
-                                cx.notify();
-                            },
-                        )),
-                    )
-                    .when(is_table || truncated, |this| {
-                        this.child(
-                            choice(
-                                "rows-all",
-                                if is_table { "Entire table" } else { "All rows" },
-                                e.whole_table,
+                        segmented(&t)
+                            .child(
+                                choice("rows-loaded", "Loaded rows", !e.whole_table).on_click(
+                                    cx.listener(|this, _, _, cx| {
+                                        this.export.whole_table = false;
+                                        cx.notify();
+                                    }),
+                                ),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.export.whole_table = true;
-                                cx.notify();
-                            })),
-                        )
-                    })
+                            .when(is_table || truncated, |this| {
+                                this.child(
+                                    choice(
+                                        "rows-all",
+                                        if is_table { "Entire table" } else { "All rows" },
+                                        e.whole_table,
+                                    )
+                                    .on_click(cx.listener(
+                                        |this, _, _, cx| {
+                                            this.export.whole_table = true;
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                            }),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -384,31 +398,60 @@ impl QuarryWindow {
             .child(row("Limit").child(div().w(px(140.0)).child(form_input(&e.limit))))
             .child(
                 row("Columns")
-                    .items_start()
                     .child(
-                        chip_group()
-                            .gap_1()
-                            .children(e.columns.iter().enumerate().map(|(i, (name, on))| {
-                                chip(&t, ("export-col", i), name.clone(), *on)
-                                    .gap_1()
-                                    .when(*on, |d| {
-                                        d.child(
-                                            gpui::component::Icon::new(
-                                                gpui::assets::IconName::Check,
-                                            )
-                                            .xsmall()
-                                            .text_color(t.accent),
-                                        )
-                                    })
-                                    .flex_row_reverse()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Some(c) = this.export.columns.get_mut(i) {
-                                            c.1 = !c.1;
-                                        }
-                                        cx.notify();
-                                    }))
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(t.text_muted)
+                            .child(format!("{picked} of {} selected", e.columns.len())),
+                    )
+                    .child(
+                        zbutton("export-cols-all")
+                            .pad_xs()
+                            .label("All")
+                            .ghost()
+                            .xsmall()
+                            .disabled(busy || picked == e.columns.len())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.export.columns.iter_mut().for_each(|c| c.1 = true);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        zbutton("export-cols-none")
+                            .pad_xs()
+                            .label("None")
+                            .ghost()
+                            .xsmall()
+                            .disabled(busy || picked == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.export.columns.iter_mut().for_each(|c| c.1 = false);
+                                cx.notify();
                             })),
                     ),
+            )
+            .child(
+                chip_group()
+                    .gap_1()
+                    .children(e.columns.iter().enumerate().map(|(i, (name, on))| {
+                        chip(&t, ("export-col", i), name.clone(), *on)
+                            .gap_1()
+                            .when(*on, |d| {
+                                d.child(
+                                    gpui::component::Icon::new(gpui::assets::IconName::Check)
+                                        .xsmall()
+                                        .text_color(t.accent),
+                                )
+                            })
+                            .flex_row_reverse()
+                            .when(!*on, |d| d.text_color(t.text_muted))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(c) = this.export.columns.get_mut(i) {
+                                    c.1 = !c.1;
+                                }
+                                cx.notify();
+                            }))
+                    })),
             );
 
         let footer = modal_footer(&t)
@@ -451,7 +494,8 @@ impl QuarryWindow {
                 .child(
                     zbutton("export-go")
                         .pad_sm()
-                        .label("Export…")
+                        .label(format!("Export {}…", e.format.extension().to_uppercase()))
+                        .disabled(picked == 0)
                         .primary()
                         .small()
                         .on_click(cx.listener(|this, _, window, cx| this.start_export(window, cx))),
@@ -474,13 +518,11 @@ impl QuarryWindow {
                         .child(modal_header(
                             &t,
                             "Export",
-                            Some(
-                                format!(
-                                    "{} columns · CSV, JSON or SQL",
-                                    e.columns.iter().filter(|c| c.1).count()
-                                )
-                                .into(),
-                            ),
+                            Some(if e.whole_table {
+                                format!("{picked} columns · all rows").into()
+                            } else {
+                                format!("{picked} columns · {loaded} rows").into()
+                            }),
                             dismiss_on_click,
                         ))
                         .child(modal_body("export-body").max_h(px(460.0)).child(body))

@@ -39,6 +39,14 @@ impl QuarryWindow {
         cx.notify();
     }
 
+    /// Closes every tab; each stays reopenable with ⇧⌘T
+    pub(crate) fn close_all_tabs(&mut self, cx: &mut Context<Self>) {
+        self.split_id = None;
+        while !self.state.tabs.is_empty() {
+            self.close_tab_at(self.state.tabs.len() - 1, cx);
+        }
+    }
+
     /// The split pane's tab, if it's set and isn't the active one
     pub(crate) fn split_tab(&self) -> Option<Tab> {
         let id = self.split_id.as_deref()?;
@@ -50,6 +58,7 @@ impl QuarryWindow {
 
     /// ⌘\: put the current tab in the right pane next to the previous one, or close the split
     pub(crate) fn toggle_split(&mut self, cx: &mut Context<Self>) {
+        self.split_active_right = false;
         if self.split_tab().is_some() {
             self.split_id = None;
         } else if self.state.tabs.len() > 1 {
@@ -62,7 +71,7 @@ impl QuarryWindow {
         cx.notify();
     }
 
-    /// Clicking into the right pane makes it the active tab; the old one moves right
+    /// Clicking into the inactive pane makes its tab active; both tabs stay on their side
     pub(crate) fn swap_split(&mut self, cx: &mut Context<Self>) {
         let (Some(split), Some(active)) = (
             self.split_id.clone(),
@@ -73,6 +82,7 @@ impl QuarryWindow {
         if let Some(ix) = self.state.tabs.iter().position(|t| t.id() == split) {
             self.state.active_tab_index = ix;
             self.split_id = Some(active);
+            self.split_active_right = !self.split_active_right;
             cx.notify();
         }
     }
@@ -88,6 +98,7 @@ impl QuarryWindow {
         if let (Some(prev), Some(new)) = (previous, opened) {
             if prev != new {
                 self.split_id = Some(new);
+                self.split_active_right = false;
                 if let Some(ix) = self.state.tabs.iter().position(|t| t.id() == prev) {
                     self.state.active_tab_index = ix;
                 }

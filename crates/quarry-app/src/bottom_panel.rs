@@ -582,20 +582,9 @@ impl QuarryWindow {
         let active = self.state.bottom_panel_tab;
 
         let tab = |label: &'static str, which: BottomPanelTab| {
-            div()
-                .id(label)
-                .px_2()
-                .py_0p5()
-                .rounded(px(3.0))
+            underline_tab(theme, label, label, active == which)
+                .h(px(32.0))
                 .text_xs()
-                .cursor_pointer()
-                .when(active == which, |d| {
-                    d.bg(theme.bg_selected).text_color(theme.text_primary)
-                })
-                .when(active != which, |d| {
-                    d.text_color(theme.text_muted)
-                        .hover(|s| s.bg(theme.bg_hover))
-                })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.state.bottom_panel_tab = which;
                     if which == BottomPanelTab::Server {
@@ -603,14 +592,9 @@ impl QuarryWindow {
                     }
                     cx.notify();
                 }))
-                .child(label)
         };
         let toggle = |id: &'static str, label: &'static str, on: bool| {
-            zbutton(id)
-                .pad_xs()
-                .label(label)
-                .xsmall()
-                .map(|b| if on { b.primary() } else { b.ghost() })
+            chip(theme, id, label, on).h(px(24.0)).px_2()
         };
         let grid_view = |grid: &Entity<TableState<ResultSet>>, cx: &Context<Self>| {
             DataGrid::render(
@@ -629,25 +613,32 @@ impl QuarryWindow {
             BottomPanelTab::Messages => v_flex()
                 .id("output-scroll")
                 .flex_1()
+                .min_h_0()
                 .overflow_y_scroll()
-                .p_2()
+                .px_3()
+                .py_2()
                 .gap_1()
                 .when(self.state.messages.is_empty(), |d| {
                     d.child(
                         div()
                             .text_xs()
                             .text_color(theme.text_muted)
-                            .child("Nothing yet."),
+                            .child("Connections, runs and errors show up here."),
                     )
                 })
                 .children(self.state.messages.iter().rev().take(500).map(|m| {
                     div()
                         .text_xs()
-                        .text_color(if m.starts_with("Error") {
-                            theme.danger
-                        } else {
-                            theme.text_secondary
-                        })
+                        .text_color(
+                            if m.starts_with("Error")
+                                || m.starts_with("Could not")
+                                || m.contains("failed")
+                            {
+                                theme.danger
+                            } else {
+                                theme.text_secondary
+                            },
+                        )
                         .child(m.clone())
                 }))
                 .into_any_element(),
@@ -667,7 +658,7 @@ impl QuarryWindow {
                             .child(
                                 div()
                                     .w(px(240.0))
-                                    .child(Input::new(&p.history_search).xsmall().cleanable(true)),
+                                    .child(Input::new(&p.history_search).small().cleanable(true)),
                             )
                             .child(
                                 toggle("hist-errors", "Errors only", p.history_errors_only)
@@ -742,7 +733,7 @@ impl QuarryWindow {
                             .child(
                                 div()
                                     .w(px(240.0))
-                                    .child(Input::new(&p.log_filter).xsmall().cleanable(true)),
+                                    .child(Input::new(&p.log_filter).small().cleanable(true)),
                             )
                             .child(div().flex_1())
                             .child(
@@ -766,6 +757,7 @@ impl QuarryWindow {
                                             "Copied the activity log (CSV) to the clipboard."
                                                 .into(),
                                         );
+                                        cx.notify();
                                     })),
                             )
                             .child(
@@ -783,6 +775,11 @@ impl QuarryWindow {
             }
             BottomPanelTab::Server => {
                 let p = &self.panel;
+                let has_monitor = self
+                    .state
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.monitor().is_some());
                 let pid = self
                     .selected_pid(cx)
                     .filter(|_| p.server_view == ServerView::Activity);
@@ -812,63 +809,72 @@ impl QuarryWindow {
                                             }))
                                     }),
                             )
-                            .child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
-                            .child(
-                                div()
-                                    .w(px(180.0))
-                                    .child(Input::new(&p.server_filter).xsmall().cleanable(true)),
-                            )
+                            .when(has_monitor, |d| {
+                                d.child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
+                                    .child(div().w(px(180.0)).child(
+                                        Input::new(&p.server_filter).small().cleanable(true),
+                                    ))
+                            })
                             .child(div().flex_1())
-                            .children(
-                                [
-                                    (2u64, "poll-2", "2s"),
-                                    (5, "poll-5", "5s"),
-                                    (10, "poll-10", "10s"),
-                                ]
-                                .map(|(secs, id, label)| {
-                                    toggle(id, label, p.server_interval == Some(secs)).on_click(
-                                        cx.listener(move |this, _, _, cx| {
-                                            this.panel.server_interval = Some(secs);
-                                            this.panel.poll = None; // restarts with the new interval
+                            .when(has_monitor, |d| {
+                                d.child(
+                                    segmented(theme).children(
+                                        [
+                                            (2u64, "poll-2", "2s"),
+                                            (5, "poll-5", "5s"),
+                                            (10, "poll-10", "10s"),
+                                        ]
+                                        .map(
+                                            |(secs, id, label)| {
+                                                toggle(id, label, p.server_interval == Some(secs))
+                                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                                        this.panel.server_interval = Some(secs);
+                                                        this.panel.poll = None; // restarts with the new interval
+                                                        cx.notify();
+                                                    }))
+                                            },
+                                        ),
+                                    ),
+                                )
+                            })
+                            .when(has_monitor, |d| {
+                                d.child(
+                                    zbutton("poll-pause")
+                                        .icon(if p.server_interval.is_some() {
+                                            IconName::Pause
+                                        } else {
+                                            IconName::Play
+                                        })
+                                        .ghost()
+                                        .xsmall()
+                                        .tooltip(if p.server_interval.is_some() {
+                                            "Pause refresh"
+                                        } else {
+                                            "Resume refresh"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.panel.server_interval =
+                                                if this.panel.server_interval.is_some() {
+                                                    None
+                                                } else {
+                                                    Some(5)
+                                                };
                                             cx.notify();
-                                        }),
-                                    )
-                                }),
-                            )
-                            .child(
-                                zbutton("poll-pause")
-                                    .icon(if p.server_interval.is_some() {
-                                        IconName::Pause
-                                    } else {
-                                        IconName::Play
-                                    })
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip(if p.server_interval.is_some() {
-                                        "Pause refresh"
-                                    } else {
-                                        "Resume refresh"
-                                    })
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.panel.server_interval =
-                                            if this.panel.server_interval.is_some() {
-                                                None
-                                            } else {
-                                                Some(5)
-                                            };
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                zbutton("server-refresh")
-                                    .icon(IconName::RefreshCw)
-                                    .ghost()
-                                    .xsmall()
-                                    .tooltip("Refresh now")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh_server(window, cx)
-                                    })),
-                            )
+                                        })),
+                                )
+                            })
+                            .when(has_monitor, |d| {
+                                d.child(
+                                    zbutton("server-refresh")
+                                        .icon(IconName::RefreshCw)
+                                        .ghost()
+                                        .xsmall()
+                                        .tooltip("Refresh now")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.refresh_server(window, cx)
+                                        })),
+                                )
+                            })
                             .when(p.server_view == ServerView::Logs, |this| {
                                 let file = p
                                     .log_file
@@ -958,9 +964,8 @@ impl QuarryWindow {
             .border_color(theme.border)
             .child(
                 h_flex()
-                    .h(px(BAR_H))
                     .px_3()
-                    .gap_1()
+                    .gap_4()
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)

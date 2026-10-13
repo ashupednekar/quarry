@@ -119,6 +119,7 @@ actions!(
         DecreaseFontSize,
         ResetFontSize,
         SelectNextOccurrence,
+        NewConnection,
     ]
 );
 
@@ -155,8 +156,10 @@ struct QuarryWindow {
     session_save_task: Option<Task<()>>,
     /// Recently closed tabs, newest last, for ⇧⌘T
     closed_tabs: Vec<(Tab, Vec<(String, Subscription)>)>,
-    /// Tab shown in the right pane of the split view, by id
+    /// The split view's other (inactive) tab, by id
     split_id: Option<String>,
+    /// The active tab is in the right pane; panes stay put when focus moves between them
+    split_active_right: bool,
     peek: Option<peek::Peek>,
     settings: settings::Settings,
     /// Settings last pushed into editors and grids (they need a window, so this happens at render)
@@ -308,6 +311,7 @@ impl QuarryWindow {
             session_save_task: None,
             closed_tabs: Vec::new(),
             split_id: None,
+            split_active_right: false,
             peek: None,
             settings: settings::Settings::default(),
             applied_settings: None,
@@ -656,16 +660,21 @@ impl QuarryWindow {
                             .h(px(22.0))
                             .px_2()
                             .icon(if self.results_expanded {
-                                IconName::Minimize2
+                                IconName::PanelTopOpen
                             } else {
-                                IconName::Maximize2
+                                IconName::PanelTopClose
+                            })
+                            .label(if self.results_expanded {
+                                "Show editor"
+                            } else {
+                                "Hide editor"
                             })
                             .ghost()
                             .xsmall()
                             .tooltip(if self.results_expanded {
-                                "Show the editor"
+                                "Bring the editor back above the results"
                             } else {
-                                "Hide the editor"
+                                "Give the results the whole pane"
                             })
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.results_expanded = !this.results_expanded;
@@ -1596,8 +1605,9 @@ impl QuarryWindow {
         self.state.usages = None; // ⌘K is the normal palette, not the last Find Usages
         if self.state.command_bar_open {
             self.state.command_bar_selected_index = 0;
+            // Opens on commands; deleting the ">" searches tables and queries
             self.command_input.update(cx, |input, cx| {
-                input.set_value("", window, cx);
+                input.set_value(">", window, cx);
                 input.focus(window, cx);
             });
         } else {
@@ -2005,6 +2015,9 @@ impl Render for QuarryWindow {
             }))
             .on_action(cx.listener(Self::dismiss))
             .on_action(cx.listener(|this, _: &OpenSettings, _, cx| this.open_settings(cx)))
+            .on_action(
+                cx.listener(|this, _: &NewConnection, window, cx| this.open_add_conn(window, cx)),
+            )
             .on_action(cx.listener(Self::handle_close_window))
             .on_action(cx.listener(Self::handle_quit))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
