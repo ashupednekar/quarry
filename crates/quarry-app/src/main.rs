@@ -17,6 +17,7 @@ mod grid;
 mod history;
 mod import_wizard;
 mod layout;
+mod menus;
 mod object_menu;
 mod params_dialog;
 mod peek;
@@ -117,76 +118,6 @@ actions!(
     ]
 );
 
-/// Default keymap. Must run after `gpui::init` so these win over the input's own bindings.
-fn bind_keys(cx: &mut App) {
-    cx.bind_keys([
-        KeyBinding::new("secondary-k", ToggleCommandBar, None),
-        KeyBinding::new("secondary-enter", RunQuery, None),
-        // Inputs map secondary-enter to "newline"; run the query instead.
-        KeyBinding::new("secondary-enter", RunQuery, Some("Input")),
-        KeyBinding::new("secondary-shift-enter", RunAll, None),
-        KeyBinding::new("secondary-shift-enter", RunAll, Some("Input")),
-        KeyBinding::new("secondary-s", ReviewChanges, None),
-        KeyBinding::new("secondary-b", ToggleSidebar, None),
-        KeyBinding::new("secondary-j", ToggleBottomPanel, None),
-        KeyBinding::new("secondary-n", NewQuery, None),
-        KeyBinding::new("secondary-w", CloseTab, None),
-        KeyBinding::new("escape", Dismiss, None),
-        // Standard macOS window/app shortcuts (also shown in the menu bar)
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-,", OpenSettings, None),
-        KeyBinding::new("secondary-h", Hide, None),
-        KeyBinding::new("alt-secondary-h", HideOthers, None),
-        KeyBinding::new("secondary-m", Minimize, None),
-        KeyBinding::new("shift-secondary-w", CloseWindow, None),
-        KeyBinding::new("shift-escape", ToggleMaximize, None),
-        KeyBinding::new("secondary-shift-e", ExportResults, None),
-        KeyBinding::new("secondary-alt-e", Explain, None),
-        KeyBinding::new("shift-alt-f", FormatSql, None),
-        KeyBinding::new(
-            "alt-enter",
-            gpui::base::input::ToggleCodeActions,
-            Some("Input"),
-        ),
-        KeyBinding::new("shift-alt-f", FormatSql, Some("Input")),
-        KeyBinding::new("secondary-shift-s", SaveFileAs, None),
-        KeyBinding::new("secondary-o", OpenFile, None),
-        KeyBinding::new("secondary-shift-t", ReopenClosedTab, None),
-        KeyBinding::new("ctrl-tab", TabSwitcherNext, None),
-        KeyBinding::new("ctrl-shift-tab", TabSwitcherPrev, None),
-        KeyBinding::new("secondary-shift-p", CommandPalette, None),
-        // Spaces (U5): one keystroke to switch connection
-        KeyBinding::new("ctrl-1", SwitchSpace1, None),
-        KeyBinding::new("ctrl-2", SwitchSpace2, None),
-        KeyBinding::new("ctrl-3", SwitchSpace3, None),
-        KeyBinding::new("ctrl-4", SwitchSpace4, None),
-        KeyBinding::new("ctrl-5", SwitchSpace5, None),
-        KeyBinding::new("ctrl-6", SwitchSpace6, None),
-        KeyBinding::new("ctrl-7", SwitchSpace7, None),
-        KeyBinding::new("ctrl-8", SwitchSpace8, None),
-        KeyBinding::new("ctrl-9", SwitchSpace9, None),
-        KeyBinding::new("secondary-\\", ToggleSplit, None),
-        // Font size / zoom shortcuts (⌘+/⌘- on macOS, Ctrl+/Ctrl- on others)
-        KeyBinding::new("secondary-+", IncreaseFontSize, None),
-        KeyBinding::new("secondary-=", IncreaseFontSize, None),
-        KeyBinding::new("secondary-shift-=", IncreaseFontSize, None),
-        KeyBinding::new("secondary-shift-+", IncreaseFontSize, None),
-        KeyBinding::new("secondary-+", IncreaseFontSize, Some("Input")),
-        KeyBinding::new("secondary-=", IncreaseFontSize, Some("Input")),
-        KeyBinding::new("secondary-shift-=", IncreaseFontSize, Some("Input")),
-        KeyBinding::new("secondary-shift-+", IncreaseFontSize, Some("Input")),
-        KeyBinding::new("secondary--", DecreaseFontSize, None),
-        KeyBinding::new("secondary--", DecreaseFontSize, Some("Input")),
-        KeyBinding::new("secondary-0", ResetFontSize, None),
-        KeyBinding::new("secondary-0", ResetFontSize, Some("Input")),
-        // ⌘↵ on a command-bar result opens it in the split (U3); registered after the Input binding so it wins
-        KeyBinding::new("secondary-enter", OpenInSplit, Some("CommandBar > Input")),
-        KeyBinding::new("secondary-alt-shift-e", ExplainAnalyze, None),
-        KeyBinding::new("up", MenuUp, Some("CommandBar > Input")),
-        KeyBinding::new("down", MenuDown, Some("CommandBar > Input")),
-    ]);
-}
-
 #[derive(Clone, Copy, PartialEq)]
 pub enum RunMode {
     Current,
@@ -274,6 +205,8 @@ struct QuarryWindow {
     panel: bottom_panel::PanelState,
     confirm_close_open: bool,
     force_close: bool,
+    pub config_watcher: settings::ConfigWatcher,
+    config_watch_task: Option<Task<()>>,
 }
 
 impl QuarryWindow {
@@ -400,6 +333,8 @@ impl QuarryWindow {
             param_memory: Default::default(),
             confirm_close_open: false,
             force_close: false,
+            config_watcher: settings::ConfigWatcher::new(),
+            config_watch_task: None,
         };
         this.reload_settings(cx);
         let keymap_errors = settings::apply_keymap(cx);
@@ -411,6 +346,25 @@ impl QuarryWindow {
         this._subscriptions.push(cx.on_app_quit(|this, cx| {
             this.save_session(cx);
             async {}
+        }));
+        this.config_watch_task = Some(cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1000))
+                .await;
+            let res = this.update(cx, |this, cx| {
+                let changes = this
+                    .config_watcher
+                    .poll_changes(std::time::Duration::from_millis(500));
+                if changes.settings_changed {
+                    this.reload_settings(cx);
+                }
+                if changes.keymap_changed {
+                    let _ = crate::settings::apply_keymap(cx);
+                }
+            });
+            if res.is_err() {
+                break;
+            }
         }));
         this
     }
@@ -427,7 +381,10 @@ impl QuarryWindow {
     /// Theme follows the OS appearance unless the user picked one
     /// Reads settings.json and applies theme, fonts and defaults (P3, P4)
     fn reload_settings(&mut self, cx: &mut Context<Self>) {
-        let (s, mut error) = settings::load();
+        let (s, mut error) = match settings::try_load() {
+            Ok(s) => (s, None),
+            Err(e) => (self.settings.clone(), Some(e)),
+        };
         self.theme_choice = match s.theme.trim().to_lowercase().as_str() {
             "" | "system" => None,
             name => match Theme::named(name, true) {
@@ -1974,71 +1931,6 @@ impl Render for QuarryWindow {
     }
 }
 
-/// The macOS menu bar; its items also make the standard shortcuts (⌘Q, ⌘H, ⌘M…) work
-fn set_app_menus(cx: &mut App) {
-    use gpui::component::input;
-    cx.on_action(|_: &Quit, cx| cx.quit());
-    cx.on_action(|_: &Hide, cx| cx.hide());
-    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
-    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
-    // Closing the last window quits, like other single-window macOS apps
-    cx.on_window_closed(|cx, _| {
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
-    })
-    .detach();
-    cx.set_menus([
-        Menu {
-            name: "Quarry".into(),
-            items: vec![
-                MenuItem::action("Settings…", OpenSettings),
-                MenuItem::separator(),
-                MenuItem::action("Hide Quarry", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
-                MenuItem::separator(),
-                MenuItem::action("Quit Quarry", Quit),
-            ],
-            disabled: false,
-        },
-        Menu {
-            name: "Edit".into(),
-            items: vec![
-                MenuItem::os_action("Undo", input::Undo, OsAction::Undo),
-                MenuItem::os_action("Redo", input::Redo, OsAction::Redo),
-                MenuItem::separator(),
-                MenuItem::os_action("Cut", input::Cut, OsAction::Cut),
-                MenuItem::os_action("Copy", input::Copy, OsAction::Copy),
-                MenuItem::os_action("Paste", input::Paste, OsAction::Paste),
-                MenuItem::os_action("Select All", input::SelectAll, OsAction::SelectAll),
-            ],
-            disabled: false,
-        },
-        Menu {
-            name: "View".into(),
-            items: vec![
-                MenuItem::action("Zoom In", IncreaseFontSize),
-                MenuItem::action("Zoom Out", DecreaseFontSize),
-                MenuItem::separator(),
-                MenuItem::action("Actual Size", ResetFontSize),
-            ],
-            disabled: false,
-        },
-        Menu {
-            name: "Window".into(),
-            items: vec![
-                MenuItem::action("Minimize", Minimize),
-                MenuItem::action("Zoom", Zoom),
-                MenuItem::separator(),
-                MenuItem::action("Close Tab", CloseTab),
-                MenuItem::action("Close Window", CloseWindow),
-            ],
-            disabled: false,
-        },
-    ]);
-}
-
 fn main() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -2061,10 +1953,10 @@ fn main() {
                 cx,
             );
             theme::load_fonts(cx);
-            bind_keys(cx);
+            menus::bind_keys(cx);
             ui::init_modal_focus(cx);
             grid::bind_keys(cx);
-            set_app_menus(cx);
+            menus::set_app_menus(cx);
             let options = WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: None, // Custom unified titlebar with cross-platform OS traffic light offset

@@ -8,6 +8,16 @@ use super::*;
 impl QuarryWindow {
     /// Keeps derived state (theme, settings, lint, tab connections) in step before drawing
     pub(crate) fn sync_before_render(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let changes = self
+            .config_watcher
+            .poll_changes(std::time::Duration::from_millis(500));
+        if changes.settings_changed {
+            self.reload_settings(cx);
+        }
+        if changes.keymap_changed {
+            let _ = crate::settings::apply_keymap(cx);
+        }
+
         self.sync_theme(window, cx);
         if self.applied_settings.as_ref() != Some(&self.settings) {
             self.apply_settings_to_views(window, cx);

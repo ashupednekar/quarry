@@ -492,9 +492,7 @@ impl PostgresSession {
 
 /// Checks whether a mutation statement contains a RETURNING clause
 fn has_returning(sql: &str) -> bool {
-    crate::session::sql_tokens(sql)
-        .iter()
-        .any(|tok| tok.eq_ignore_ascii_case("RETURNING"))
+    crate::lexer::SqlLexer::new(sql).any(|tok| tok.is_keyword("RETURNING"))
 }
 
 /// Converts a text-protocol value into a typed DbValue. Unknown types stay as their exact text.

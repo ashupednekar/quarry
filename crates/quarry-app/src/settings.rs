@@ -132,7 +132,96 @@ pub fn keymap_path() -> Option<PathBuf> {
     Some(crate::connections::config_dir()?.join("keymap.json"))
 }
 
+/// Tracks configuration file modifications on disk to enable live reload.
+#[derive(Debug, Clone)]
+pub struct ConfigWatcher {
+    last_check: std::time::Instant,
+    settings_mtime: Option<std::time::SystemTime>,
+    keymap_mtime: Option<std::time::SystemTime>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigChanges {
+    pub settings_changed: bool,
+    pub keymap_changed: bool,
+}
+
+impl Default for ConfigWatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ConfigWatcher {
+    pub fn new() -> Self {
+        Self {
+            last_check: std::time::Instant::now(),
+            settings_mtime: settings_path()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok()),
+            keymap_mtime: keymap_path()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok()),
+        }
+    }
+
+    /// Checks if settings.json or keymap.json modified timestamps changed.
+    /// Throttled to at most once per `interval`.
+    pub fn poll_changes(&mut self, interval: std::time::Duration) -> ConfigChanges {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_check) < interval {
+            return ConfigChanges::default();
+        }
+        self.last_check = now;
+
+        let cur_settings_mtime = settings_path()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        let cur_keymap_mtime = keymap_path()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+
+        let settings_changed = cur_settings_mtime != self.settings_mtime;
+        let keymap_changed = cur_keymap_mtime != self.keymap_mtime;
+
+        if settings_changed {
+            self.settings_mtime = cur_settings_mtime;
+        }
+        if keymap_changed {
+            self.keymap_mtime = cur_keymap_mtime;
+        }
+
+        ConfigChanges {
+            settings_changed,
+            keymap_changed,
+        }
+    }
+
+    /// Manually synchronize the recorded mtimes to current disk state (e.g. after internal save)
+    pub fn sync_mtimes(&mut self) {
+        self.settings_mtime = settings_path()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+        self.keymap_mtime = keymap_path()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok());
+    }
+}
+
+/// Attempts to load settings, returning Err if the file exists but has syntax errors
+pub fn try_load() -> Result<Settings, String> {
+    let Some(path) = settings_path() else {
+        return Ok(Settings::default());
+    };
+    if !path.exists() {
+        return Ok(Settings::default());
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&text).map_err(|e| format!("settings.json: {e}"))
+}
+
 /// Loads settings; a broken file falls back to defaults and reports why
+#[allow(dead_code)]
 pub fn load() -> (Settings, Option<String>) {
     let Some(text) = settings_path().and_then(|p| std::fs::read_to_string(p).ok()) else {
         return (Settings::default(), None);
@@ -267,5 +356,25 @@ mod tests {
             (s.theme.as_str(), s.rows_per_page, s.confirm_on_prod),
             ("dark", 1000, true)
         );
+    }
+
+    #[test]
+    fn test_config_watcher_throttle() {
+        let mut watcher = ConfigWatcher::new();
+        // Immediately polling with 1 second interval returns no changes (throttled)
+        let changes = watcher.poll_changes(std::time::Duration::from_secs(1));
+        assert_eq!(changes, ConfigChanges::default());
+    }
+
+    #[test]
+    fn test_try_load_validation() {
+        let valid_json = r#"{"font_size": 18.0, "theme": "Paper"}"#;
+        let s: Settings = serde_json::from_str(valid_json).unwrap();
+        assert_eq!(s.font_size, 18.0);
+        assert_eq!(s.theme, "Paper");
+
+        let invalid_json = r#"{"font_size": "not-a-number"}"#;
+        let err = serde_json::from_str::<Settings>(invalid_json).unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 }

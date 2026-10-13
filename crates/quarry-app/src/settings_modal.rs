@@ -25,6 +25,7 @@ impl QuarryWindow {
         if let Err(e) = settings::save(&s) {
             return self.toast(format!("Couldn't save settings: {e}"), true, cx);
         }
+        self.config_watcher.sync_mtimes();
         self.reload_settings(cx);
     }
 

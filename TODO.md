@@ -65,7 +65,7 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 - [x] Asynchronous autocomplete cancellation: compute schema completions on GPUI's background executor with cooperative cancellation tokens on subsequent keystrokes (`completion.rs`, `editor.rs`)
 - [x] Allocation-free fuzzy search: rewrite `fuzzy_score` in `command_bar.rs` to match via `FuzzyQuery` and stack-allocated Damerau-Levenshtein matrix without allocating `Vec<char>` per candidate per keystroke (`command_bar.rs`)
 - [x] Retained ER diagram layout: cache BFS graph topology and card coordinates in component state instead of re-running graph traversal on every single frame render (`er_view.rs`)
-- [ ] Consolidate SQL lexers: share tokenization state machines between `quarry_core::session::sql_tokens` and `quarry_sql::splitter` (`quarry_core::dialect`, `quarry_sql`)
+- [x] Consolidate SQL lexers: share tokenization state machines between `quarry_core::session::sql_tokens` and `quarry_sql::splitter` (`quarry_core::dialect`, `quarry_sql`)
 - [ ] Driver TLS support (`rustls`): secure direct connections to cloud databases (RDS, Neon, Supabase) without requiring SSH tunnels (`quarry-core/Cargo.toml`, `postgres`, `mysql`)
 - [ ] Microbenchmarks suite (`criterion`): benchmark SQL statement splitting throughput, completion lookup on 1,000+ tables, fuzzy matching, and grid row decoding (`benches/`)
 
@@ -80,6 +80,6 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 - [x] Release build optimization: enable thin LTO, single codegen unit, and symbol stripping (`Cargo.toml`)
 - [x] Developer tooling configs: add standardized `Makefile`, `rustfmt.toml`, and `clippy.toml`
 - [x] Fast test & lint validation pass: clean fmt, clippy, and all 106 tests passing cleanly
-- [ ] Live configuration reload: watch `~/.config/quarry/` (`settings.json`, `keymap.json`) via mtime check so edits apply immediately without restarting (`settings.rs`)
-- [ ] Modularize `main.rs`: extract application menu generation and global command registrations out of the 2,100-line entrypoint (`main.rs`, `commands.rs`)
+- [x] Live configuration reload: watch `~/.config/quarry/` (`settings.json`, `keymap.json`) via mtime check so edits apply immediately without restarting (`settings.rs`)
+- [x] Modularize `main.rs`: extract application menu generation and global command registrations out of the 2,100-line entrypoint (`main.rs`, `menus.rs`)
 

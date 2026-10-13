@@ -21,201 +21,80 @@ pub fn split_statements(input: &str) -> Vec<StatementSpan> {
     split_statements_with(input, SplitRules::default())
 }
 
-/// `split_statements` with a dialect's extra rules (`#` comments, backslash escapes)
+///// `split_statements` with a dialect's extra rules (`#` comments, backslash escapes)
 pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpan> {
     let mut statements = Vec::new();
-    let bytes = input.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    let mut stmt_start = 0;
+    let mut stmt_start: Option<usize> = None;
 
-    while i < len {
-        // SQL Server: a line that's just GO ends the batch. Oracle: a line that's just / ends a block.
-        if (rules.go_batches || rules.slash_blocks)
-            && input[..i]
-                .rsplit('\n')
-                .next()
-                .is_some_and(|l| l.trim().is_empty())
-        {
-            let line_end = input[i..].find('\n').map_or(len, |n| i + n);
-            let line = input[i..line_end].trim();
-            if (rules.go_batches && line.eq_ignore_ascii_case("go"))
-                || (rules.slash_blocks && line == "/")
-            {
-                let sql_part = input[stmt_start..i].trim();
+    for tok in quarry_core::lexer::SqlLexer::with_rules(input, rules) {
+        if stmt_start.is_none() {
+            stmt_start = Some(tok.span.start);
+        }
+
+        // SQL Server GO batch or Oracle / block
+        if (rules.go_batches && tok.is_keyword("go")) || (rules.slash_blocks && tok.is_punct('/')) {
+            let line_start = input[..tok.span.start].rfind('\n').map_or(0, |p| p + 1);
+            let line_end = input[tok.span.end..]
+                .find('\n')
+                .map_or(input.len(), |p| tok.span.end + p);
+            let before = &input[line_start..tok.span.start];
+            let after = &input[tok.span.end..line_end];
+
+            if before.trim().is_empty() && after.trim().is_empty() {
+                let start = stmt_start.unwrap_or(line_start);
+                let sql_part = input[start..tok.span.start].trim();
                 if !sql_part.is_empty() {
                     statements.push(StatementSpan {
-                        start: stmt_start,
-                        end: i,
+                        start,
+                        end: tok.span.start,
                         sql: sql_part.to_string(),
                     });
                 }
-                i = line_end;
-                stmt_start = i;
+                stmt_start = None;
                 continue;
             }
         }
 
-        // Skip leading whitespace when starting a new statement
-        if stmt_start == i && bytes[i].is_ascii_whitespace() {
-            stmt_start += 1;
-            i += 1;
-            continue;
-        }
-
-        // Single-line comment: -- ... (or # ... where the dialect says so)
-        if i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-' {
-            i += 2;
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-
-        if rules.hash_comments && bytes[i] == b'#' {
-            i += 1;
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-
-        // Multi-line comment: /* ... */
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                i += 1;
-            }
-            if i + 1 < len {
-                i += 2; // skip */
-            }
-            continue;
-        }
-
-        // Single-quoted string: '...' (with '' escape)
-        if bytes[i] == b'\'' {
-            i += 1;
-            while i < len {
-                if rules.backslash_escapes && bytes[i] == b'\\' {
-                    i += 1;
-                    if i < len {
-                        let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
-                        i += ch_len;
-                    }
-                    continue;
-                }
-                if bytes[i] == b'\'' {
-                    if i + 1 < len && bytes[i + 1] == b'\'' {
-                        i += 2; // skip ''
-                    } else {
-                        i += 1; // closing quote
-                        break;
-                    }
-                } else {
-                    let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
-                    i += ch_len;
-                }
-            }
-            continue;
-        }
-
-        // Double-quoted identifier: "..." (with "" escape), or a backtick one: `...`
-        if bytes[i] == b'"' || bytes[i] == b'`' {
-            let q = bytes[i];
-            i += 1;
-            while i < len {
-                if bytes[i] == q {
-                    if i + 1 < len && bytes[i + 1] == q {
-                        i += 2;
-                    } else {
-                        i += 1;
-                        break;
-                    }
-                } else {
-                    let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
-                    i += ch_len;
-                }
-            }
-            continue;
-        }
-
-        // PostgreSQL dollar-quoting: $$...$$ or $tag$...$tag$
-        if bytes[i] == b'$' {
-            if let Some((tag, tag_end)) = parse_dollar_tag(&bytes[i..]) {
-                let closing_tag = tag;
-                i += tag_end; // move past opening dollar tag
-
-                // Search for matching closing tag
-                while i < len {
-                    if bytes[i] == b'$' && bytes[i..].starts_with(closing_tag.as_bytes()) {
-                        i += closing_tag.len();
-                        break;
-                    }
-                    i += 1;
-                }
+        // Semicolon statement boundary
+        if tok.is_punct(';') {
+            if rules.go_batches {
+                // Semicolons do not split batches in SQL Server scripts
                 continue;
             }
-        }
 
-        // Semicolon statement boundary (not in GO-batched scripts: a procedure body is full of them)
-        if bytes[i] == b';'
-            && !rules.go_batches
-            && !(rules.slash_blocks && quarry_core::dialect::is_plsql_block(&input[stmt_start..i]))
-        {
-            let sql_part = input[stmt_start..i].trim();
+            let start = stmt_start.unwrap_or(tok.span.start);
+            if rules.slash_blocks
+                && quarry_core::dialect::is_plsql_block(&input[start..tok.span.start])
+            {
+                // In Oracle PL/SQL blocks, semicolons inside the block do not split
+                continue;
+            }
+
+            let sql_part = input[start..tok.span.start].trim();
             if !sql_part.is_empty() {
                 statements.push(StatementSpan {
-                    start: stmt_start,
-                    end: i + 1,
+                    start,
+                    end: tok.span.end,
                     sql: sql_part.to_string(),
                 });
             }
-            i += 1;
-            stmt_start = i;
-            continue;
+            stmt_start = None;
         }
-
-        let ch_len = input[i..].chars().next().map_or(1, |c| c.len_utf8());
-        i += ch_len;
     }
 
-    // Trailing statement without trailing semicolon
-    if stmt_start < len {
-        let sql_part = input[stmt_start..].trim();
+    // Trailing statement without semicolon
+    if let Some(start) = stmt_start {
+        let sql_part = input[start..].trim();
         if !sql_part.is_empty() {
             statements.push(StatementSpan {
-                start: stmt_start,
-                end: len,
+                start,
+                end: input.len(),
                 sql: sql_part.to_string(),
             });
         }
     }
 
     statements
-}
-
-fn parse_dollar_tag(slice: &[u8]) -> Option<(String, usize)> {
-    if slice.is_empty() || slice[0] != b'$' {
-        return None;
-    }
-    // Simple $$
-    if slice.len() >= 2 && slice[1] == b'$' {
-        return Some(("$$".to_string(), 2));
-    }
-    // Tagged $tag$
-    let mut i = 1;
-    while i < slice.len() {
-        let b = slice[i];
-        if b == b'$' {
-            let tag = String::from_utf8_lossy(&slice[0..=i]).to_string();
-            return Some((tag, i + 1));
-        }
-        if !(b.is_ascii_alphanumeric() || b == b'_') {
-            return None;
-        }
-        i += 1;
-    }
-    None
 }
 
 /// Finds the single statement containing the cursor byte offset, ideal for ⌘↵ (Run Current Statement)

@@ -10,6 +10,7 @@ pub mod dump;
 pub mod edits;
 pub mod export;
 pub mod import;
+pub mod lexer;
 pub mod logged;
 pub mod monitor;
 #[cfg(feature = "mssql")]
@@ -30,6 +31,7 @@ pub mod value;
 pub use dialect::Dialect;
 pub use driver::{detect, driver, drivers, Driver, Field};
 pub use edits::{PendingCellEdit, PendingChanges, PendingRowDelete, PendingRowInsert, RowKey};
+pub use lexer::{parse_dollar_tag, SqlLexer, Token, TokenKind};
 pub use logged::{ActivityLog, LogEntry, LoggedSession};
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresSession;

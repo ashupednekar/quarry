@@ -95,154 +95,74 @@ pub enum TxVerb {
 
 /// Extracts SQL keywords and structure tokens, safely skipping comments, whitespace, and string literals.
 pub fn sql_tokens(sql: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let bytes = sql.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    while i < len {
-        // Skip whitespace
-        if bytes[i].is_ascii_whitespace() {
-            i += 1;
-            continue;
-        }
-        // Single-line comment: -- or #
-        if (i + 1 < len && bytes[i] == b'-' && bytes[i + 1] == b'-') || bytes[i] == b'#' {
-            i = if bytes[i] == b'#' { i + 1 } else { i + 2 };
-            while i < len && bytes[i] != b'\n' {
-                i += 1;
+    crate::lexer::SqlLexer::new(sql)
+        .filter_map(|tok| match tok.kind {
+            crate::lexer::TokenKind::Word(w) => Some(w.to_ascii_uppercase()),
+            crate::lexer::TokenKind::Punctuation(c) if matches!(c, '(' | ')' | ',' | ';') => {
+                Some(c.to_string())
             }
-            continue;
-        }
-        // Multi-line comment: /* ... */
-        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            i += 2;
-            let mut depth = 1;
-            while i + 1 < len && depth > 0 {
-                if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-                    depth += 1;
-                    i += 2;
-                } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    depth -= 1;
-                    i += 2;
-                } else {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        // Single or double quote or backtick strings
-        if bytes[i] == b'\'' || bytes[i] == b'"' || bytes[i] == b'`' {
-            let q = bytes[i];
-            i += 1;
-            while i < len {
-                if bytes[i] == b'\\' {
-                    i += 2;
-                    continue;
-                }
-                if bytes[i] == q {
-                    if i + 1 < len && bytes[i + 1] == q {
-                        i += 2;
-                    } else {
-                        i += 1;
-                        break;
-                    }
-                } else {
-                    i += 1;
-                }
-            }
-            continue;
-        }
-        // Dollar-quoted strings in Postgres ($$ or $tag$)
-        if bytes[i] == b'$' {
-            if let Some((tag, tag_len)) = parse_dollar_tag(&bytes[i..]) {
-                i += tag_len;
-                while i < len {
-                    if bytes[i] == b'$' && bytes[i..].starts_with(tag.as_bytes()) {
-                        i += tag.len();
-                        break;
-                    }
-                    i += 1;
-                }
-                continue;
-            }
-        }
-        // Identifier / keyword word
-        if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
-            let start = i;
-            while i < len && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
-                i += 1;
-            }
-            tokens.push(sql[start..i].to_ascii_uppercase());
-            continue;
-        }
-        // Structural punctuation: (, ), ,, ;
-        if matches!(bytes[i], b'(' | b')' | b',' | b';') {
-            tokens.push((bytes[i] as char).to_string());
-        }
-        i += 1;
-    }
-    tokens
+            _ => None,
+        })
+        .collect()
 }
 
-fn parse_dollar_tag(slice: &[u8]) -> Option<(String, usize)> {
-    if slice.is_empty() || slice[0] != b'$' {
-        return None;
-    }
-    if slice.len() >= 2 && slice[1] == b'$' {
-        return Some(("$$".to_string(), 2));
-    }
-    let mut i = 1;
-    while i < slice.len() {
-        let b = slice[i];
-        if b == b'$' {
-            let tag = String::from_utf8_lossy(&slice[0..=i]).to_string();
-            return Some((tag, i + 1));
-        }
-        if !(b.is_ascii_alphanumeric() || b == b'_') {
-            return None;
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Recognises statements that start or end a transaction, safely skipping comments.
+/// Recognises statements that start or end a transaction, safely skipping comments and literals.
 pub fn tx_verb(sql: &str) -> Option<TxVerb> {
-    let tokens = sql_tokens(sql);
-    let mut iter = tokens.into_iter();
-    match iter.next()?.as_str() {
-        "BEGIN" | "START" => Some(TxVerb::Begin),
-        // ROLLBACK TO SAVEPOINT keeps the transaction open
-        "ROLLBACK" if iter.next().as_deref() == Some("TO") => None,
-        "COMMIT" | "ROLLBACK" | "END" | "ABORT" => Some(TxVerb::End),
+    let mut words = crate::lexer::SqlLexer::new(sql).filter_map(|tok| match tok.kind {
+        crate::lexer::TokenKind::Word(w) => Some(w),
         _ => None,
+    });
+    let first = words.next()?;
+    if first.eq_ignore_ascii_case("BEGIN") || first.eq_ignore_ascii_case("START") {
+        Some(TxVerb::Begin)
+    } else if first.eq_ignore_ascii_case("ROLLBACK") {
+        if words.next().is_some_and(|w| w.eq_ignore_ascii_case("TO")) {
+            None
+        } else {
+            Some(TxVerb::End)
+        }
+    } else if first.eq_ignore_ascii_case("COMMIT")
+        || first.eq_ignore_ascii_case("END")
+        || first.eq_ignore_ascii_case("ABORT")
+    {
+        Some(TxVerb::End)
+    } else {
+        None
     }
 }
 
 /// Plain reads don't open a transaction in manual-commit mode.
 /// Correctly inspects CTEs and handles statements preceded by comments.
 pub fn is_read(sql: &str) -> bool {
-    let tokens = sql_tokens(sql);
-    let first = match tokens.first() {
-        Some(w) => w.as_str(),
-        None => return false,
+    let mut tokens = crate::lexer::SqlLexer::new(sql)
+        .filter(|t| !t.is_comment())
+        .peekable();
+
+    let first = match tokens.peek() {
+        Some(tok) if tok.is_word() => tok.text,
+        _ => return false,
     };
 
-    if matches!(
-        first,
-        "SELECT" | "EXPLAIN" | "SHOW" | "PRAGMA" | "VALUES" | "TABLE"
-    ) {
+    if first.eq_ignore_ascii_case("SELECT")
+        || first.eq_ignore_ascii_case("EXPLAIN")
+        || first.eq_ignore_ascii_case("SHOW")
+        || first.eq_ignore_ascii_case("PRAGMA")
+        || first.eq_ignore_ascii_case("VALUES")
+        || first.eq_ignore_ascii_case("TABLE")
+    {
         return true;
     }
 
     // CTE handling: WITH ...
-    if first == "WITH" {
-        // If any token in the entire query is a mutation verb, it is NOT a pure read.
-        if tokens.iter().any(|t| is_mutation_verb(t.as_str())) {
+    if first.eq_ignore_ascii_case("WITH") {
+        let all_tokens: Vec<crate::lexer::Token> = tokens.collect();
+        if all_tokens.iter().any(|t| match t.kind {
+            crate::lexer::TokenKind::Word(w) => is_mutation_verb(w),
+            _ => false,
+        }) {
             return false;
         }
-        // At depth 0 after the CTE definition, check that the main statement is SELECT / VALUES / TABLE
-        return has_outer_read_verb(&tokens);
+        return has_outer_read_verb_tokens(&all_tokens);
     }
 
     false
@@ -251,10 +171,13 @@ pub fn is_read(sql: &str) -> bool {
 /// Detects whether `sql` is a data-modifying or DDL/administrative mutation.
 /// Accurately analyzes statements with leading comments, CTEs, and procedural calls.
 pub fn is_mutation(sql: &str) -> bool {
-    let tokens = sql_tokens(sql);
-    let first = match tokens.first() {
-        Some(w) => w.as_str(),
-        None => return false,
+    let mut tokens = crate::lexer::SqlLexer::new(sql)
+        .filter(|t| !t.is_comment())
+        .peekable();
+
+    let first = match tokens.peek() {
+        Some(tok) if tok.is_word() => tok.text,
+        _ => return false,
     };
 
     if is_mutation_verb(first) {
@@ -262,16 +185,20 @@ pub fn is_mutation(sql: &str) -> bool {
     }
 
     // CTE handling: WITH ... (can contain mutating CTEs like WITH d AS (DELETE ...) or outer INSERT)
-    if first == "WITH" {
-        return tokens.iter().any(|t| is_mutation_verb(t.as_str()));
+    if first.eq_ignore_ascii_case("WITH") {
+        return tokens.any(|t| match t.kind {
+            crate::lexer::TokenKind::Word(w) => is_mutation_verb(w),
+            _ => false,
+        });
     }
 
     false
 }
 
 fn is_mutation_verb(verb: &str) -> bool {
+    let upper = verb.to_ascii_uppercase();
     matches!(
-        verb,
+        upper.as_str(),
         "INSERT"
             | "UPDATE"
             | "DELETE"
@@ -294,27 +221,30 @@ fn is_mutation_verb(verb: &str) -> bool {
     )
 }
 
-fn has_outer_read_verb(tokens: &[String]) -> bool {
+fn has_outer_read_verb_tokens(tokens: &[crate::lexer::Token]) -> bool {
     let mut depth = 0;
     let mut in_cte_head = true;
     for token in tokens.iter().skip(1) {
-        match token.as_str() {
-            "(" => depth += 1,
-            ")" => {
-                if depth > 0 {
-                    depth -= 1;
-                }
-                if depth == 0 {
-                    in_cte_head = false;
-                }
+        if token.is_punct('(') {
+            depth += 1;
+        } else if token.is_punct(')') {
+            if depth > 0 {
+                depth -= 1;
             }
-            "," if depth == 0 => in_cte_head = true,
-            verb if depth == 0 && !in_cte_head => {
-                if matches!(verb, "SELECT" | "VALUES" | "TABLE") {
+            if depth == 0 {
+                in_cte_head = false;
+            }
+        } else if token.is_punct(',') && depth == 0 {
+            in_cte_head = true;
+        } else if depth == 0 && !in_cte_head {
+            if let crate::lexer::TokenKind::Word(w) = token.kind {
+                if w.eq_ignore_ascii_case("SELECT")
+                    || w.eq_ignore_ascii_case("VALUES")
+                    || w.eq_ignore_ascii_case("TABLE")
+                {
                     return true;
                 }
             }
-            _ => {}
         }
     }
     false
