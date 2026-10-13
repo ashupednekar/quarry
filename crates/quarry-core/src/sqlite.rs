@@ -14,9 +14,8 @@ use async_trait::async_trait;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 pub struct SqliteDriver;
 pub static DRIVER: SqliteDriver = SqliteDriver;
@@ -136,112 +135,134 @@ impl SqliteSession {
             tx: TxState::default(),
         })
     }
+
+    /// Runs `f` with the connection on Tokio's blocking thread pool so heavy disk I/O
+    /// or large row decodings never stall async executor threads.
+    async fn with<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T, DbError> + Send + 'static,
+    ) -> Result<T, DbError> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = conn
+                .lock()
+                .map_err(|_| DbError::Internal("connection poisoned".into()))?;
+            f(&mut guard)
+        })
+        .await
+        .map_err(|e| DbError::Internal(e.to_string()))?
+    }
+}
+
+fn introspect_sqlite(conn: &mut Connection) -> Result<SchemaCatalog, DbError> {
+    let mut stmt = conn
+        .prepare("SELECT type, name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .map_err(sql_err)?;
+
+    let table_rows = stmt
+        .query_map([], |row| {
+            let kind: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            Ok((kind == "view", name))
+        })
+        .map_err(sql_err)?;
+
+    let mut tables = Vec::new();
+
+    for table in table_rows {
+        let (is_view, table_name) = table.map_err(sql_err)?;
+
+        // Fetch columns using PRAGMA table_info
+        let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
+        let mut pragma_stmt = conn.prepare(&pragma_sql).map_err(sql_err)?;
+
+        let mut columns = Vec::new();
+        let mut pks = Vec::new();
+
+        let col_rows = pragma_stmt
+            .query_map([], |row| {
+                let cid: i64 = row.get(0)?;
+                let name: String = row.get(1)?;
+                let raw_type: String = row.get(2)?;
+                let notnull: i32 = row.get(3)?;
+                let dflt_value: Option<String> = row.get(4)?;
+                let pk_pos: i32 = row.get(5)?;
+
+                Ok((cid as usize, name, raw_type, notnull, dflt_value, pk_pos))
+            })
+            .map_err(sql_err)?;
+
+        for col in col_rows {
+            let (cid, col_name, raw_type, notnull, dflt, pk) = col.map_err(sql_err)?;
+            let is_pk = pk > 0;
+            if is_pk {
+                pks.push(col_name.clone());
+            }
+
+            columns.push(ColumnSchema {
+                name: col_name,
+                data_type: ColumnType::from_sql_str(&raw_type),
+                raw_type_name: raw_type,
+                is_nullable: notnull == 0,
+                is_primary_key: is_pk,
+                default_value: dflt,
+                ordinal_position: cid,
+            });
+        }
+
+        // Fetch foreign keys
+        let mut fks = Vec::new();
+        let fk_pragma = format!(
+            "PRAGMA foreign_key_list(\"{}\")",
+            table_name.replace('"', "\"\"")
+        );
+        if let Ok(mut fk_stmt) = conn.prepare(&fk_pragma) {
+            if let Ok(fk_rows) = fk_stmt.query_map([], |row| {
+                Ok(ForeignKeyRef {
+                    to_schema: "main".to_string(),
+                    to_table: row.get(2)?,
+                    from_column: row.get(3)?,
+                    to_column: row.get(4)?,
+                })
+            }) {
+                for fk in fk_rows.flatten() {
+                    fks.push(fk);
+                }
+            }
+        }
+
+        tables.push(TableSchema {
+            schema_name: "main".to_string(),
+            table_name,
+            is_view,
+            columns,
+            primary_keys: pks,
+            foreign_keys: fks,
+        });
+    }
+
+    Ok(SchemaCatalog {
+        schemas: vec!["main".to_string()],
+        tables,
+        default_schema: Some("main".to_string()),
+        ..Default::default()
+    })
 }
 
 #[async_trait]
 impl DatabaseSession for SqliteSession {
     async fn ping(&self) -> Result<Duration, DbError> {
         let start = Instant::now();
-        let conn = self.conn.lock().await;
-        conn.execute("SELECT 1", []).map_err(sql_err)?;
+        self.with(|conn| {
+            conn.execute("SELECT 1", []).map_err(sql_err)?;
+            Ok(())
+        })
+        .await?;
         Ok(start.elapsed())
     }
 
     async fn introspect(&self) -> Result<SchemaCatalog, DbError> {
-        let conn = self.conn.lock().await;
-
-        let mut stmt = conn
-            .prepare("SELECT type, name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name")
-            .map_err(sql_err)?;
-
-        let table_rows = stmt
-            .query_map([], |row| {
-                let kind: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                Ok((kind == "view", name))
-            })
-            .map_err(sql_err)?;
-
-        let mut tables = Vec::new();
-
-        for table in table_rows {
-            let (is_view, table_name) = table.map_err(sql_err)?;
-
-            // Fetch columns using PRAGMA table_info
-            let pragma_sql = format!("PRAGMA table_info(\"{}\")", table_name.replace('"', "\"\""));
-            let mut pragma_stmt = conn.prepare(&pragma_sql).map_err(sql_err)?;
-
-            let mut columns = Vec::new();
-            let mut pks = Vec::new();
-
-            let col_rows = pragma_stmt
-                .query_map([], |row| {
-                    let cid: i64 = row.get(0)?;
-                    let name: String = row.get(1)?;
-                    let raw_type: String = row.get(2)?;
-                    let notnull: i32 = row.get(3)?;
-                    let dflt_value: Option<String> = row.get(4)?;
-                    let pk_pos: i32 = row.get(5)?;
-
-                    Ok((cid as usize, name, raw_type, notnull, dflt_value, pk_pos))
-                })
-                .map_err(sql_err)?;
-
-            for col in col_rows {
-                let (cid, col_name, raw_type, notnull, dflt, pk) = col.map_err(sql_err)?;
-                let is_pk = pk > 0;
-                if is_pk {
-                    pks.push(col_name.clone());
-                }
-
-                columns.push(ColumnSchema {
-                    name: col_name,
-                    data_type: ColumnType::from_sql_str(&raw_type),
-                    raw_type_name: raw_type,
-                    is_nullable: notnull == 0,
-                    is_primary_key: is_pk,
-                    default_value: dflt,
-                    ordinal_position: cid,
-                });
-            }
-
-            // Fetch foreign keys
-            let mut fks = Vec::new();
-            let fk_pragma = format!(
-                "PRAGMA foreign_key_list(\"{}\")",
-                table_name.replace('"', "\"\"")
-            );
-            if let Ok(mut fk_stmt) = conn.prepare(&fk_pragma) {
-                if let Ok(fk_rows) = fk_stmt.query_map([], |row| {
-                    Ok(ForeignKeyRef {
-                        to_schema: "main".to_string(),
-                        to_table: row.get(2)?,
-                        from_column: row.get(3)?,
-                        to_column: row.get(4)?,
-                    })
-                }) {
-                    for fk in fk_rows.flatten() {
-                        fks.push(fk);
-                    }
-                }
-            }
-
-            tables.push(TableSchema {
-                schema_name: "main".to_string(),
-                table_name,
-                is_view,
-                columns,
-                primary_keys: pks,
-                foreign_keys: fks,
-            });
-        }
-
-        Ok(SchemaCatalog {
-            schemas: vec!["main".to_string()],
-            tables,
-            default_schema: Some("main".to_string()),
-            ..Default::default()
-        })
+        self.with(introspect_sqlite).await
     }
 
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError> {
@@ -250,14 +271,22 @@ impl DatabaseSession for SqliteSession {
         }
 
         let start = Instant::now();
-        let conn = self.conn.lock().await;
-        // Manual-commit mode: the first statement opens a transaction the user commits explicitly (E9)
-        if self.tx.manual() && conn.is_autocommit() && tx_verb(sql).is_none() && !is_read(sql) {
-            conn.execute_batch("BEGIN").map_err(sql_err)?;
-        }
-        let result = run_statement(&conn, sql, start);
-        self.tx.set_open(!conn.is_autocommit());
-        result
+        let sql = sql.to_string();
+        let manual = self.tx.manual();
+        let opens = manual && tx_verb(&sql).is_none() && !is_read(&sql);
+        let (result, is_open) = self
+            .with(move |conn| {
+                // Manual-commit mode: the first statement opens a transaction the user commits explicitly (E9)
+                if opens && conn.is_autocommit() {
+                    conn.execute_batch("BEGIN").map_err(sql_err)?;
+                }
+                let res = run_statement(conn, &sql, start);
+                let open = !conn.is_autocommit();
+                res.map(|r| (r, open))
+            })
+            .await?;
+        self.tx.set_open(is_open);
+        Ok(result)
     }
 
     async fn apply_edits(
@@ -274,23 +303,27 @@ impl DatabaseSession for SqliteSession {
             return Ok(0);
         }
 
-        let mut conn = self.conn.lock().await;
-        if self.tx.manual() && conn.is_autocommit() {
-            conn.execute_batch("BEGIN").map_err(sql_err)?;
-        }
+        let manual = self.tx.manual();
+        let count = statements.len();
         // A savepoint works inside or outside a transaction. Dropping it on an early return rolls
         // this batch back (E8: nothing partial is applied) without ending an outer transaction.
-        let result = (|| {
-            let sp = conn.savepoint().map_err(sql_err)?;
-            for sql in &statements {
-                if sp.execute(sql, []).map_err(sql_err)? != 1 {
-                    return Err(DbError::ConcurrentModification);
+        let is_open = self
+            .with(move |conn| {
+                if manual && conn.is_autocommit() {
+                    conn.execute_batch("BEGIN").map_err(sql_err)?;
                 }
-            }
-            sp.commit().map_err(sql_err)
-        })();
-        self.tx.set_open(!conn.is_autocommit());
-        result.map(|_| statements.len())
+                let sp = conn.savepoint().map_err(sql_err)?;
+                for sql in &statements {
+                    if sp.execute(sql, []).map_err(sql_err)? != 1 {
+                        return Err(DbError::ConcurrentModification);
+                    }
+                }
+                sp.commit().map_err(sql_err)?;
+                Ok(!conn.is_autocommit())
+            })
+            .await?;
+        self.tx.set_open(is_open);
+        Ok(count)
     }
 
     fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
@@ -299,21 +332,23 @@ impl DatabaseSession for SqliteSession {
 
     /// SQLite's only schema objects besides tables and views are triggers (and indexes, shown per table)
     async fn objects(&self, _schema: &str) -> Result<Vec<crate::schema::SchemaObject>, DbError> {
-        let conn = self.conn.lock().await;
-        let r = run_statement(
-            &conn,
-            "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
-            Instant::now(),
-        )?;
-        Ok(r.rows
-            .iter()
-            .map(|row| crate::schema::SchemaObject {
-                kind: crate::schema::ObjectKind::Trigger,
-                name: row[0].to_display_string(),
-                detail: format!("on {}", row[1].to_display_string()),
-                id: String::new(),
-            })
-            .collect())
+        self.with(|conn| {
+            let r = run_statement(
+                conn,
+                "SELECT name, tbl_name FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+                Instant::now(),
+            )?;
+            Ok(r.rows
+                .iter()
+                .map(|row| crate::schema::SchemaObject {
+                    kind: crate::schema::ObjectKind::Trigger,
+                    name: row[0].to_display_string(),
+                    detail: format!("on {}", row[1].to_display_string()),
+                    id: String::new(),
+                })
+                .collect())
+        })
+        .await
     }
 
     async fn object_ddl(
@@ -321,54 +356,60 @@ impl DatabaseSession for SqliteSession {
         _schema: &str,
         obj: &crate::schema::SchemaObject,
     ) -> Result<String, DbError> {
-        let conn = self.conn.lock().await;
         let name = obj.name.replace('\'', "''");
-        let r = run_statement(
-            &conn,
-            &format!("SELECT sql FROM sqlite_master WHERE name = '{name}'"),
-            Instant::now(),
-        )?;
-        r.rows
-            .first()
-            .map(|row| format!("{};", row[0].to_display_string()))
-            .ok_or_else(|| DbError::SqlError(format!("{} no longer exists", obj.name)))
+        let obj_name = obj.name.clone();
+        self.with(move |conn| {
+            let r = run_statement(
+                conn,
+                &format!("SELECT sql FROM sqlite_master WHERE name = '{name}'"),
+                Instant::now(),
+            )?;
+            r.rows
+                .first()
+                .map(|row| format!("{};", row[0].to_display_string()))
+                .ok_or_else(|| DbError::SqlError(format!("{obj_name} no longer exists")))
+        })
+        .await
     }
 
     /// SQLite keeps each object's DDL
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
-        let name = format!("'{}'", table.table_name.replace('\'', "''"));
-        let conn = self.conn.lock().await;
-        let ddl = run_statement(&conn, &format!("SELECT sql FROM sqlite_master WHERE tbl_name = {name} AND sql IS NOT NULL ORDER BY type = 'index', name"), Instant::now())?;
-        let indexes = run_statement(
-            &conn,
-            &format!("SELECT il.name, il.\"unique\", (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) FROM pragma_index_list({name}) il ORDER BY il.name"),
-            Instant::now(),
-        )?;
-        let ddl = ddl
-            .rows
-            .iter()
-            .map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';')))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let triggers = run_statement(&conn, &format!("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = {name} ORDER BY name"), Instant::now());
-        // Exact count: SQLite keeps no estimate, and local files are small enough
-        let quoted = format!("\"{}\"", table.table_name.replace('"', "\"\""));
-        let stats = run_statement(
-            &conn,
-            &format!("SELECT count(*) AS \"Rows\" FROM {quoted}"),
-            Instant::now(),
-        );
-        Ok(TableInfo {
-            ddl,
-            indexes: crate::schema::index_rows(&indexes),
-            triggers: triggers
-                .map(|r| crate::schema::pair_rows(&r))
-                .unwrap_or_default(),
-            stats: stats
-                .map(|r| crate::schema::labelled_row(&r))
-                .unwrap_or_default(),
-            ..Default::default()
+        let table = table.clone();
+        self.with(move |conn| {
+            let name = format!("'{}'", table.table_name.replace('\'', "''"));
+            let ddl = run_statement(conn, &format!("SELECT sql FROM sqlite_master WHERE tbl_name = {name} AND sql IS NOT NULL ORDER BY type = 'index', name"), Instant::now())?;
+            let indexes = run_statement(
+                conn,
+                &format!("SELECT il.name, il.\"unique\", (SELECT group_concat(ii.name, ', ') FROM pragma_index_info(il.name) ii) FROM pragma_index_list({name}) il ORDER BY il.name"),
+                Instant::now(),
+            )?;
+            let ddl = ddl
+                .rows
+                .iter()
+                .map(|r| format!("{};", r[0].to_display_string().trim_end_matches(';')))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let triggers = run_statement(conn, &format!("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = {name} ORDER BY name"), Instant::now());
+            // Exact count: SQLite keeps no estimate, and local files are small enough
+            let quoted = format!("\"{}\"", table.table_name.replace('"', "\"\""));
+            let stats = run_statement(
+                conn,
+                &format!("SELECT count(*) AS \"Rows\" FROM {quoted}"),
+                Instant::now(),
+            );
+            Ok(TableInfo {
+                ddl,
+                indexes: crate::schema::index_rows(&indexes),
+                triggers: triggers
+                    .map(|r| crate::schema::pair_rows(&r))
+                    .unwrap_or_default(),
+                stats: stats
+                    .map(|r| crate::schema::labelled_row(&r))
+                    .unwrap_or_default(),
+                ..Default::default()
+            })
         })
+        .await
     }
 
     fn is_read_only(&self) -> bool {
@@ -457,7 +498,10 @@ impl SqliteSession {
         sql: &str,
         mut f: impl FnMut(&[String], Vec<DbValue>) -> Result<(), String>,
     ) -> Result<usize, String> {
-        let conn = self.conn.lock().await;
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "connection poisoned".to_string())?;
         let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
         let cols: Vec<String> = stmt.column_names().into_iter().map(String::from).collect();
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;

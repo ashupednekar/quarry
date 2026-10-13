@@ -173,12 +173,9 @@ pub fn apply_keymap(cx: &mut App) -> Vec<String> {
     let mut errors = Vec::new();
     let mut bindings = Vec::new();
     for e in entries {
-        let action = match cx.build_action(&e.action, None) {
-            Ok(a) => a,
-            Err(_) => {
-                errors.push(format!("keymap.json: unknown action \"{}\"", e.action));
-                continue;
-            }
+        let Ok(action) = cx.build_action(&e.action, None) else {
+            errors.push(format!("keymap.json: unknown action \"{}\"", e.action));
+            continue;
         };
         let context = match e
             .context

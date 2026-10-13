@@ -68,13 +68,26 @@ pub fn save(profiles: &[ConnectionProfile]) -> Result<(), String> {
         });
     }
     let path = config_path().ok_or("no home directory")?;
-    std::fs::create_dir_all(path.parent().expect("has parent")).map_err(|e| e.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let json = serde_json::to_string_pretty(&stored).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&path, json).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

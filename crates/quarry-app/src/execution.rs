@@ -198,7 +198,23 @@ impl QuarryWindow {
             (done, None)
         };
         run_db(window, cx, fut, move |this, (done, failure), window, cx| {
+            let conn_name = this
+                .state
+                .active_connection
+                .as_ref()
+                .map_or_else(|| "active".to_string(), |c| c.name.clone());
             for res in &done {
+                let stmt_line = res
+                    .statement
+                    .lines()
+                    .next()
+                    .unwrap_or(&res.statement)
+                    .trim();
+                tracing::info!(
+                    "[{conn_name}] Executed in {:.2}ms ({} rows affected): \"{stmt_line}\"",
+                    res.execution_time.as_secs_f64() * 1000.0,
+                    res.rows_affected
+                );
                 this.state.messages.push(format!(
                     "Ran: \"{}\" -> {} rows in {:.2}ms",
                     res.statement,
@@ -214,6 +230,7 @@ impl QuarryWindow {
             }
             let failed_ix = failure.as_ref().map(|(ix, _)| *ix);
             let failure_msg = failure.map(|(ix, err)| {
+                tracing::error!("[{conn_name}] Error on statement {}: {err}", ix + 1);
                 this.state.record_history(
                     statements[ix].clone(),
                     Default::default(),

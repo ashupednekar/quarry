@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DbValue {
@@ -40,31 +41,31 @@ impl DbValue {
         }
     }
 
-    /// User-friendly display string for cell rendering
-    pub fn to_display_string(&self) -> String {
+    /// User-friendly display string for cell rendering, borrowing where possible to avoid heap allocations.
+    pub fn to_display_cow(&self) -> Cow<'_, str> {
         match self {
-            DbValue::Null => "NULL".to_string(),
-            DbValue::Boolean(b) => {
-                if *b {
-                    "true".to_string()
-                } else {
-                    "false".to_string()
-                }
-            }
-            DbValue::Int(i) => i.to_string(),
+            DbValue::Null => Cow::Borrowed("NULL"),
+            DbValue::Boolean(true) => Cow::Borrowed("true"),
+            DbValue::Boolean(false) => Cow::Borrowed("false"),
+            DbValue::Int(i) => Cow::Owned(i.to_string()),
             DbValue::Float(f) => {
                 if f.fract() == 0.0 {
-                    format!("{:.1}", f)
+                    Cow::Owned(format!("{:.1}", f))
                 } else {
-                    f.to_string()
+                    Cow::Owned(f.to_string())
                 }
             }
-            DbValue::Decimal(s) | DbValue::Text(s) => s.clone(),
-            DbValue::Blob(b) => format!("<blob {} B>", b.len()),
-            DbValue::Timestamp(ts) => ts.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-            DbValue::Json(j) => j.to_string(),
-            DbValue::Expr(e) => e.clone(),
+            DbValue::Decimal(s) | DbValue::Text(s) => Cow::Borrowed(s.as_str()),
+            DbValue::Blob(b) => Cow::Owned(format!("<blob {} B>", b.len())),
+            DbValue::Timestamp(ts) => Cow::Owned(ts.format("%Y-%m-%d %H:%M:%S UTC").to_string()),
+            DbValue::Json(j) => Cow::Owned(j.to_string()),
+            DbValue::Expr(e) => Cow::Borrowed(e.as_str()),
         }
+    }
+
+    /// User-friendly display string for cell rendering
+    pub fn to_display_string(&self) -> String {
+        self.to_display_cow().into_owned()
     }
 
     /// SQL literal representation for generating valid UPDATE/INSERT queries
@@ -118,6 +119,58 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 impl std::fmt::Display for DbValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_display_string())
+        match self {
+            DbValue::Null => f.write_str("NULL"),
+            DbValue::Boolean(true) => f.write_str("true"),
+            DbValue::Boolean(false) => f.write_str("false"),
+            DbValue::Int(i) => write!(f, "{i}"),
+            DbValue::Float(fl) => {
+                if fl.fract() == 0.0 {
+                    write!(f, "{:.1}", fl)
+                } else {
+                    write!(f, "{fl}")
+                }
+            }
+            DbValue::Decimal(s) | DbValue::Text(s) => f.write_str(s),
+            DbValue::Blob(b) => write!(f, "<blob {} B>", b.len()),
+            DbValue::Timestamp(ts) => write!(f, "{}", ts.format("%Y-%m-%d %H:%M:%S UTC")),
+            DbValue::Json(j) => write!(f, "{j}"),
+            DbValue::Expr(e) => f.write_str(e),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_to_display_cow_borrowing() {
+        assert!(matches!(
+            DbValue::Null.to_display_cow(),
+            Cow::Borrowed("NULL")
+        ));
+        assert!(matches!(
+            DbValue::Boolean(true).to_display_cow(),
+            Cow::Borrowed("true")
+        ));
+        assert!(matches!(
+            DbValue::Boolean(false).to_display_cow(),
+            Cow::Borrowed("false")
+        ));
+        let text = DbValue::Text("hello world".to_string());
+        assert!(matches!(
+            text.to_display_cow(),
+            Cow::Borrowed("hello world")
+        ));
+        let dec = DbValue::Decimal("123.456".to_string());
+        assert!(matches!(dec.to_display_cow(), Cow::Borrowed("123.456")));
+        let expr = DbValue::Expr("NOW()".to_string());
+        assert!(matches!(expr.to_display_cow(), Cow::Borrowed("NOW()")));
+        let int = DbValue::Int(42);
+        assert_eq!(int.to_display_cow().as_ref(), "42");
+        assert_eq!(format!("{text}"), "hello world");
+        assert_eq!(format!("{int}"), "42");
+        assert_eq!(format!("{}", DbValue::Null), "NULL");
     }
 }

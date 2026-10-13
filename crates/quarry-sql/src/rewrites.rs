@@ -75,7 +75,12 @@ fn expand_star(body: &str, catalog: &SchemaCatalog) -> Option<String> {
             .filter(|r| only.is_none_or(|q| r.qualifier().eq_ignore_ascii_case(q)))
             .flat_map(|r| {
                 let q = r.qualifier();
-                r.table.unwrap().columns.iter().map(move |c| {
+                let columns = r
+                    .table
+                    .as_ref()
+                    .map(|t| t.columns.as_slice())
+                    .unwrap_or_default();
+                columns.iter().map(move |c| {
                     if qualify || only.is_some() {
                         format!("{q}.{}", c.name)
                     } else {

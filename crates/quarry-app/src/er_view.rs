@@ -31,10 +31,22 @@ const ZOOM_MAX: f32 = 2.5;
 type Wire = (Point<f32>, bool, Point<f32>, bool, bool);
 
 /// One foreign key: (card, column) → (card, column), indices into `Diagram::cards`
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Edge {
     pub from: (usize, usize),
     pub to: (usize, usize),
+}
+
+/// Retained layout cache for the ER diagram canvas to avoid per-frame graph traversals
+#[derive(Clone, Debug, Default)]
+pub struct DiagramLayoutCache {
+    pub key: (String, String, usize, usize),
+    pub card_keys: Vec<(String, String, i32)>,
+    pub edges: Vec<Edge>,
+    pub pos: Vec<Point<f32>>,
+    pub min_level: i32,
+    pub width: f32,
+    pub height: f32,
 }
 
 pub struct Diagram<'a> {
@@ -174,22 +186,54 @@ impl QuarryWindow {
                 .into_any_element();
         };
         let depth = (self.diagram_depth > 0).then_some(self.diagram_depth);
-        let Diagram { cards, edges } = diagram(&self.state.catalog, center, depth);
+        let depth_val = self.diagram_depth;
+        let cat_len = self.state.catalog.tables.len();
+        let cache_key = (schema.to_string(), table.to_string(), depth_val, cat_len);
 
-        // Columns by level, cards stacked top-down in the order they were found
-        let min_level = cards.iter().map(|c| c.1).min().unwrap_or(0);
-        let mut next_y: HashMap<i32, f32> = HashMap::new();
-        let pos: Vec<Point<f32>> = cards
+        let mut cache = self.diagram_layout.borrow_mut();
+        let is_hit = cache.as_ref().is_some_and(|c| c.key == cache_key);
+        if !is_hit {
+            let Diagram { cards, edges } = diagram(&self.state.catalog, center, depth);
+            let min_level = cards.iter().map(|c| c.1).min().unwrap_or(0);
+            let mut next_y: HashMap<i32, f32> = HashMap::new();
+            let pos: Vec<Point<f32>> = cards
+                .iter()
+                .map(|(tbl, level)| {
+                    let y = next_y.entry(*level).or_insert(PAD + CAPTION_H);
+                    let p = point(PAD + (level - min_level) as f32 * (CARD_W + GAP_X), *y);
+                    *y += HEADER_H + tbl.columns.len() as f32 * ROW_H + 8.0 + GAP_Y;
+                    p
+                })
+                .collect();
+            let width = pos.iter().map(|p| p.x + CARD_W + PAD).fold(0.0, f32::max);
+            let height = next_y.values().copied().fold(0.0, f32::max);
+            let card_keys = cards
+                .iter()
+                .map(|(t, l)| (t.schema_name.clone(), t.table_name.clone(), *l))
+                .collect();
+            *cache = Some(DiagramLayoutCache {
+                key: cache_key,
+                card_keys,
+                edges,
+                pos,
+                min_level,
+                width,
+                height,
+            });
+        }
+        let cached = cache.as_ref().unwrap();
+        let card_keys = cached.card_keys.clone();
+        let edges = cached.edges.clone();
+        let pos = cached.pos.clone();
+        let min_level = cached.min_level;
+        let width = cached.width;
+        let height = cached.height;
+        drop(cache);
+
+        let cards: Vec<(&TableSchema, i32)> = card_keys
             .iter()
-            .map(|(tbl, level)| {
-                let y = next_y.entry(*level).or_insert(PAD + CAPTION_H);
-                let p = point(PAD + (level - min_level) as f32 * (CARD_W + GAP_X), *y);
-                *y += HEADER_H + tbl.columns.len() as f32 * ROW_H + 8.0 + GAP_Y;
-                p
-            })
+            .filter_map(|(s, n, l)| self.state.catalog.find_table(Some(s), n).map(|t| (t, *l)))
             .collect();
-        let width = pos.iter().map(|p| p.x + CARD_W + PAD).fold(0.0, f32::max);
-        let height = next_y.values().copied().fold(0.0, f32::max);
         // Layout is in unzoomed units; `z` scales fixed sizes, and the rem size scales text and spacing
         let z = self.diagram_zoom;
         let sz = move |v: f32| px(v * z);

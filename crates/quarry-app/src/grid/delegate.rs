@@ -40,7 +40,7 @@ impl TableDelegate for ResultSet {
             .iter()
             .take(50)
             .filter_map(|row| row.get(col_ix))
-            .map(|v| v.to_display_string().chars().count())
+            .map(|v| v.to_display_cow().chars().count())
             .chain([name.chars().count() + 4])
             .max()
             .unwrap_or(8);
@@ -545,7 +545,7 @@ impl TableDelegate for ResultSet {
                 .into_any_element();
         }
         let state = self.row_state(row_ix);
-        let (value, edited) = self.cell_value(row_ix, col_ix);
+        let (value, edited) = self.cell_value_ref(row_ix, col_ix);
         let numeric = matches!(
             value,
             Some(DbValue::Int(_) | DbValue::Float(_) | DbValue::Decimal(_))
@@ -558,25 +558,28 @@ impl TableDelegate for ResultSet {
                 .text_color(fg)
                 .child(label)
         };
-        let content = match &value {
+        let content = match value {
             None => token("DEFAULT".into(), c.muted).into_any_element(),
             Some(DbValue::Null) => token(self.null_label.clone(), c.muted).into_any_element(),
             Some(DbValue::Expr(_)) => token("DEFAULT".into(), c.muted).into_any_element(),
             Some(DbValue::Boolean(true)) => token("true".into(), c.success).into_any_element(),
             Some(DbValue::Boolean(false)) => token("false".into(), c.danger).into_any_element(),
-            Some(v) => div()
-                .text_color(if state == RowState::Deleted {
-                    c.muted
-                } else if self.is_error_row(row_ix) {
-                    c.danger
-                } else {
-                    c.text
-                })
-                .when(state == RowState::Deleted, |d| d.line_through())
-                .when(is_fk && state != RowState::Deleted, |d| d.underline())
-                .truncate()
-                .child(v.to_display_string())
-                .into_any_element(),
+            Some(v) => {
+                let text: SharedString = SharedString::from(v.to_display_cow().as_ref());
+                div()
+                    .text_color(if state == RowState::Deleted {
+                        c.muted
+                    } else if self.is_error_row(row_ix) {
+                        c.danger
+                    } else {
+                        c.text
+                    })
+                    .when(state == RowState::Deleted, |d| d.line_through())
+                    .when(is_fk && state != RowState::Deleted, |d| d.underline())
+                    .truncate()
+                    .child(text)
+                    .into_any_element()
+            }
         };
         // Column divider on the cell's true right edge: the table pads cells 8px sideways and 4px up and down (Size::Medium)
         let divider = div()

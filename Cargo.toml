@@ -36,7 +36,7 @@ thiserror = "2.0"
 # gpui-kit re-exports gpui (gpui-pre) plus platform + components; aliased so `use gpui::*` stays
 gpui = { package = "gpui-kit", version = "=0.7.1", features = ["tree-sitter-sql"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.11", features = ["v4"] }
 crossbeam-channel = "0.5"
 keyring = "4.2"
@@ -46,7 +46,18 @@ sqlformat = "0.5"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+manual_let_else = "warn"
+
 # Dev builds keep our crates debuggable but optimize dependencies: unoptimized gpui/taffy
 # made a 50-card diagram take ~180 ms a frame
 [profile.dev.package."*"]
 opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

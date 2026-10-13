@@ -18,6 +18,53 @@ use std::rc::Rc;
 pub type SharedCatalog = Rc<RefCell<SchemaCatalog>>;
 pub type SharedDialect = Rc<std::cell::Cell<&'static dyn quarry_core::Dialect>>;
 
+/// Extracts the SQL text, local offset, and replacement range around the cursor.
+/// For small documents (<= 16KB), returns the full text. For large documents,
+/// slices a localized window around the cursor to avoid full buffer clones.
+fn slice_completion_context(text: &Rope, offset: usize) -> (String, usize, lsp_types::Range) {
+    let total_bytes = text.len();
+    let offset = offset.min(total_bytes);
+
+    if total_bytes <= 16 * 1024 {
+        let sql = text.to_string();
+        let start = sql[..offset]
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let range = lsp_types::Range {
+            start: text.offset_to_position(start),
+            end: text.offset_to_position(offset),
+        };
+        (sql, offset, range)
+    } else {
+        // Find statement boundaries around offset to avoid cloning the entire buffer
+        let scan_back = text.floor_char_boundary(offset.saturating_sub(8192));
+        let back_slice = text.slice(scan_back..offset).to_string();
+        let stmt_start = match back_slice.rfind(';') {
+            Some(semi) => text.floor_char_boundary(scan_back + semi + 1),
+            None => scan_back,
+        };
+
+        let scan_fwd = text.ceil_char_boundary((offset + 8192).min(total_bytes));
+        let fwd_slice = text.slice(offset..scan_fwd).to_string();
+        let stmt_end = match fwd_slice.find(';') {
+            Some(semi) => text.ceil_char_boundary((offset + semi + 1).min(total_bytes)),
+            None => scan_fwd,
+        };
+
+        let sql = text.slice(stmt_start..stmt_end).to_string();
+        let local_offset = offset.saturating_sub(stmt_start).min(sql.len());
+        let local_start = sql[..local_offset]
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let abs_start = stmt_start + local_start;
+        let range = lsp_types::Range {
+            start: text.offset_to_position(abs_start),
+            end: text.offset_to_position(offset),
+        };
+        (sql, local_offset, range)
+    }
+}
+
 pub struct SchemaCompletions(pub SharedCatalog);
 
 impl CompletionProvider for SchemaCompletions {
@@ -27,37 +74,31 @@ impl CompletionProvider for SchemaCompletions {
         offset: usize,
         _: CompletionContext,
         _: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
-        let sql = text.to_string();
-        let offset = offset.min(sql.len());
-        // Replace the identifier being typed
-        let start = sql[..offset]
-            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .map_or(0, |i| i + 1);
-        let range = lsp_types::Range {
-            start: text.offset_to_position(start),
-            end: text.offset_to_position(offset),
-        };
-        let items = SchemaCompleter::complete(&sql, offset, &self.0.borrow())
-            .into_iter()
-            .map(|c| CompletionItem {
-                kind: Some(match c.kind {
-                    CompletionKind::Keyword => CompletionItemKind::KEYWORD,
-                    CompletionKind::Table => CompletionItemKind::STRUCT,
-                    CompletionKind::Column => CompletionItemKind::FIELD,
-                    CompletionKind::Schema => CompletionItemKind::MODULE,
-                }),
-                detail: c.detail,
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range,
-                    new_text: c.label.clone(),
-                })),
-                label: c.label,
-                ..Default::default()
-            })
-            .collect();
-        Task::ready(Ok(CompletionResponse::Array(items)))
+        let (sql, local_offset, range) = slice_completion_context(text, offset);
+        let catalog = self.0.borrow().clone();
+        cx.background_executor().spawn(async move {
+            let items = SchemaCompleter::complete(&sql, local_offset, &catalog)
+                .into_iter()
+                .map(|c| CompletionItem {
+                    kind: Some(match c.kind {
+                        CompletionKind::Keyword => CompletionItemKind::KEYWORD,
+                        CompletionKind::Table => CompletionItemKind::STRUCT,
+                        CompletionKind::Column => CompletionItemKind::FIELD,
+                        CompletionKind::Schema => CompletionItemKind::MODULE,
+                    }),
+                    detail: c.detail,
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: c.label.clone(),
+                    })),
+                    label: c.label,
+                    ..Default::default()
+                })
+                .collect();
+            Ok(CompletionResponse::Array(items))
+        })
     }
 
     /// Typing a word character or `.` (for table.column) opens suggestions

@@ -107,73 +107,143 @@ const SQL_VERBS: &[&str] = &[
 ];
 
 /// Higher is better; `None` is no match. Characters must appear in order (fuzzy), rewarded for
-/// runs, word starts and prefixes. For queries of 4+ characters one typo is forgiven.
+/// Match quality: None = no match. Higher = better match. Rewards consecutive runs, word starts
+/// and prefixes. For queries of 4+ characters one typo is forgiven.
+#[allow(dead_code)]
 pub fn fuzzy_score(query: &str, target: &str) -> Option<i32> {
-    let q: Vec<char> = query
-        .to_lowercase()
-        .chars()
-        .filter(|c| !c.is_whitespace())
-        .collect();
-    if q.is_empty() {
-        return Some(0);
+    FuzzyQuery::new(query).score(target)
+}
+
+/// Pre-processed query for allocation-free scoring across many candidate targets.
+pub struct FuzzyQuery {
+    chars: Vec<char>,
+}
+
+impl FuzzyQuery {
+    pub fn new(query: &str) -> Self {
+        let chars: Vec<char> = query
+            .to_lowercase()
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        Self { chars }
     }
-    let t: Vec<char> = target.to_lowercase().chars().collect();
-    let (mut from, mut score, mut prev) = (0usize, 0i32, None::<usize>);
-    let mut matched = true;
-    for &qc in &q {
-        let Some(gap) = t
-            .get(from..)
-            .and_then(|rest| rest.iter().position(|&c| c == qc))
-        else {
-            matched = false;
-            break;
+
+    pub fn score(&self, target: &str) -> Option<i32> {
+        let q = &self.chars;
+        if q.is_empty() {
+            return Some(0);
+        }
+
+        // Fast stack buffer for targets up to 128 chars (table names, column names, commands)
+        const STACK_LIMIT: usize = 128;
+        let mut stack_buf = ['\0'; STACK_LIMIT];
+        let heap_buf;
+        let t: &[char] = {
+            let mut count = 0;
+            let mut fits = true;
+            for c in target.chars().flat_map(|c| c.to_lowercase()) {
+                if count < STACK_LIMIT {
+                    stack_buf[count] = c;
+                    count += 1;
+                } else {
+                    fits = false;
+                    break;
+                }
+            }
+            if fits {
+                &stack_buf[..count]
+            } else {
+                heap_buf = target.to_lowercase().chars().collect::<Vec<char>>();
+                &heap_buf
+            }
         };
-        let at = from + gap;
-        score += 10 - gap.min(9) as i32;
-        if prev.is_some_and(|p| p + 1 == at) {
-            score += 15;
+
+        let (mut from, mut score, mut prev) = (0usize, 0i32, None::<usize>);
+        let mut matched = true;
+        for &qc in q {
+            let Some(gap) = t
+                .get(from..)
+                .and_then(|rest| rest.iter().position(|&c| c == qc))
+            else {
+                matched = false;
+                break;
+            };
+            let at = from + gap;
+            score += 10 - gap.min(9) as i32;
+            if prev.is_some_and(|p| p + 1 == at) {
+                score += 15;
+            }
+            if at == 0 || !t[at - 1].is_alphanumeric() {
+                score += 10;
+            }
+            prev = Some(at);
+            from = at + 1;
         }
-        if at == 0 || !t[at - 1].is_alphanumeric() {
-            score += 10;
+        if matched {
+            return Some(score + if t.starts_with(q) { 50 } else { 0 });
         }
-        prev = Some(at);
-        from = at + 1;
-    }
-    if matched {
-        return Some(score + if t.starts_with(&q) { 50 } else { 0 });
-    }
-    // Typo tolerance: any window of similar length within one edit
-    if q.len() >= 4 {
-        for len in [q.len(), q.len() + 1, q.len() - 1] {
-            if len <= t.len() && t.windows(len).any(|w| edit_distance(&q, w) <= 1) {
-                return Some(1);
+        // Typo tolerance: any window of similar length within one edit
+        if q.len() >= 4 {
+            for len in [q.len(), q.len() + 1, q.len() - 1] {
+                if len <= t.len() && t.windows(len).any(|w| edit_distance(q, w) <= 1) {
+                    return Some(1);
+                }
             }
         }
+        None
     }
-    None
 }
 
 /// Optimal string alignment distance (insert, delete, substitute, transpose)
+/// Uses a flat stack buffer for typical queries to eliminate heap allocations.
 fn edit_distance(a: &[char], b: &[char]) -> usize {
-    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
-    for (i, row) in d.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in d[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=a.len() {
-        for j in 1..=b.len() {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1)
-                .min(d[i][j - 1] + 1)
-                .min(d[i - 1][j - 1] + cost);
-            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
-                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+    const STACK_MAX: usize = 65;
+    if a.len() < STACK_MAX && b.len() < STACK_MAX {
+        let cols = b.len() + 1;
+        let mut d = [0usize; STACK_MAX * STACK_MAX];
+        for i in 0..=a.len() {
+            d[i * cols] = i;
+        }
+        for (j, cell) in d[..cols].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut cell = (d[(i - 1) * cols + j] + 1)
+                    .min(d[i * cols + j - 1] + 1)
+                    .min(d[(i - 1) * cols + j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    cell = cell.min(d[(i - 2) * cols + j - 2] + 1);
+                }
+                d[i * cols + j] = cell;
             }
         }
+        d[a.len() * cols + b.len()]
+    } else {
+        let cols = b.len() + 1;
+        let mut d = vec![0usize; (a.len() + 1) * cols];
+        for i in 0..=a.len() {
+            d[i * cols] = i;
+        }
+        for (j, cell) in d[..cols].iter_mut().enumerate() {
+            *cell = j;
+        }
+        for i in 1..=a.len() {
+            for j in 1..=b.len() {
+                let cost = usize::from(a[i - 1] != b[j - 1]);
+                let mut cell = (d[(i - 1) * cols + j] + 1)
+                    .min(d[i * cols + j - 1] + 1)
+                    .min(d[(i - 1) * cols + j - 1] + cost);
+                if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                    cell = cell.min(d[(i - 2) * cols + j - 2] + 1);
+                }
+                d[i * cols + j] = cell;
+            }
+        }
+        d[a.len() * cols + b.len()]
     }
-    d[a.len()][b.len()]
 }
 
 impl CommandBar {
@@ -187,13 +257,15 @@ impl CommandBar {
         };
         // Find Usages: only its results, narrowed by what's typed
         if let Some(u) = &state.usages {
+            let fq_raw = FuzzyQuery::new(raw);
             return u
                 .items
                 .iter()
                 .enumerate()
                 .filter(|(_, x)| {
                     raw.is_empty()
-                        || fuzzy_score(raw, &format!("{} {}", x.label, x.line_text)).is_some()
+                        || fq_raw.score(&x.label).is_some()
+                        || fq_raw.score(&x.line_text).is_some()
                 })
                 .take(50)
                 .map(|(i, x)| CommandItem {
@@ -205,6 +277,7 @@ impl CommandBar {
                 })
                 .collect();
         }
+        let fq = FuzzyQuery::new(query);
         let conn = state
             .active_connection
             .as_ref()
@@ -263,8 +336,9 @@ impl CommandBar {
                 if query.is_empty() && is_recent {
                     continue; // already listed under Recent
                 }
+                let table_score = fq.score(&t.table_name);
                 push(
-                    fuzzy_score(query, &t.table_name),
+                    table_score,
                     if query.is_empty() { -1000 } else { 30 },
                     CommandItem {
                         id: format!("table:{}\u{1f}{}", t.schema_name, t.table_name),
@@ -278,7 +352,7 @@ impl CommandBar {
                 if !query.is_empty() {
                     for (view, label) in [("structure", "Structure"), ("ddl", "DDL")] {
                         push(
-                            fuzzy_score(query, &t.table_name),
+                            table_score,
                             20,
                             CommandItem {
                                 id: format!("table-{view}:{}\u{1f}{}", t.schema_name, t.table_name),
@@ -300,7 +374,7 @@ impl CommandBar {
                     .as_ref()
                     .is_some_and(|a| a.id == c.id);
                 push(
-                    fuzzy_score(query, &c.name),
+                    fq.score(&c.name),
                     if query.is_empty() { -2000 } else { 10 },
                     CommandItem {
                         id: format!("connection:{}", c.id),
@@ -328,7 +402,7 @@ impl CommandBar {
                         if query.is_empty() {
                             Some(800 - i as i32)
                         } else {
-                            fuzzy_score(query, title)
+                            fq.score(title)
                         },
                         15,
                         CommandItem {
@@ -362,7 +436,7 @@ impl CommandBar {
                 let score = if query.is_empty() {
                     (seen.len() <= 5).then_some(500 - seen.len() as i32)
                 } else {
-                    fuzzy_score(query, &one_line)
+                    fq.score(&one_line)
                 };
                 push(
                     score,
@@ -383,7 +457,7 @@ impl CommandBar {
                 let score = if query.is_empty() && !only_commands {
                     EVERYDAY.contains(id).then_some(100)
                 } else {
-                    fuzzy_score(query, title)
+                    fq.score(title)
                 };
                 push(
                     score,

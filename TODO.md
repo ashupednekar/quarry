@@ -55,3 +55,31 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 - [x] Empty states with a primary button (sidebar, no tabs open)
 - [x] Panes remember their size across restarts (`layout.rs`)
 - [ ] ~~In-memory SQLite connections kept across restarts~~ won't do: the data can't come back, and the demo reseeds from "Open the demo database"
+
+## Performance & Memory (Zed-grade scale)
+- [x] Non-blocking SQLite: offload queries to Tokio blocking pool so 100k-row scans don't starve async worker threads (`quarry_core::sqlite::SqliteSession`)
+- [x] Zero-copy cell display: replace `DbValue::to_display_string()` heap cloning with `Cow<'static, str>` / borrowed formatting in `delegate.rs` and fast-path unmodified cells to eliminate 60k-120k string allocations/sec during 60-120 FPS grid scrolling (`quarry_core::value::DbValue`, `grid::delegate`, `grid::mod`)
+- [ ] Flat columnar result buffer: replace `Vec<Vec<DbValue>>` with flat column-oriented chunks (`quarry_core::session::QueryResult`, `grid::ResultSet`) to eliminate millions of pointer indirections and heap allocations on 100k-row queries
+- [ ] Streaming query cursor: stream database rows in chunked batches (e.g. 1,000 rows) via async channels to the UI grid instead of buffering the entire dataset in memory before rendering (`quarry_core`, `execution.rs`)
+- [x] Zero-copy completion context: slice only the active statement around the caret instead of cloning the entire editor rope into a heap string on every keystroke (`completion::SchemaCompletions`)
+- [x] Asynchronous autocomplete cancellation: compute schema completions on GPUI's background executor with cooperative cancellation tokens on subsequent keystrokes (`completion.rs`, `editor.rs`)
+- [x] Allocation-free fuzzy search: rewrite `fuzzy_score` in `command_bar.rs` to match via `FuzzyQuery` and stack-allocated Damerau-Levenshtein matrix without allocating `Vec<char>` per candidate per keystroke (`command_bar.rs`)
+- [x] Retained ER diagram layout: cache BFS graph topology and card coordinates in component state instead of re-running graph traversal on every single frame render (`er_view.rs`)
+- [ ] Consolidate SQL lexers: share tokenization state machines between `quarry_core::session::sql_tokens` and `quarry_sql::splitter` (`quarry_core::dialect`, `quarry_sql`)
+- [ ] Driver TLS support (`rustls`): secure direct connections to cloud databases (RDS, Neon, Supabase) without requiring SSH tunnels (`quarry-core/Cargo.toml`, `postgres`, `mysql`)
+- [ ] Microbenchmarks suite (`criterion`): benchmark SQL statement splitting throughput, completion lookup on 1,000+ tables, fuzzy matching, and grid row decoding (`benches/`)
+
+## Editor Intelligence & Power Editing
+- [ ] Tree-sitter SQL integration: use Tree-sitter queries (already enabled in `gpui-kit`) for AST-based statement boundaries and syntax folding (`quarry_sql::splitter`, `editor.rs`)
+- [ ] Multi-cursor selection: support secondary carets (`⌥⌘↑`/`⌥⌘↓` or `⌘D` for next occurrence) in SQL editor (`editor::QueryEditor`)
+- [ ] Vim mode toggle: optional modal editing (`settings: vim_mode`) for normal/insert/visual command navigation (`settings.rs`, `editor.rs`)
+
+## Configuration & Tooling
+- [x] Atomic connection profile permissions: create `connections.json` with `0o600` mode atomically on Unix to prevent TOCTOU permission leaks (`connections::save`)
+- [x] Structured diagnostics & startup tracing: configure `tracing-subscriber` with `EnvFilter` and default to `info` (`main.rs`, `execution.rs`, `state.rs`)
+- [x] Release build optimization: enable thin LTO, single codegen unit, and symbol stripping (`Cargo.toml`)
+- [x] Developer tooling configs: add standardized `Makefile`, `rustfmt.toml`, and `clippy.toml`
+- [x] Fast test & lint validation pass: clean fmt, clippy, and all 106 tests passing cleanly
+- [ ] Live configuration reload: watch `~/.config/quarry/` (`settings.json`, `keymap.json`) via mtime check so edits apply immediately without restarting (`settings.rs`)
+- [ ] Modularize `main.rs`: extract application menu generation and global command registrations out of the 2,100-line entrypoint (`main.rs`, `commands.rs`)
+

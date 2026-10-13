@@ -602,6 +602,13 @@ pub async fn open_session(
             profile.driver
         )
     })?;
+    let addr = driver.display_address(&profile.path_or_url);
+    tracing::info!(
+        "Connecting to [{}] ({}) via {}...",
+        profile.name,
+        addr,
+        driver.name()
+    );
     let mut conn = crate::connections::with_secret(profile);
     let mut tunnel = None;
     if let Some(ssh) = &profile.ssh {
@@ -618,7 +625,10 @@ pub async fn open_session(
     let session = driver
         .connect(&conn, profile.read_only)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            tracing::error!("Connection to [{}] failed: {e}", profile.name);
+            e.to_string()
+        })?;
     let session: Arc<dyn DatabaseSession> =
         Arc::new(LoggedSession::new(session, profile.name.clone(), log));
     if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
@@ -633,6 +643,11 @@ pub async fn open_session(
         .load_catalog()
         .await
         .map_err(|e| format!("Introspection error: {}", e))?;
+    tracing::info!(
+        "Connected to [{}] (loaded {} tables)",
+        profile.name,
+        catalog.tables.len()
+    );
     Ok((session, catalog, tunnel))
 }
 

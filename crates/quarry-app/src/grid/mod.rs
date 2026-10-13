@@ -575,7 +575,7 @@ impl ResultSet {
 
     fn is_error_row(&self, row: usize) -> bool {
         self.level_column.is_some_and(|col| {
-            matches!(self.cell_value(row, col).0, Some(DbValue::Text(ref l)) if matches!(l.as_str(), "ERROR" | "FATAL" | "PANIC"))
+            matches!(self.cell_value_ref(row, col).0, Some(DbValue::Text(ref l)) if matches!(l.as_str(), "ERROR" | "FATAL" | "PANIC"))
         })
     }
 
@@ -592,38 +592,42 @@ impl ResultSet {
         }
     }
 
-    /// Value of a pending-insert cell; `None` = left to the column DEFAULT
-    fn inserted_value(&self, row: usize, col: usize) -> Option<DbValue> {
+    /// Value of a pending-insert cell as a reference; `None` = left to the column DEFAULT
+    fn inserted_value_ref(&self, row: usize, col: usize) -> Option<&DbValue> {
         let name = self.column_name(col)?;
-        if let Some(insert) = self
+        let insert = self
             .pending
             .row_inserts
-            .get(row.checked_sub(self.loaded_len())?)
-        {
-            return insert.values.get(name).cloned();
-        }
-        None
+            .get(row.checked_sub(self.loaded_len())?)?;
+        insert.values.get(name)
     }
 
-    /// The value a cell shows (pending edits win over loaded values) and whether it was edited
-    fn cell_value(&self, row: usize, col: usize) -> (Option<DbValue>, bool) {
+    /// The value a cell shows as a reference (pending edits win over loaded values) and whether it was edited
+    fn cell_value_ref(&self, row: usize, col: usize) -> (Option<&DbValue>, bool) {
         if row >= self.loaded_len() {
-            return (self.inserted_value(row, col), false);
+            return (self.inserted_value_ref(row, col), false);
         }
-        let Some(original) = self
-            .result()
-            .and_then(|r| r.rows.get(row)?.get(col).cloned())
-        else {
+        let Some(original) = self.result().and_then(|r| r.rows.get(row)?.get(col)) else {
             return (None, false);
         };
+        // Fast path: if there are no pending cell edits, avoid allocating primary keys and searching edits
+        if self.pending.cell_edits.is_empty() {
+            return (Some(original), false);
+        }
         let edited = self
             .row_key(row)
             .zip(self.column_name(col))
-            .and_then(|(k, name)| self.pending.cell_value(&k, name).cloned());
+            .and_then(|(k, name)| self.pending.cell_value(&k, name));
         match edited {
             Some(v) => (Some(v), true),
             None => (Some(original), false),
         }
+    }
+
+    /// The value a cell shows (pending edits win over loaded values) and whether it was edited
+    fn cell_value(&self, row: usize, col: usize) -> (Option<DbValue>, bool) {
+        let (val, edited) = self.cell_value_ref(row, col);
+        (val.cloned(), edited)
     }
 
     /// Call before changing `pending`; repeated calls with nothing changed in between are one step

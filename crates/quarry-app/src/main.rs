@@ -258,6 +258,7 @@ struct QuarryWindow {
     diagram_auto_pan: std::cell::Cell<Point<Pixels>>,
     diagram_drag: Option<Point<Pixels>>,
     diagram_view: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
+    pub diagram_layout: std::cell::RefCell<Option<crate::er_view::DiagramLayoutCache>>,
     /// A query tab's connection being reopened; the tab keeps it instead of following the active one meanwhile
     connecting_for_tab: Option<String>,
     /// Table tabs from last session, waiting for their connection (connection id, table)
@@ -391,6 +392,7 @@ impl QuarryWindow {
             diagram_auto_pan: Default::default(),
             diagram_drag: None,
             diagram_view: Default::default(),
+            diagram_layout: Default::default(),
             connecting_for_tab: None,
             pending_table_tabs: Vec::new(),
             results_expanded: false,
@@ -2038,6 +2040,16 @@ fn set_app_menus(cx: &mut App) {
 }
 
 fn main() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .compact()
+        .try_init();
+
+    tracing::info!("Starting Quarry v{}...", env!("CARGO_PKG_VERSION"));
+
     gpui::application()
         .with_assets(gpui::assets::AllAssets)
         .run(|cx: &mut App| {
