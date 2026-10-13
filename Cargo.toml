@@ -24,8 +24,11 @@ serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
 futures-util = "0.3"
-# No TLS yet, like tokio-postgres with NoTls; add rustls for both drivers together
-mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"] }
+# Rustls TLS for Postgres and MySQL
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring", "webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki-roots = "1.0"
 tiberius = { version = "0.13", default-features = false, features = ["tds73", "chrono"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 # Loads Oracle Instant Client at connect time; builds without it

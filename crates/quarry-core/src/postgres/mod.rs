@@ -143,18 +143,49 @@ pub struct PostgresSession {
     type_cache: std::sync::Mutex<std::collections::HashMap<String, Vec<Type>>>,
 }
 
+fn make_tls_connector() -> tokio_postgres_rustls::MakeRustlsConnect {
+    let mut root_store = rustls::RootCertStore::empty();
+    root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let tls_config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("valid TLS protocol versions")
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+    tokio_postgres_rustls::MakeRustlsConnect::new(tls_config)
+}
+
 impl PostgresSession {
     pub async fn connect(connection_str: &str, read_only: bool) -> Result<Self, DbError> {
-        let (client, connection) = tokio_postgres::connect(connection_str, NoTls)
-            .await
-            .map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
-
-        // Spawn connection poller on background tokio task
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!("PostgreSQL connection error: {}", e);
+        let tls = make_tls_connector();
+        let client = match tokio_postgres::connect(connection_str, tls).await {
+            Ok((client, connection)) => {
+                tokio::spawn(async move {
+                    if let Err(e) = connection.await {
+                        tracing::error!("PostgreSQL connection error: {}", e);
+                    }
+                });
+                client
             }
-        });
+            Err(e) => {
+                if !connection_str.contains("sslmode=require")
+                    && !connection_str.contains("sslmode=verify")
+                {
+                    tracing::debug!("TLS connection attempt failed ({e}), falling back to NoTls");
+                    let (client, connection) = tokio_postgres::connect(connection_str, NoTls)
+                        .await
+                        .map_err(|e| DbError::ConnectionFailed(e.to_string()))?;
+                    tokio::spawn(async move {
+                        if let Err(e) = connection.await {
+                            tracing::error!("PostgreSQL connection error: {}", e);
+                        }
+                    });
+                    client
+                } else {
+                    return Err(DbError::ConnectionFailed(e.to_string()));
+                }
+            }
+        };
 
         // Extract database name if available
         let database_name = client

@@ -8,7 +8,7 @@ authors.workspace = true
 # One feature per driver; the app enables the ones it ships
 [features]
 default = ["postgres", "sqlite", "mysql", "mssql", "oracle"]
-postgres = ["dep:tokio-postgres", "dep:futures-util"]
+postgres = ["dep:tokio-postgres", "dep:tokio-postgres-rustls", "dep:rustls", "dep:webpki-roots", "dep:futures-util"]
 sqlite = ["dep:rusqlite"]
 mysql = ["dep:mysql_async", "dep:futures-util"]
 mssql = ["dep:tiberius", "dep:tokio-util", "dep:futures-util"]
@@ -18,6 +18,9 @@ oracle = ["dep:oracle", "dep:sha2"]
 tokio = { workspace = true }
 rusqlite = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
+tokio-postgres-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
 mysql_async = { workspace = true, optional = true }
 tiberius = { workspace = true, optional = true }
