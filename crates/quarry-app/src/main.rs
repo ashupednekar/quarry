@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
+#![recursion_limit = "1024"]
+
 mod add_conn_modal;
 mod bottom_panel;
 mod command_bar;
@@ -677,7 +679,7 @@ impl QuarryWindow {
                             .label("Export")
                             .ghost()
                             .xsmall()
-                            .tooltip("Export (⇧⌘E)")
+                            .tooltip(ui::format_keys("Export (⇧⌘E)"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_export(cx))),
                     );
                 let body = match plan
@@ -793,7 +795,12 @@ impl QuarryWindow {
                         .truncate()
                         .child(label),
                 )
-                .child(div().text_xs().text_color(t.text_muted).child(hint))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(t.text_muted)
+                        .child(ui::format_keys(hint)),
+                )
         };
         let start = v_flex()
             .gap_0p5()
@@ -1261,7 +1268,7 @@ impl QuarryWindow {
                     tab_size: self.settings.tab_size.max(1),
                     hard_tabs: false,
                 })
-                .placeholder("Write SQL here. ⌘↵ runs the selection or the statement at the cursor; ⌥↵ shows actions.")
+                .placeholder(ui::format_keys("Write SQL here. ⌘↵ runs the selection or the statement at the cursor; ⌥↵ shows actions."))
                 .default_value(sql.to_string())
         });
         let completions = std::rc::Rc::new(completion::SchemaCompletions(

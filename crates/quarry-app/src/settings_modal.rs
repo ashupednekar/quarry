@@ -175,7 +175,7 @@ impl QuarryWindow {
             .child(setting_row(
                 &t,
                 "Highlight current statement",
-                "Tint what ⌘↵ will run",
+                crate::ui::format_keys("Tint what ⌘↵ will run"),
                 toggle(
                     "highlight",
                     s.highlight_current_statement,
@@ -338,7 +338,7 @@ impl QuarryWindow {
                         .child(modal_header(
                             &t,
                             "Settings",
-                            Some("Quarry · ⌘,".into()),
+                            Some(crate::ui::format_keys("Quarry · ⌘,").into()),
                             dismiss_on_click,
                         ))
                         .child(

@@ -323,7 +323,7 @@ impl ReviewModal {
                         .child(
                             zbutton("review-commit-btn")
                                 .pad_sm()
-                                .label("Submit ⌘↵")
+                                .label(crate::ui::format_keys("Submit ⌘↵"))
                                 .primary()
                                 .small()
                                 .on_click(cx.listener(move |this, _, window, cx| {

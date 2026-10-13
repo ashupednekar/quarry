@@ -657,9 +657,9 @@ impl QuarryWindow {
                     .child(badge("FK", t.accent))
                     .child("foreign key"),
             )
-            .child(div().truncate().child(
+            .child(div().truncate().child(crate::ui::format_keys(
                 "Hover a column to trace its joins · drag to move · pinch or ⌘ scroll to zoom",
-            ));
+            )));
         let content = size(width, height);
         let zoom_button = |id: &'static str, label: &'static str, tip: &'static str| {
             div()

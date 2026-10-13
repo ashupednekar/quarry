@@ -21,7 +21,7 @@ impl StatusBar {
     ) -> impl IntoElement {
         let (manual, in_tx) =
             session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
-        let link = |id: &'static str, label: &'static str, color: Rgba| {
+        let link = |id: &'static str, label: &str, color: Rgba| {
             div()
                 .id(id)
                 .px_1p5()
@@ -30,7 +30,7 @@ impl StatusBar {
                 .text_color(color)
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover))
-                .child(label)
+                .child(label.to_string())
         };
         // Only shown once there's a result to describe; query tabs show it in their results header
         let stats = state
@@ -172,7 +172,7 @@ impl StatusBar {
                     .child(
                         link(
                             "statusbar-toggle-sidebar",
-                            "Sidebar ⌘B",
+                            &format_keys("Sidebar ⌘B"),
                             if state.sidebar_visible {
                                 theme.text_secondary
                             } else {
@@ -188,7 +188,7 @@ impl StatusBar {
                     .child(
                         link(
                             "statusbar-toggle-bottom",
-                            "Panel ⌘J",
+                            &format_keys("Panel ⌘J"),
                             if state.bottom_panel_open {
                                 theme.text_secondary
                             } else {

@@ -379,7 +379,7 @@ impl Sidebar {
                     .py_1()
                     .text_xs()
                     .text_color(theme.text_muted)
-                    .child("Save a query (⌘S) to see it here."),
+                    .child(crate::ui::format_keys("Save a query (⌘S) to see it here.")),
             );
         }
         for (ix, path) in queries.into_iter().enumerate() {

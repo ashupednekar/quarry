@@ -175,7 +175,9 @@ impl QueryEditor {
                             .ml_1()
                             .icon(IconName::Play)
                             .label(if is_running { "Running…" } else { "Run" })
-                            .tooltip("Run the selection, or the statement at the cursor (⌘↵)")
+                            .tooltip(crate::ui::format_keys(
+                                "Run the selection, or the statement at the cursor (⌘↵)",
+                            ))
                             .primary()
                             .xsmall()
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -276,7 +278,10 @@ fn run_gutter_buttons(
                 .when(!is_running, |d| d.hover(|s| s.text_color(theme.success)))
                 .cursor_pointer()
                 .tooltip(|window, cx| {
-                    gpui::component::tooltip::Tooltip::new("Run statement (⌘↵)").build(window, cx)
+                    gpui::component::tooltip::Tooltip::new(crate::ui::format_keys(
+                        "Run statement (⌘↵)",
+                    ))
+                    .build(window, cx)
                 })
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -303,6 +308,6 @@ fn toolbar_button(
         .label(label)
         .ghost()
         .xsmall()
-        .tooltip(tip)
+        .tooltip(crate::ui::format_keys(tip))
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }

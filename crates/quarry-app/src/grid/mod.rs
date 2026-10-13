@@ -903,7 +903,7 @@ impl DataGrid {
                 .icon(icon)
                 .ghost()
                 .xsmall()
-                .tooltip(tip)
+                .tooltip(crate::ui::format_keys(tip))
                 .disabled(read_only.is_some())
                 .on_click(move |_, window, cx| apply_row_action(&grid, action.as_ref(), window, cx))
         };
@@ -921,7 +921,7 @@ impl DataGrid {
                     .icon(IconName::RefreshCw)
                     .ghost()
                     .xsmall()
-                    .tooltip("Reload (⌘↵ outside the grid)")
+                    .tooltip(crate::ui::format_keys("Reload (⌘↵ outside the grid)"))
                     .on_click(cx.listener(move |this, _, window, cx| on_refresh(this, window, cx))),
             )
             .children(pager(grid, rs, theme))
@@ -951,7 +951,7 @@ impl DataGrid {
                     .icon(IconName::PanelRight)
                     .ghost()
                     .xsmall()
-                    .tooltip("Value editor (⇧↵)")
+                    .tooltip(crate::ui::format_keys("Value editor (⇧↵)"))
                     .on_click(move |_, window, cx| {
                         apply_row_action(&grid, &ToggleValueEditor, window, cx)
                     })
@@ -961,7 +961,7 @@ impl DataGrid {
                     .icon(IconName::Download)
                     .ghost()
                     .xsmall()
-                    .tooltip("Export (⇧⌘E)")
+                    .tooltip(crate::ui::format_keys("Export (⇧⌘E)"))
                     .on_click(cx.listener(move |this, _, window, cx| on_export(this, window, cx))),
             )
             .when(hidden > 0, |this| {
@@ -1020,7 +1020,7 @@ impl DataGrid {
                         .icon(IconName::Undo2)
                         .ghost()
                         .xsmall()
-                        .tooltip("Revert all (⌥⌘Z)")
+                        .tooltip(crate::ui::format_keys("Revert all (⌥⌘Z)"))
                         .on_click(move |_, _, cx| {
                             grid.update(cx, |t, cx| {
                                 t.delegate_mut().revert();
@@ -1035,7 +1035,7 @@ impl DataGrid {
                         .label("Review")
                         .ghost()
                         .xsmall()
-                        .tooltip("Show the SQL (⌘S)")
+                        .tooltip(crate::ui::format_keys("Show the SQL (⌘S)"))
                         .on_click(
                             cx.listener(move |this, _, window, cx| on_review(this, window, cx)),
                         ),
@@ -1047,7 +1047,7 @@ impl DataGrid {
                         .label("Submit")
                         .primary()
                         .xsmall()
-                        .tooltip("Apply in one transaction (⌘↵)")
+                        .tooltip(crate::ui::format_keys("Apply in one transaction (⌘↵)"))
                         .on_click(
                             cx.listener(move |this, _, window, cx| on_submit(this, window, cx)),
                         ),
@@ -1387,7 +1387,9 @@ impl DataGrid {
                                                     .label("Apply")
                                                     .primary()
                                                     .xsmall()
-                                                    .tooltip("Write to the cell (⌘↵)")
+                                                    .tooltip(crate::ui::format_keys(
+                                                        "Write to the cell (⌘↵)",
+                                                    ))
                                                     .on_click(move |_, _, cx| {
                                                         g_apply.update(cx, |t, cx| {
                                                             t.delegate_mut().apply_inspector(cx)

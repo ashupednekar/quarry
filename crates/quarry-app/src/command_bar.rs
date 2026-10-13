@@ -532,7 +532,7 @@ impl CommandBar {
                 .bg(theme.bg_surface)
                 .text_xs()
                 .text_color(theme.text_muted)
-                .child(k)
+                .child(crate::ui::format_keys(k))
         };
         let mut list = v_flex()
             .id("command-bar-scroll")

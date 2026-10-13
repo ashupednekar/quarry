@@ -103,7 +103,12 @@ impl QuarryWindow {
                             .text_color(t.text_muted)
                             .child("Search tables, run SQL, or type > for commands"),
                     )
-                    .child(div().text_xs().text_color(t.text_muted).child("⌘K")),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t.text_muted)
+                            .child(crate::ui::format_keys("⌘K")),
+                    ),
             )
             .child(div().flex_1())
     }
@@ -272,7 +277,7 @@ impl QuarryWindow {
                             .icon(IconName::Plus)
                             .ghost()
                             .xsmall()
-                            .tooltip("New query (⌘N)")
+                            .tooltip(crate::ui::format_keys("New query (⌘N)"))
                             .on_click(cx.listener(|this, _, window, cx| this.new_query(&NewQuery, window, cx))),
                     ),
                 )

@@ -226,8 +226,8 @@ pub fn section_title(t: &crate::theme::Theme, title: &'static str) -> Div {
 /// Settings row: what it is (and why) on the left, the control on the right
 pub fn setting_row(
     t: &crate::theme::Theme,
-    label: &'static str,
-    description: &'static str,
+    label: impl Into<SharedString>,
+    description: impl Into<SharedString>,
     control: impl IntoElement,
 ) -> Div {
     h_flex()
@@ -239,8 +239,18 @@ pub fn setting_row(
             v_flex()
                 .gap_0p5()
                 .min_w_0()
-                .child(div().text_sm().text_color(t.text_primary).child(label))
-                .child(div().text_xs().text_color(t.text_muted).child(description)),
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(t.text_primary)
+                        .child(label.into()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(t.text_muted)
+                        .child(description.into()),
+                ),
         )
         .child(div().flex_shrink_0().child(control))
 }
@@ -328,4 +338,63 @@ pub fn form_input(state: &Entity<gpui::component::input::InputState>) -> Div {
             .text_sm()
             .px_3p5(),
     )
+}
+
+/// Translates keyboard shortcut symbols based on the operating system.
+/// On macOS: preserves standard symbols (⌘, ⌥, ⇧, ⌃, ↵, ⌫, ⎋).
+/// On Windows and Linux: maps them to conventional representations (Ctrl+, Alt+, Shift+, Enter, Backspace, Esc).
+pub fn format_keys(s: impl AsRef<str>) -> String {
+    format_keys_for_os(s.as_ref(), cfg!(target_os = "macos"))
+}
+
+fn format_keys_for_os(s: &str, is_macos: bool) -> String {
+    if is_macos {
+        return s.to_string();
+    }
+
+    let mut result = s.to_string();
+    result = result.replace("⇧⌥⌘", "Ctrl+Alt+Shift+");
+    result = result.replace("⌥⇧⌘", "Ctrl+Alt+Shift+");
+    result = result.replace("⇧⌥", "Alt+Shift+");
+    result = result.replace("⌥⌘", "Ctrl+Alt+");
+    result = result.replace("⇧⌘", "Ctrl+Shift+");
+    result = result.replace("⌘ ", "Ctrl ");
+    result = result.replace('⌘', "Ctrl+");
+    result = result.replace('⌥', "Alt+");
+    result = result.replace('⇧', "Shift+");
+    result = result.replace('⌃', "Ctrl+");
+    result = result.replace('↵', "Enter");
+    result = result.replace('⌫', "Backspace");
+    result = result.replace('⎋', "Esc");
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_keys_for_os;
+
+    #[test]
+    fn formats_keys_differently_per_os() {
+        assert_eq!(format_keys_for_os("⌘N", true), "⌘N");
+        assert_eq!(format_keys_for_os("⌘N", false), "Ctrl+N");
+        assert_eq!(format_keys_for_os("⇧⌘T", false), "Ctrl+Shift+T");
+        assert_eq!(format_keys_for_os("⌥⌘E", false), "Ctrl+Alt+E");
+        assert_eq!(format_keys_for_os("⇧⌥⌘E", false), "Ctrl+Alt+Shift+E");
+        assert_eq!(
+            format_keys_for_os("Run statement (⌘↵)", false),
+            "Run statement (Ctrl+Enter)"
+        );
+        assert_eq!(
+            format_keys_for_os("Value editor (⇧↵)", false),
+            "Value editor (Shift+Enter)"
+        );
+        assert_eq!(
+            format_keys_for_os("Delete row (⌘⌫)", false),
+            "Delete row (Ctrl+Backspace)"
+        );
+        assert_eq!(
+            format_keys_for_os("Maximize (⇧⎋)", false),
+            "Maximize (Shift+Esc)"
+        );
+    }
 }

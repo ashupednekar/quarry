@@ -974,7 +974,7 @@ impl QuarryWindow {
                             .icon(IconName::X)
                             .ghost()
                             .xsmall()
-                            .tooltip("Close (⌘J)")
+                            .tooltip(crate::ui::format_keys("Close (⌘J)"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.state.bottom_panel_open = false;
                                 cx.notify();

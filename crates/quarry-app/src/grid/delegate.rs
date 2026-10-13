@@ -327,7 +327,9 @@ impl TableDelegate for ResultSet {
                         .text_color(c.muted)
                         .bg(c.token_bg)
                         .hover(|s| s.bg(c.accent).text_color(c.on_fill))
-                        .tooltip(move |window, cx| Tooltip::new("Set NULL (⌥⌘N)").build(window, cx))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(crate::ui::format_keys("Set NULL (⌥⌘N)")).build(window, cx)
+                        })
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |table, _, _, cx| {
