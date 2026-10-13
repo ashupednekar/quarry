@@ -136,8 +136,8 @@ impl Sidebar {
                         },
                         theme.text_muted,
                     ))
-                    .child(icon(
-                        IconName::Database,
+                    .child(crate::db_icons::database_icon(
+                        kind,
                         if is_active {
                             theme.accent
                         } else {

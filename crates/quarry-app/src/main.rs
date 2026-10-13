@@ -10,6 +10,7 @@ mod commands;
 mod completion;
 mod conn_form;
 mod connections;
+mod db_icons;
 mod editor;
 mod er_view;
 mod execution;
