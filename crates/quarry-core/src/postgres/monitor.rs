@@ -176,7 +176,7 @@ fn result(rows: Vec<Vec<DbValue>>) -> QueryResult {
     QueryResult {
         columns: LOG_COLUMNS.iter().map(|c| c.to_string()).collect(),
         rows_affected: rows.len() as u64,
-        rows,
+        rows: rows.into(),
         execution_time: Duration::ZERO,
         statement: String::new(),
     }

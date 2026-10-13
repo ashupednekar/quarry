@@ -88,6 +88,59 @@ impl<W: Write> Exporter<W> {
         })
     }
 
+    pub fn row_ref(&mut self, row: &crate::RowRef<'_>) -> io::Result<()> {
+        let d = self.opts.delimiter.to_string();
+        let vals: Vec<&DbValue> = self
+            .picked
+            .iter()
+            .map(|&i| row.get(i).unwrap_or(&DbValue::Null))
+            .collect();
+        match self.opts.format {
+            ExportFormat::Csv => {
+                let line: Vec<String> = vals
+                    .iter()
+                    .map(|v| match v {
+                        DbValue::Null => self.opts.null_text.clone(),
+                        v => csv_field(&plain_text(v), self.opts.delimiter),
+                    })
+                    .collect();
+                writeln!(self.out, "{}", line.join(&d))?;
+            }
+            ExportFormat::Json => {
+                let fields: Vec<String> = self
+                    .names
+                    .iter()
+                    .zip(&vals)
+                    .map(|(n, v)| {
+                        format!("{}:{}", serde_json::Value::String(n.clone()), json_value(v))
+                    })
+                    .collect();
+                let sep = if self.written == 0 { "" } else { "," };
+                write!(self.out, "{sep}\n  {{{}}}", fields.join(","))?;
+            }
+            ExportFormat::Sql => {
+                let cols: Vec<String> = self.names.iter().map(|n| quote_ident(n)).collect();
+                let values: Vec<String> = vals.iter().map(|v| v.to_sql_literal()).collect();
+                writeln!(
+                    self.out,
+                    "INSERT INTO {} ({}) VALUES ({});",
+                    self.opts.table,
+                    cols.join(", "),
+                    values.join(", ")
+                )?;
+            }
+        }
+        self.written += 1;
+        Ok(())
+    }
+
+    pub fn row_buffer(&mut self, buffer: &crate::RowBuffer) -> io::Result<()> {
+        for row in buffer.iter() {
+            self.row_ref(&row)?;
+        }
+        Ok(())
+    }
+
     pub fn rows(&mut self, rows: &[Vec<DbValue>]) -> io::Result<()> {
         let d = self.opts.delimiter.to_string();
         for row in rows {

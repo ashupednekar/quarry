@@ -18,6 +18,7 @@ use crate::session::{
     is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb,
 };
 use crate::value::DbValue;
+use crate::RowBuffer;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -488,7 +489,7 @@ impl PostgresSession {
         futures_util::pin_mut!(messages);
 
         let mut columns = Vec::new();
-        let mut rows = Vec::new();
+        let mut row_buffer = RowBuffer::default();
         let mut affected = 0;
         while let Some(msg) = futures_util::TryStreamExt::try_next(&mut messages)
             .await
@@ -497,14 +498,15 @@ impl PostgresSession {
             match msg {
                 SimpleQueryMessage::RowDescription(cols) => {
                     columns = cols.iter().map(|c| c.name().to_string()).collect();
+                    row_buffer = RowBuffer::new(columns.len());
                 }
-                SimpleQueryMessage::Row(_) if rows.len() >= crate::session::MAX_ROWS => {}
+                SimpleQueryMessage::Row(_) if row_buffer.len() >= crate::session::MAX_ROWS => {}
                 SimpleQueryMessage::Row(row) => {
-                    rows.push(
-                        (0..row.len())
-                            .map(|i| decode_text(row.get(i), types.as_ref().and_then(|t| t.get(i))))
-                            .collect(),
-                    );
+                    for i in 0..row.len() {
+                        let val = decode_text(row.get(i), types.as_ref().and_then(|t| t.get(i)));
+                        row_buffer.column_mut(i).push(val);
+                    }
+                    row_buffer.increment_row_count();
                 }
                 SimpleQueryMessage::CommandComplete(n) => affected = n,
                 _ => {}
@@ -513,7 +515,7 @@ impl PostgresSession {
 
         Ok(QueryResult {
             columns,
-            rows,
+            rows: row_buffer,
             rows_affected: affected,
             execution_time: start.elapsed(),
             statement: sql.to_string(),

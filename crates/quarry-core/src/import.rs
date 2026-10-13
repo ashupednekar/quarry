@@ -475,7 +475,7 @@ mod tests {
     async fn count(s: &SqliteSession, t: &str) -> DbValue {
         s.execute(&format!("SELECT count(*) FROM {t}"))
             .await
-            .map(|r| r.rows[0][0].clone())
+            .map(|r| r.rows[(0, 0)].clone())
             .unwrap_or(DbValue::Null)
     }
 

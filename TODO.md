@@ -59,7 +59,7 @@ Deferred from the OOUX pass. Each item names where it plugs in.
 ## Performance & Memory (Zed-grade scale)
 - [x] Non-blocking SQLite: offload queries to Tokio blocking pool so 100k-row scans don't starve async worker threads (`quarry_core::sqlite::SqliteSession`)
 - [x] Zero-copy cell display: replace `DbValue::to_display_string()` heap cloning with `Cow<'static, str>` / borrowed formatting in `delegate.rs` and fast-path unmodified cells to eliminate 60k-120k string allocations/sec during 60-120 FPS grid scrolling (`quarry_core::value::DbValue`, `grid::delegate`, `grid::mod`)
-- [ ] Flat columnar result buffer: replace `Vec<Vec<DbValue>>` with flat column-oriented chunks (`quarry_core::session::QueryResult`, `grid::ResultSet`) to eliminate millions of pointer indirections and heap allocations on 100k-row queries
+- [x] Flat columnar result buffer: replace `Vec<Vec<DbValue>>` with flat column-oriented chunks (`quarry_core::session::QueryResult`, `grid::ResultSet`) to eliminate millions of pointer indirections and heap allocations on 100k-row queries
 - [ ] Streaming query cursor: stream database rows in chunked batches (e.g. 1,000 rows) via async channels to the UI grid instead of buffering the entire dataset in memory before rendering (`quarry_core`, `execution.rs`)
 - [x] Zero-copy completion context: slice only the active statement around the caret instead of cloning the entire editor rope into a heap string on every keystroke (`completion::SchemaCompletions`)
 - [x] Asynchronous autocomplete cancellation: compute schema completions on GPUI's background executor with cooperative cancellation tokens on subsequent keystrokes (`completion.rs`, `editor.rs`)

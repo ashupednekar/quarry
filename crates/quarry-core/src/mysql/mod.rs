@@ -8,6 +8,7 @@ mod monitor;
 use crate::conn_url::{self, UrlFields};
 use crate::driver::{Driver, Field};
 use crate::edits::PendingChanges;
+use crate::row_buffer::{RowBuffer, RowRef};
 use crate::schema::{
     ColumnSchema, ColumnType, ForeignKeyRef, IndexInfo, ObjectKind, SchemaCatalog, SchemaObject,
     TableInfo, TableSchema, EAGER_SCHEMAS,
@@ -190,19 +191,17 @@ async fn run_statement(conn: &mut Conn, sql: &str) -> Result<QueryResult, DbErro
     let start = Instant::now();
     let mut result = conn.query_iter(sql).await.map_err(err)?;
     let columns: Arc<[Column]> = result.columns().unwrap_or_else(|| Arc::from(Vec::new()));
-    let mut rows = Vec::new();
+    let mut row_buffer = RowBuffer::new(columns.len());
     let mut count = 0u64;
     result
         .for_each(|row| {
             count += 1;
-            if rows.len() < MAX_ROWS {
-                rows.push(
-                    row.unwrap()
-                        .into_iter()
-                        .zip(columns.iter())
-                        .map(|(v, c)| decode(v, c))
-                        .collect(),
-                );
+            if row_buffer.len() < MAX_ROWS {
+                let row_unwrapped = row.unwrap();
+                for (i, (v, c)) in row_unwrapped.into_iter().zip(columns.iter()).enumerate() {
+                    row_buffer.column_mut(i).push(decode(v, c));
+                }
+                row_buffer.increment_row_count();
             }
         })
         .await
@@ -215,7 +214,7 @@ async fn run_statement(conn: &mut Conn, sql: &str) -> Result<QueryResult, DbErro
     result.drop_result().await.map_err(err)?;
     Ok(QueryResult {
         columns: columns.iter().map(|c| c.name_str().into_owned()).collect(),
-        rows,
+        rows: row_buffer,
         rows_affected: affected,
         execution_time: start.elapsed(),
         statement: sql.to_string(),
@@ -596,7 +595,7 @@ impl MysqlSession {
             .iter()
             .map(|t| {
                 let (schema, name) = (s(&t[0]), s(&t[1]));
-                let mine = |r: &&Vec<DbValue>| s(&r[0]) == schema && s(&r[1]) == name;
+                let mine = |r: &RowRef<'_>| s(&r[0]) == schema && s(&r[1]) == name;
                 let columns: Vec<ColumnSchema> = columns
                     .rows
                     .iter()

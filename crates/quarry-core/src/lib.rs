@@ -22,6 +22,7 @@ pub mod oracle;
 pub mod plan;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod row_buffer;
 pub mod schema;
 pub mod session;
 #[cfg(feature = "sqlite")]
@@ -35,6 +36,7 @@ pub use lexer::{parse_dollar_tag, SqlLexer, Token, TokenKind};
 pub use logged::{ActivityLog, LogEntry, LoggedSession};
 #[cfg(feature = "postgres")]
 pub use postgres::PostgresSession;
+pub use row_buffer::{RowBuffer, RowIter, RowRef};
 pub use schema::{ColumnSchema, ColumnType, SchemaCatalog, TableSchema};
 pub use session::{DatabaseSession, DbError, QueryResult, TxState};
 #[cfg(feature = "sqlite")]
@@ -72,9 +74,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(query_res.rows.len(), 1);
-        assert_eq!(query_res.rows[0][0], DbValue::Int(1));
+        assert_eq!(query_res.rows[(0, 0)], DbValue::Int(1));
         assert_eq!(
-            query_res.rows[0][1],
+            query_res.rows[(0, 1)],
             DbValue::Text("alice@example.com".to_string())
         );
 
@@ -161,7 +163,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            verify.rows[0][0],
+            verify.rows[(0, 0)],
             DbValue::Text("alice.updated@example.com".to_string())
         );
     }

@@ -11,7 +11,7 @@ use gpui::component::input::InputState;
 use gpui::component::Sizable;
 use gpui::*;
 use quarry_core::export::{ExportFormat, ExportOptions, Exporter};
-use quarry_core::{DatabaseSession, DbValue};
+use quarry_core::DatabaseSession;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -39,7 +39,7 @@ struct Job {
 
 /// Where the rows come from
 enum Source {
-    Rows(Vec<Vec<DbValue>>),
+    Rows(quarry_core::RowBuffer),
     Query(Arc<dyn DatabaseSession>, String),
 }
 
@@ -506,13 +506,19 @@ async fn write_export(
         Exporter::begin(std::io::BufWriter::new(file), columns, opts).map_err(|e| e.to_string())?;
     let cap = limit.unwrap_or(usize::MAX);
     match source {
-        Source::Rows(rows) => {
-            for chunk in rows[..rows.len().min(cap)].chunks(CHUNK) {
+        Source::Rows(buffer) => {
+            let to_write = buffer.len().min(cap);
+            let mut i = 0;
+            while i < to_write {
                 if cancel.load(Ordering::Relaxed) {
                     return Ok(None);
                 }
-                ex.rows(chunk).map_err(|e| e.to_string())?;
+                let end = (i + CHUNK).min(to_write);
+                for r in i..end {
+                    ex.row_ref(&buffer.row(r)).map_err(|e| e.to_string())?;
+                }
                 progress.store(ex.written(), Ordering::Relaxed);
+                i = end;
             }
         }
         // Whole table: page through it so memory stays flat (X7)
@@ -529,7 +535,7 @@ async fn write_export(
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-            ex.rows(&page.rows).map_err(|e| e.to_string())?;
+            ex.row_buffer(&page.rows).map_err(|e| e.to_string())?;
             progress.store(ex.written(), Ordering::Relaxed);
             if page.rows.len() < want || ex.written() >= cap {
                 break;

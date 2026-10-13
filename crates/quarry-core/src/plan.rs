@@ -376,7 +376,7 @@ mod tests {
     fn result(columns: &[&str], rows: Vec<Vec<DbValue>>) -> QueryResult {
         QueryResult {
             columns: columns.iter().map(|c| c.to_string()).collect(),
-            rows,
+            rows: rows.into(),
             rows_affected: 0,
             execution_time: Duration::ZERO,
             statement: String::new(),

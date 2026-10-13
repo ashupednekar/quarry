@@ -17,6 +17,7 @@ use crate::session::{
     is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS,
 };
 use crate::value::DbValue;
+use crate::RowBuffer;
 use async_trait::async_trait;
 use oracle::sql_type::OracleType;
 use oracle::Connection;
@@ -229,7 +230,7 @@ fn run_statement(conn: &Connection, sql: &str) -> Result<QueryResult, DbError> {
         stmt.execute(&[]).map_err(err)?;
         return Ok(QueryResult {
             columns: Vec::new(),
-            rows: Vec::new(),
+            rows: RowBuffer::default(),
             rows_affected: stmt.row_count().map_err(err)?,
             execution_time: start.elapsed(),
             statement: sql.to_string(),
@@ -241,23 +242,21 @@ fn run_statement(conn: &Connection, sql: &str) -> Result<QueryResult, DbError> {
         .iter()
         .map(|c| (c.name().to_string(), c.oracle_type().clone()))
         .collect();
-    let (mut rows, mut count) = (Vec::new(), 0u64);
+    let mut row_buffer = RowBuffer::new(info.len());
+    let mut count = 0u64;
     for row in rs {
         let row = row.map_err(err)?;
         count += 1;
-        if rows.len() < MAX_ROWS {
-            rows.push(
-                row.sql_values()
-                    .iter()
-                    .zip(&info)
-                    .map(|(v, (_, t))| decode(v, t))
-                    .collect(),
-            );
+        if row_buffer.len() < MAX_ROWS {
+            for (i, (v, (_, t))) in row.sql_values().iter().zip(&info).enumerate() {
+                row_buffer.column_mut(i).push(decode(v, t));
+            }
+            row_buffer.increment_row_count();
         }
     }
     Ok(QueryResult {
         columns: info.into_iter().map(|(n, _)| n).collect(),
-        rows,
+        rows: row_buffer,
         rows_affected: count,
         execution_time: start.elapsed(),
         statement: sql.to_string(),

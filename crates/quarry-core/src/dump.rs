@@ -114,7 +114,7 @@ mod tests {
             dst.execute(q).await.unwrap().rows
         );
         assert_eq!(
-            dst.execute("SELECT count(*) FROM v").await.unwrap().rows[0][0],
+            dst.execute("SELECT count(*) FROM v").await.unwrap().rows[(0, 0)],
             DbValue::Int(2)
         );
     }

@@ -10,6 +10,7 @@ use crate::session::{
     is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState,
 };
 use crate::value::DbValue;
+use crate::RowBuffer;
 use async_trait::async_trait;
 use rusqlite::types::ValueRef;
 use rusqlite::Connection;
@@ -434,7 +435,7 @@ fn run_statement(conn: &Connection, sql: &str, start: Instant) -> Result<QueryRe
         let affected = stmt.execute([]).map_err(sql_err)?;
         return Ok(QueryResult {
             columns: Vec::new(),
-            rows: Vec::new(),
+            rows: RowBuffer::default(),
             rows_affected: affected as u64,
             execution_time: start.elapsed(),
             statement: sql.to_string(),
@@ -447,25 +448,26 @@ fn run_statement(conn: &Connection, sql: &str, start: Instant) -> Result<QueryRe
         .map(|s| s.to_string())
         .collect();
 
-    let mut rows_data = Vec::new();
+    let mut row_buffer = RowBuffer::new(col_count);
     let mut rows = stmt.query([]).map_err(sql_err)?;
     let mut row_count = 0u64;
 
     while let Some(row) = rows.next().map_err(sql_err)? {
         // Past the cap rows are counted, not decoded
         row_count += 1;
-        if rows_data.len() >= crate::session::MAX_ROWS {
+        if row_buffer.len() >= crate::session::MAX_ROWS {
             continue;
         }
-        let row_vals = (0..col_count)
-            .map(|i| row.get_ref(i).map(decode).map_err(sql_err))
-            .collect::<Result<Vec<_>, _>>()?;
-        rows_data.push(row_vals);
+        for i in 0..col_count {
+            let val = row.get_ref(i).map(decode).map_err(sql_err)?;
+            row_buffer.column_mut(i).push(val);
+        }
+        row_buffer.increment_row_count();
     }
 
     Ok(QueryResult {
         columns,
-        rows: rows_data,
+        rows: row_buffer,
         rows_affected: row_count,
         execution_time: start.elapsed(),
         statement: sql.to_string(),

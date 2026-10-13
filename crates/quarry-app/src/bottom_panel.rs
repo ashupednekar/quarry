@@ -171,7 +171,7 @@ fn result(columns: &[&str], rows: Vec<Vec<DbValue>>) -> QueryResult {
     QueryResult {
         columns: columns.iter().map(|c| c.to_string()).collect(),
         rows_affected: rows.len() as u64,
-        rows,
+        rows: rows.into(),
         execution_time: Duration::ZERO,
         statement: String::new(),
     }

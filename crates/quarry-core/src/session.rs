@@ -3,8 +3,8 @@
 
 use crate::dialect::Dialect;
 use crate::edits::PendingChanges;
+use crate::row_buffer::RowBuffer;
 use crate::schema::{SchemaCatalog, SchemaObject, TableInfo, TableSchema};
-use crate::value::DbValue;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +45,7 @@ pub const MAX_ROWS: usize = 100_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<DbValue>>,
+    pub rows: RowBuffer,
     pub rows_affected: u64,
     pub execution_time: Duration,
     pub statement: String,

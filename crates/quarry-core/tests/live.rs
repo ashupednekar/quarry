@@ -32,15 +32,14 @@ fn postgres_decodes_every_type() {
                '{\"k\":1}'::jsonb AS j, '\\x00ff'::bytea AS b, NULL::text AS nul, '' AS empty, \
                9223372036854775807::bigint AS big, now() AS ts";
     let r = rt.block_on(s.execute(sql)).unwrap();
-    println!("{:?}", r.columns);
-    println!("{:?}", r.rows[0]);
+    println!("{:?}", r.rows.row(0));
     use quarry_core::DbValue::*;
-    assert_eq!(r.rows[0][0], Decimal("1.10".into()));
-    assert_eq!(r.rows[0][3], Text("{1,2}".into()));
-    assert_eq!(r.rows[0][7], Blob(vec![0, 255]));
-    assert_eq!(r.rows[0][8], Null);
-    assert_eq!(r.rows[0][9], Text(String::new()));
-    assert_eq!(r.rows[0][10], Int(i64::MAX));
+    assert_eq!(r.rows[(0, 0)], Decimal("1.10".into()));
+    assert_eq!(r.rows[(0, 3)], Text("{1,2}".into()));
+    assert_eq!(r.rows[(0, 7)], Blob(vec![0, 255]));
+    assert_eq!(r.rows[(0, 8)], Null);
+    assert_eq!(r.rows[(0, 9)], Text(String::new()));
+    assert_eq!(r.rows[(0, 10)], Int(i64::MAX));
 
     // Zero-row results still report their columns
     let empty = rt.block_on(s.execute("SELECT 1 AS x WHERE false")).unwrap();
@@ -84,7 +83,7 @@ fn postgres_applies_edits_atomically() {
         .block_on(s.execute("SELECT amount, note FROM edit_t ORDER BY amount DESC"))
         .unwrap();
     assert_eq!(
-        r.rows[0],
+        r.rows.row(0),
         vec![Decimal("99.95".into()), Text("it's fine".into())]
     );
     assert_eq!(r.rows.len(), 2);
@@ -109,7 +108,7 @@ fn postgres_applies_edits_atomically() {
         .block_on(s.execute("SELECT count(*) FROM edit_t"))
         .unwrap();
     assert_eq!(
-        count.rows[0][0],
+        count.rows[(0, 0)],
         Int(2),
         "failed submit must not leave the insert behind"
     );
@@ -205,7 +204,7 @@ fn postgres_driver_extras() {
     rt.block_on(s.apply_edits("\"public\".\"extras_t\"", &c))
         .unwrap();
     let r = rt.block_on(s.execute("SELECT data FROM extras_t")).unwrap();
-    assert_eq!(r.rows[0][0], Blob(vec![0, 255]));
+    assert_eq!(r.rows[(0, 0)], Blob(vec![0, 255]));
 
     // pg_dump runs with the session's own URL; skipped where the client tools aren't installed
     let out = std::env::temp_dir().join("quarry_live_dump.sql");
@@ -314,7 +313,7 @@ fn postgres_caps_big_results() {
         (MAX_ROWS, MAX_ROWS as u64 + 7, true)
     );
     assert_eq!(
-        rt.block_on(s.execute("SELECT 42")).unwrap().rows[0][0],
+        rt.block_on(s.execute("SELECT 42")).unwrap().rows[(0, 0)],
         quarry_core::DbValue::Int(42)
     );
 }
@@ -349,7 +348,7 @@ fn mysql_conforms() {
     let r = rt.block_on(s.execute("SELECT * FROM types_t")).unwrap();
     use quarry_core::DbValue::*;
     assert_eq!(
-        r.rows[0],
+        r.rows.row(0),
         vec![
             Decimal("18446744073709551615".into()),
             Decimal("12345678901234567890.0123456789".into()),
@@ -388,7 +387,7 @@ fn mssql_conforms() {
     ))
     .unwrap();
     assert_eq!(
-        r.rows[0],
+        r.rows.row(0),
         vec![
             Decimal("12345678901234567890.0123456789".into()),
             Blob(vec![0, 255]),
@@ -439,7 +438,7 @@ fn oracle_conforms() {
     use quarry_core::DbValue::*;
     let r = rt.block_on(s.execute("SELECT 12345678901234567890.0123456789, HEXTORAW('00FF'), 'naïve', CAST(NULL AS NUMBER), 42 FROM dual;")).unwrap();
     assert_eq!(
-        r.rows[0],
+        r.rows.row(0),
         vec![
             Decimal("12345678901234567890.0123456789".into()),
             Blob(vec![0, 255]),

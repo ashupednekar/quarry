@@ -235,8 +235,6 @@ pub struct ResultSet {
     pub level_column: Option<usize>,
     /// Right-click menu on a column header: where, the menu, and its dismiss subscription
     header_menu: Option<(Point<Pixels>, Entity<PopupMenu>, Subscription)>,
-    /// Query results in their original order, so "default" can put them back
-    unsorted: Option<Vec<Vec<DbValue>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -307,7 +305,6 @@ impl ResultSet {
             sort: None,
             level_column: None,
             header_menu: None,
-            unsorted: None,
             colors: CellColors::from(theme),
         }
     }
@@ -330,7 +327,6 @@ impl ResultSet {
         if self.source.is_none() {
             self.sort = None;
         }
-        self.unsorted = None;
         self.inspector = None;
     }
 
@@ -401,12 +397,6 @@ impl ResultSet {
         delimiter: char,
     ) -> Option<String> {
         let r = self.result()?;
-        let rows: Vec<Vec<DbValue>> = match row {
-            Some(row) => vec![(0..r.columns.len())
-                .map(|c| self.cell_value(row, c).0.unwrap_or(DbValue::Null))
-                .collect()],
-            None => r.rows.clone(),
-        };
         let table = self
             .source
             .as_ref()
@@ -422,7 +412,17 @@ impl ResultSet {
         };
         let mut buf = Vec::new();
         let mut ex = quarry_core::export::Exporter::begin(&mut buf, &r.columns, opts).ok()?;
-        ex.rows(&rows).ok()?;
+        match row {
+            Some(row) => {
+                let single = vec![(0..r.columns.len())
+                    .map(|c| self.cell_value(row, c).0.unwrap_or(DbValue::Null))
+                    .collect()];
+                ex.rows(&single).ok()?;
+            }
+            None => {
+                ex.row_buffer(&r.rows).ok()?;
+            }
+        }
         ex.finish().ok()?;
         String::from_utf8(buf)
             .ok()
@@ -497,14 +497,10 @@ impl ResultSet {
         let Some(r) = self.results.get_mut(self.active) else {
             return;
         };
-        let original = self.unsorted.get_or_insert_with(|| r.rows.clone());
         match sort {
-            ColumnSort::Ascending => r.rows.sort_by(|a, b| a[col_ix].cmp_val(&b[col_ix])),
-            ColumnSort::Descending => r.rows.sort_by(|a, b| b[col_ix].cmp_val(&a[col_ix])),
-            ColumnSort::Default => r.rows = std::mem::take(original),
-        }
-        if sort == ColumnSort::Default {
-            self.unsorted = None;
+            ColumnSort::Ascending => r.rows.sort_by(col_ix, |a, b| a.cmp_val(b)),
+            ColumnSort::Descending => r.rows.sort_by(col_ix, |a, b| b.cmp_val(a)),
+            ColumnSort::Default => r.rows.reset_order(),
         }
     }
 

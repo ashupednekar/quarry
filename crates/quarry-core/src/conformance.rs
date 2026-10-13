@@ -133,7 +133,7 @@ pub async fn check(s: &dyn DatabaseSession, schema: &str) {
         .await
         .expect("count");
     assert_eq!(
-        r.rows[0][0],
+        r.rows[(0, 0)],
         DbValue::Int(3),
         "apply edits: a conflict must roll back the whole batch"
     );
@@ -154,7 +154,7 @@ pub async fn check(s: &dyn DatabaseSession, schema: &str) {
         .await
         .expect("count");
     assert_eq!(
-        r.rows[0][0],
+        r.rows[(0, 0)],
         DbValue::Int(3),
         "manual commit: rollback must undo"
     );

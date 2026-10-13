@@ -269,7 +269,7 @@ mod tests {
         assert!(!s.in_transaction());
         assert!(!s.in_transaction());
         let n = s.execute("SELECT count(*) FROM t").await.unwrap();
-        assert_eq!(n.rows[0][0], crate::DbValue::Int(0));
+        assert_eq!(n.rows[(0, 0)], crate::DbValue::Int(0));
 
         // A failed grid submit inside the transaction only undoes itself
         s.execute("INSERT INTO t VALUES (1, 'a')").await.unwrap();
@@ -284,6 +284,6 @@ mod tests {
         assert!(s.in_transaction());
         s.commit().await.unwrap();
         let n = s.execute("SELECT count(*) FROM t").await.unwrap();
-        assert_eq!(n.rows[0][0], crate::DbValue::Int(1));
+        assert_eq!(n.rows[(0, 0)], crate::DbValue::Int(1));
     }
 }

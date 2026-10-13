@@ -16,6 +16,7 @@ use crate::session::{
     is_mutation, is_read, tx_verb, DatabaseSession, DbError, QueryResult, TxState, TxVerb, MAX_ROWS,
 };
 use crate::value::DbValue;
+use crate::RowBuffer;
 use async_trait::async_trait;
 use futures_util::TryStreamExt;
 use std::sync::Arc;
@@ -225,7 +226,8 @@ async fn run_batch(
         sql.to_string()
     };
     let mut stream = client.simple_query(batch).await.map_err(err)?;
-    let (mut columns, mut rows, mut seen, mut affected) = (Vec::new(), Vec::new(), 0u64, 0u64);
+    let (mut columns, mut row_buffer, mut seen, mut affected) =
+        (Vec::new(), RowBuffer::default(), 0u64, 0u64);
     let mut first_set: Option<usize> = None;
     while let Some(item) = stream.try_next().await.map_err(err)? {
         match item {
@@ -237,13 +239,17 @@ async fn run_batch(
                     .collect();
                 if names != [ROWCOUNT] && first_set.is_none() {
                     first_set = Some(meta.result_index());
+                    row_buffer = RowBuffer::new(names.len());
                     columns = names;
                 }
             }
             QueryItem::Row(row) if Some(row.result_index()) == first_set => {
                 seen += 1;
-                if rows.len() < MAX_ROWS {
-                    rows.push(row.cells().map(|(_, v)| decode(v)).collect());
+                if row_buffer.len() < MAX_ROWS {
+                    for (i, (_, v)) in row.cells().enumerate() {
+                        row_buffer.column_mut(i).push(decode(v));
+                    }
+                    row_buffer.increment_row_count();
                 }
             }
             QueryItem::Row(row) => {
@@ -256,7 +262,7 @@ async fn run_batch(
     Ok(QueryResult {
         rows_affected: if columns.is_empty() { affected } else { seen },
         columns,
-        rows,
+        rows: row_buffer,
         execution_time: start.elapsed(),
         statement: sql.to_string(),
     })
