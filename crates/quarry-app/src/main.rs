@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
-#![recursion_limit = "1024"]
+#![recursion_limit = "2048"]
 
 mod add_conn_modal;
 mod bottom_panel;
@@ -10,6 +10,8 @@ mod commands;
 mod completion;
 mod conn_form;
 mod connections;
+mod crash_modal;
+mod crash_reporter;
 mod db_icons;
 mod editor;
 mod er_view;
@@ -46,6 +48,7 @@ mod window_chrome;
 
 use add_conn_modal::AddConnModal;
 use command_bar::CommandBar;
+use crash_modal::CrashModal;
 use editor::QueryEditor;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
@@ -98,6 +101,10 @@ actions!(
         TabSwitcherNext,
         TabSwitcherPrev,
         ToggleSplit,
+        ToggleSplitDirection,
+        FocusNextPane,
+        FocusPrevPane,
+        SwapSplitPanes,
         PinCurrentTab,
         CommandPalette,
         SwitchSpace1,
@@ -120,6 +127,23 @@ actions!(
         ResetFontSize,
         SelectNextOccurrence,
         NewConnection,
+        ReportIssue,
+        ViewLastCrash,
+    ]
+);
+
+actions!(
+    quarry,
+    [
+        MoveSidebarLeft,
+        MoveSidebarRight,
+        MoveBottomPanelBottom,
+        MoveBottomPanelRight,
+        ResetLayout,
+        MovePaneLeft,
+        MovePaneRight,
+        MovePaneUp,
+        MovePaneDown,
     ]
 );
 
@@ -195,6 +219,8 @@ struct QuarryWindow {
     /// Where the centred view put it last frame, so a pan or zoom continues from there
     diagram_auto_pan: std::cell::Cell<Point<Pixels>>,
     diagram_drag: Option<Point<Pixels>>,
+    pub diagram_card_offsets: std::collections::HashMap<(String, String), Point<f32>>,
+    pub diagram_card_drag: Option<crate::er_view::DiagramCardDrag>,
     diagram_view: std::rc::Rc<std::cell::Cell<Bounds<Pixels>>>,
     pub diagram_layout: std::cell::RefCell<Option<crate::er_view::DiagramLayoutCache>>,
     /// A query tab's connection being reopened; the tab keeps it instead of following the active one meanwhile
@@ -214,6 +240,11 @@ struct QuarryWindow {
     force_close: bool,
     pub config_watcher: settings::ConfigWatcher,
     config_watch_task: Option<Task<()>>,
+    pub dock: layout::Dock,
+    pub active_drag_pane: Option<layout::Pane>,
+    pub active_drag_tab: Option<usize>,
+    pub active_drag_split_pane: Option<usize>,
+    pub pending_crash_report: Option<crash_reporter::CrashReport>,
 }
 
 impl QuarryWindow {
@@ -332,6 +363,8 @@ impl QuarryWindow {
             diagram_pan: None,
             diagram_auto_pan: Default::default(),
             diagram_drag: None,
+            diagram_card_offsets: Default::default(),
+            diagram_card_drag: None,
             diagram_view: Default::default(),
             diagram_layout: Default::default(),
             connecting_for_tab: None,
@@ -343,6 +376,11 @@ impl QuarryWindow {
             force_close: false,
             config_watcher: settings::ConfigWatcher::new(),
             config_watch_task: None,
+            dock: layout::dock(),
+            active_drag_pane: None,
+            active_drag_tab: None,
+            active_drag_split_pane: None,
+            pending_crash_report: crash_reporter::check_last_crash(),
         };
         this.reload_settings(cx);
         let keymap_errors = settings::apply_keymap(cx);
@@ -410,12 +448,40 @@ impl QuarryWindow {
             kit.font_size = px(s.font_size);
             kit.mono_font_size = px(s.mono_size());
         }
-        theme::apply_fonts(cx, &s.mono_font_family);
+        theme::apply_fonts(cx, &s.ui_font_family, &s.mono_font_family);
         self.settings = s;
         if let Some(e) = error {
             self.toast(e, true, cx);
         }
         cx.refresh_windows();
+    }
+
+    pub fn dismiss_crash_report(&mut self, cx: &mut Context<Self>) {
+        self.pending_crash_report = None;
+        crash_reporter::acknowledge_last_crash();
+        cx.notify();
+    }
+
+    pub fn clear_saved_session(&mut self, cx: &mut Context<Self>) {
+        self.close_all_tabs(cx);
+        self.closed_tabs.clear();
+        self.tab_mru.clear();
+        if let Some(path) = files::session_path() {
+            if path.exists() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        self.dismiss_crash_report(cx);
+        self.toast("Saved session cleared (Safe Mode)".to_string(), false, cx);
+    }
+
+    pub fn view_last_crash(&mut self, cx: &mut Context<Self>) {
+        if let Some(report) = crash_reporter::load_latest_crash() {
+            self.pending_crash_report = Some(report);
+            cx.notify();
+        } else {
+            self.toast("No crash reports found".to_string(), false, cx);
+        }
     }
 
     /// Pushes editor and grid settings into every open view
@@ -433,9 +499,12 @@ impl QuarryWindow {
                     );
                     e.set_soft_wrap(s.soft_wrap, window, cx);
                     e.set_line_number(s.line_numbers, window, cx);
+                    e.lsp_mut().completion_menu.max_width = gpui::px(480.);
                     e.lsp_mut().completion_provider = s.autocomplete.then(|| {
-                        std::rc::Rc::new(completion::SchemaCompletions(
+                        std::rc::Rc::new(completion::SchemaCompletions::new(
                             self.state.completion_catalog.clone(),
+                            Some(self.state.completion_usage.clone()),
+                            Some(self.state.completion_history.clone()),
                         ))
                             as std::rc::Rc<dyn gpui::component::input::CompletionProvider>
                     });
@@ -497,7 +566,11 @@ impl QuarryWindow {
             None,
             cx,
         );
-        theme::apply_fonts(cx, &self.settings.mono_font_family);
+        theme::apply_fonts(
+            cx,
+            &self.settings.ui_font_family,
+            &self.settings.mono_font_family,
+        );
         self.theme.apply_to_kit(cx);
         let grids: Vec<_> = self
             .state
@@ -1281,11 +1354,14 @@ impl QuarryWindow {
                 .placeholder(ui::format_keys("Write SQL here. ⌘↵ runs the selection or the statement at the cursor; ⌥↵ shows actions."))
                 .default_value(sql.to_string())
         });
-        let completions = std::rc::Rc::new(completion::SchemaCompletions(
+        let completions = std::rc::Rc::new(completion::SchemaCompletions::new(
             self.state.completion_catalog.clone(),
+            Some(self.state.completion_usage.clone()),
+            Some(self.state.completion_history.clone()),
         ));
         let me = cx.entity().downgrade();
         editor.update(cx, |e, cx| {
+            e.lsp_mut().completion_menu.max_width = gpui::px(480.);
             e.lsp_mut().completion_provider = self.settings.autocomplete.then_some(completions);
             e.lsp_mut().hover_provider = Some(std::rc::Rc::new(completion::SchemaHover(
                 self.state.completion_catalog.clone(),
@@ -1963,6 +2039,11 @@ impl QuarryWindow {
 
 impl Render for QuarryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cx.has_active_drag() {
+            self.active_drag_pane = None;
+            self.active_drag_tab = None;
+            self.active_drag_split_pane = None;
+        }
         self.sync_before_render(window, cx);
         let bottom_panel = self.render_bottom_panel(window, cx);
         let kill_confirm = self.render_kill_confirm(cx);
@@ -1974,6 +2055,7 @@ impl Render for QuarryWindow {
         let peek = self.render_peek(cx);
         let prod_confirm = self.render_prod_confirm(cx);
         let close_confirm = self.render_close_confirm(cx);
+        let dock_overlay = self.render_dock_overlay(cx);
         // While ⌃Tab is held, the main area previews the highlighted tab; letting go makes it active
         let previewed = self
             .tab_switcher
@@ -1987,11 +2069,17 @@ impl Render for QuarryWindow {
         let tab_strip = self.render_tab_strip(cx);
         let center = self.render_center(active_tab.as_ref(), cx);
 
-        let sidebar = Sidebar::render(&self.state, &self.theme, cx);
+        let sidebar = Sidebar::render(&self.state, &self.theme, self.dock, cx);
+        let main_layout = self.render_layout(
+            sidebar.into_any_element(),
+            bottom_panel,
+            tab_strip,
+            center.into_any_element(),
+        );
 
         div()
             .id("quarry-root")
-            .font_family(theme::UI_FONT)
+            .font_family(cx.theme().font_family.clone())
             .track_focus(&self.focus_handle)
             .key_context("Quarry")
             .on_action(cx.listener(Self::toggle_command_bar))
@@ -2066,6 +2154,14 @@ impl Render for QuarryWindow {
                 cx.listener(|this, _: &SwitchSpace9, window, cx| this.switch_space(8, window, cx)),
             )
             .on_action(cx.listener(|this, _: &ToggleSplit, _, cx| this.toggle_split(cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleSplitDirection, _, cx| {
+                    this.toggle_split_direction(cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &FocusNextPane, _, cx| this.swap_split(cx)))
+            .on_action(cx.listener(|this, _: &FocusPrevPane, _, cx| this.swap_split(cx)))
+            .on_action(cx.listener(|this, _: &SwapSplitPanes, _, cx| this.swap_pane_positions(cx)))
             .on_action(cx.listener(|this, _: &OpenInSplit, window, cx| {
                 this.confirm_command_bar_in_split(window, cx)
             }))
@@ -2084,6 +2180,39 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
             .on_action(cx.listener(Self::select_next_occurrence))
+            .on_action(cx.listener(|this, _: &MoveSidebarLeft, window, cx| {
+                this.move_sidebar(layout::Side::Left, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveSidebarRight, window, cx| {
+                this.move_sidebar(layout::Side::Right, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveBottomPanelBottom, window, cx| {
+                this.move_bottom_panel(layout::Side::Bottom, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MoveBottomPanelRight, window, cx| {
+                this.move_bottom_panel(layout::Side::Right, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResetLayout, window, cx| {
+                this.reset_layout(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &MovePaneLeft, _, cx| {
+                this.move_pane_left(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MovePaneRight, _, cx| {
+                this.move_pane_right(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MovePaneUp, _, cx| {
+                this.move_pane_up(cx);
+            }))
+            .on_action(cx.listener(|this, _: &MovePaneDown, _, cx| {
+                this.move_pane_down(cx);
+            }))
+            .on_action(|_: &ReportIssue, _, cx| {
+                cx.open_url("https://github.com/krishna/quarry/issues/new");
+            })
+            .on_action(cx.listener(|this, _: &ViewLastCrash, _, cx| {
+                this.view_last_crash(cx);
+            }))
             // Drop a SQLite file anywhere to open it (C3, U11)
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 if let Some(path) = paths.paths().first() {
@@ -2096,35 +2225,7 @@ impl Render for QuarryWindow {
             .bg(t.bg_app)
             .text_color(t.text_primary)
             .child(titlebar)
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("main-split")
-                        .on_resize(layout::remember("main-split"))
-                        .child(
-                            resizable_panel()
-                                .size(layout::size("main-split", 0, 240.0))
-                                .size_range(px(160.0)..px(480.0))
-                                .visible(self.state.sidebar_visible)
-                                .child(sidebar),
-                        )
-                        .child(
-                            resizable_panel().child(
-                                v_resizable("content-split")
-                                    .on_resize(layout::remember("content-split"))
-                                    .child(resizable_panel().child(
-                                        v_flex().size_full().children(tab_strip).child(center),
-                                    ))
-                                    .child(
-                                        resizable_panel()
-                                            .size(layout::size("content-split", 1, 280.0))
-                                            .size_range(px(120.0)..px(900.0))
-                                            .visible(self.state.bottom_panel_open)
-                                            .child(bottom_panel),
-                                    ),
-                            ),
-                        ),
-                ),
-            )
+            .child(div().flex_1().min_h_0().child(main_layout))
             .child(StatusBar::render(
                 &self.state,
                 current_session.as_ref(),
@@ -2133,6 +2234,7 @@ impl Render for QuarryWindow {
                 cx,
             ))
             // Modals & Overlays (only rendered when active)
+            .children(dock_overlay)
             .children(kill_confirm)
             .children(tab_switcher)
             .children(export_dialog)
@@ -2200,10 +2302,559 @@ impl Render for QuarryWindow {
             .when(self.state.add_conn_modal_open, |this| {
                 this.child(AddConnModal::render(self, cx))
             })
+            .when_some(self.pending_crash_report.as_ref(), |this, report| {
+                this.child(CrashModal::render(self, report, cx))
+            })
+    }
+}
+
+impl QuarryWindow {
+    fn render_layout(
+        &self,
+        sidebar: AnyElement,
+        bottom_panel: AnyElement,
+        tab_strip: Option<impl IntoElement>,
+        center: AnyElement,
+    ) -> AnyElement {
+        let editor_pane =
+            resizable_panel().child(v_flex().size_full().children(tab_strip).child(center));
+        let content_split = match self.dock.bottom_panel {
+            layout::Side::Bottom => v_resizable("content-split:bottom")
+                .on_resize(layout::remember("content-split:bottom"))
+                .child(editor_pane)
+                .child(
+                    resizable_panel()
+                        .size(layout::size("content-split:bottom", 1, 280.0))
+                        .size_range(px(120.0)..px(900.0))
+                        .visible(self.state.bottom_panel_open)
+                        .child(bottom_panel),
+                )
+                .into_any_element(),
+            layout::Side::Right => h_resizable("content-split:right")
+                .on_resize(layout::remember("content-split:right"))
+                .child(editor_pane)
+                .child(
+                    resizable_panel()
+                        .size(layout::size("content-split:right", 1, 380.0))
+                        .size_range(px(200.0)..px(900.0))
+                        .visible(self.state.bottom_panel_open)
+                        .child(bottom_panel),
+                )
+                .into_any_element(),
+            layout::Side::Left | layout::Side::Top => unreachable!(),
+        };
+
+        match self.dock.sidebar {
+            layout::Side::Left => h_resizable("main-split:sidebar-left")
+                .on_resize(layout::remember("main-split:sidebar-left"))
+                .child(
+                    resizable_panel()
+                        .size(layout::size("main-split:sidebar-left", 0, 240.0))
+                        .size_range(px(160.0)..px(480.0))
+                        .visible(self.state.sidebar_visible)
+                        .child(sidebar),
+                )
+                .child(resizable_panel().child(content_split))
+                .into_any_element(),
+            layout::Side::Right => h_resizable("main-split:sidebar-right")
+                .on_resize(layout::remember("main-split:sidebar-right"))
+                .child(resizable_panel().child(content_split))
+                .child(
+                    resizable_panel()
+                        .size(layout::size("main-split:sidebar-right", 1, 240.0))
+                        .size_range(px(160.0)..px(480.0))
+                        .visible(self.state.sidebar_visible)
+                        .child(sidebar),
+                )
+                .into_any_element(),
+            layout::Side::Bottom | layout::Side::Top => unreachable!(),
+        }
+    }
+
+    pub(crate) fn move_sidebar(
+        &mut self,
+        side: layout::Side,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dock.sidebar != side {
+            self.dock.sidebar = side;
+            layout::set_dock(self.dock);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn move_bottom_panel(
+        &mut self,
+        side: layout::Side,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.dock.bottom_panel != side {
+            self.dock.bottom_panel = side;
+            layout::set_dock(self.dock);
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn reset_layout(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        layout::reset();
+        self.dock = layout::dock();
+        self.state.sidebar_visible = true;
+        self.state.bottom_panel_open = true;
+        cx.notify();
+    }
+
+    pub(crate) fn open_sidebar_dock_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self.dock.sidebar;
+        let choices = vec![
+            (
+                "Move to Left".to_string(),
+                current == layout::Side::Left,
+                layout::Side::Left,
+            ),
+            (
+                "Move to Right".to_string(),
+                current == layout::Side::Right,
+                layout::Side::Right,
+            ),
+        ];
+        self.open_choice_menu(choices, Self::apply_sidebar_dock, window, cx);
+    }
+
+    pub(crate) fn open_bottom_panel_dock_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self.dock.bottom_panel;
+        let choices = vec![
+            (
+                "Move to Bottom".to_string(),
+                current == layout::Side::Bottom,
+                layout::Side::Bottom,
+            ),
+            (
+                "Move to Right".to_string(),
+                current == layout::Side::Right,
+                layout::Side::Right,
+            ),
+        ];
+        self.open_choice_menu(choices, Self::apply_bottom_panel_dock, window, cx);
+    }
+
+    fn apply_sidebar_dock(&mut self, side: layout::Side, cx: &mut Context<Self>) {
+        self.dock.sidebar = side;
+        layout::set_dock(self.dock);
+        cx.notify();
+    }
+
+    fn apply_bottom_panel_dock(&mut self, side: layout::Side, cx: &mut Context<Self>) {
+        self.dock.bottom_panel = side;
+        layout::set_dock(self.dock);
+        cx.notify();
+    }
+
+    fn render_dock_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !cx.has_active_drag() {
+            return None;
+        }
+
+        let is_pane_drag = self.active_drag_pane.is_some();
+        let is_tab_drag = self.active_drag_tab.is_some();
+        let is_split_drag = self.active_drag_split_pane.is_some();
+        if !is_pane_drag && !is_tab_drag && !is_split_drag {
+            return None;
+        }
+
+        let mut overlay = div()
+            .id("dock-overlay")
+            .absolute()
+            .inset_0()
+            .top(px(38.0))
+            .bottom(px(24.0))
+            .on_drop(cx.listener(|this, _: &layout::DraggedPane, _, cx| {
+                this.active_drag_pane = None;
+                cx.notify();
+            }))
+            .on_drop(cx.listener(|this, _: &layout::DraggedTab, _, cx| {
+                this.active_drag_tab = None;
+                cx.notify();
+            }))
+            .on_drop(cx.listener(|this, _: &layout::DraggedSplitPane, _, cx| {
+                this.active_drag_split_pane = None;
+                cx.notify();
+            }));
+
+        let zone_label = |icon: IconName, text: &'static str| {
+            h_flex()
+                .px_3()
+                .py_1p5()
+                .gap_1p5()
+                .items_center()
+                .rounded_md()
+                .bg(rgba(0x111214cc))
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(0x80b0ff))
+                .child(Icon::new(icon).xsmall().text_color(rgb(0x80b0ff)))
+                .child(text)
+        };
+
+        if self.active_drag_pane == Some(layout::Pane::Sidebar) {
+            overlay = overlay
+                .child(
+                    div()
+                        .id("drop-zone-sidebar-left")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w_1_4()
+                        .min_w(px(200.0))
+                        .max_w(px(360.0))
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_r_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
+                            this.active_drag_pane = None;
+                            this.move_sidebar(layout::Side::Left, window, cx);
+                        }))
+                        .child(zone_label(IconName::ArrowLeft, "Dock to Left")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-sidebar-right")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w_1_4()
+                        .min_w(px(200.0))
+                        .max_w(px(360.0))
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_l_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
+                            this.active_drag_pane = None;
+                            this.move_sidebar(layout::Side::Right, window, cx);
+                        }))
+                        .child(zone_label(IconName::ArrowRight, "Dock to Right")),
+                );
+        } else if self.active_drag_pane == Some(layout::Pane::BottomPanel) {
+            overlay = overlay
+                .child(
+                    div()
+                        .id("drop-zone-bottom-bottom")
+                        .absolute()
+                        .bottom_0()
+                        .left_0()
+                        .right_0()
+                        .h_1_4()
+                        .min_h(px(140.0))
+                        .max_h(px(320.0))
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_t_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
+                            this.active_drag_pane = None;
+                            this.move_bottom_panel(layout::Side::Bottom, window, cx);
+                        }))
+                        .child(zone_label(IconName::ArrowDown, "Dock to Bottom")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-bottom-right")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w_1_4()
+                        .min_w(px(200.0))
+                        .max_w(px(360.0))
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_l_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
+                            this.active_drag_pane = None;
+                            this.move_bottom_panel(layout::Side::Right, window, cx);
+                        }))
+                        .child(zone_label(IconName::ArrowRight, "Dock to Right")),
+                );
+        } else if let Some(from_ix) = self.active_drag_split_pane {
+            overlay = overlay
+                .child(
+                    div()
+                        .id("drop-zone-split-left")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_r_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(
+                            cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
+                                this.active_drag_split_pane = None;
+                                this.move_split_pane_to_side(from_ix, layout::Side::Left, cx);
+                            }),
+                        )
+                        .child(zone_label(IconName::ArrowLeft, "Dock to Left")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-split-right")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_l_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(
+                            cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
+                                this.active_drag_split_pane = None;
+                                this.move_split_pane_to_side(from_ix, layout::Side::Right, cx);
+                            }),
+                        )
+                        .child(zone_label(IconName::ArrowRight, "Dock to Right")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-split-top")
+                        .absolute()
+                        .top_0()
+                        .h_1_2()
+                        .left_1_4()
+                        .right_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_b_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(
+                            cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
+                                this.active_drag_split_pane = None;
+                                this.move_split_pane_to_side(from_ix, layout::Side::Top, cx);
+                            }),
+                        )
+                        .child(zone_label(IconName::ArrowUp, "Dock to Top")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-split-bottom")
+                        .absolute()
+                        .bottom_0()
+                        .h_1_2()
+                        .left_1_4()
+                        .right_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_t_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(
+                            cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
+                                this.active_drag_split_pane = None;
+                                this.move_split_pane_to_side(from_ix, layout::Side::Bottom, cx);
+                            }),
+                        )
+                        .child(zone_label(IconName::ArrowDown, "Dock to Bottom")),
+                );
+        } else if self.active_drag_tab.is_some() {
+            overlay = overlay
+                .child(
+                    div()
+                        .id("drop-zone-tab-split-left")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left_0()
+                        .w_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_r_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(
+                            |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
+                                this.active_drag_tab = None;
+                                if let Some(tab) = this.state.tabs.get(idx) {
+                                    let id = tab.id().to_string();
+                                    this.open_tab_in_split_side(id, layout::Side::Left, cx);
+                                }
+                            },
+                        ))
+                        .child(zone_label(IconName::ArrowLeft, "Dock to Left")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-tab-split-right")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_l_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(
+                            |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
+                                this.active_drag_tab = None;
+                                if let Some(tab) = this.state.tabs.get(idx) {
+                                    let id = tab.id().to_string();
+                                    this.open_tab_in_split_side(id, layout::Side::Right, cx);
+                                }
+                            },
+                        ))
+                        .child(zone_label(IconName::ArrowRight, "Dock to Right")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-tab-split-top")
+                        .absolute()
+                        .top_0()
+                        .h_1_2()
+                        .left_1_4()
+                        .right_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_b_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(
+                            |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
+                                this.active_drag_tab = None;
+                                if let Some(tab) = this.state.tabs.get(idx) {
+                                    let id = tab.id().to_string();
+                                    this.open_tab_in_split_side(id, layout::Side::Top, cx);
+                                }
+                            },
+                        ))
+                        .child(zone_label(IconName::ArrowUp, "Dock to Top")),
+                )
+                .child(
+                    div()
+                        .id("drop-zone-tab-split-bottom")
+                        .absolute()
+                        .bottom_0()
+                        .h_1_2()
+                        .left_1_4()
+                        .right_1_4()
+                        .bg(rgba(0x4080ff18))
+                        .border_2()
+                        .border_dashed()
+                        .border_color(rgba(0x4080ff60))
+                        .rounded_t_lg()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
+                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        })
+                        .on_drop(cx.listener(
+                            |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
+                                this.active_drag_tab = None;
+                                if let Some(tab) = this.state.tabs.get(idx) {
+                                    let id = tab.id().to_string();
+                                    this.open_tab_in_split_side(id, layout::Side::Bottom, cx);
+                                }
+                            },
+                        ))
+                        .child(zone_label(IconName::ArrowDown, "Dock to Bottom")),
+                );
+        }
+
+        Some(overlay.into_any_element())
     }
 }
 
 fn main() {
+    crash_reporter::init();
+    crash_reporter::add_breadcrumb("Quarry process started");
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

@@ -380,6 +380,37 @@ fn format_keys_for_os(s: &str, is_macos: bool) -> String {
     result
 }
 
+pub struct DragGhost {
+    label: SharedString,
+}
+
+impl DragGhost {
+    pub fn new(label: impl Into<SharedString>) -> Self {
+        Self {
+            label: label.into(),
+        }
+    }
+}
+
+impl Render for DragGhost {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui::component::ActiveTheme;
+        let t = cx.theme();
+        div()
+            .px_3()
+            .py_1p5()
+            .rounded_md()
+            .bg(t.muted)
+            .text_color(t.foreground)
+            .border_1()
+            .border_color(t.border)
+            .shadow_lg()
+            .text_xs()
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(self.label.clone())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::format_keys_for_os;

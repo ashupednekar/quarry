@@ -198,6 +198,10 @@ pub struct AppState {
     pub catalog: SchemaCatalog,
     /// The same catalog, shared with the editors' autocomplete
     pub completion_catalog: crate::completion::SharedCatalog,
+    /// Identifier usage frequencies from query history, used as completion tiebreakers
+    pub completion_usage: crate::completion::SharedUsage,
+    /// Past executed query strings, used for predictive ghost text autosuggestions
+    pub completion_history: crate::completion::SharedHistory,
     /// The active session's dialect, read by editor code actions
     pub completion_dialect: crate::completion::SharedDialect,
     /// Bumped on every catalog change; editors are re-linted when it moves past `linted_gen`
@@ -268,6 +272,24 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let history = crate::history::load();
+        let completion_usage: crate::completion::SharedUsage = Default::default();
+        {
+            let mut map = std::collections::HashMap::new();
+            for item in &history {
+                for word in item.sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !word.is_empty() {
+                        *map.entry(word.to_lowercase()).or_default() += 1;
+                    }
+                }
+            }
+            *completion_usage.borrow_mut() = map;
+        }
+
+        let completion_history: crate::completion::SharedHistory = Default::default();
+        *completion_history.borrow_mut() =
+            history.iter().rev().map(|item| item.sql.clone()).collect();
+
         let mut state = Self {
             workspace_name: "quarry".to_string(),
             active_connection: None,
@@ -280,6 +302,8 @@ impl AppState {
             tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
             completion_catalog: Default::default(),
+            completion_usage,
+            completion_history,
             completion_dialect: std::rc::Rc::new(std::cell::Cell::new(&quarry_core::dialect::Ansi)),
             catalog_gen: 0,
             linted_gen: 0,
@@ -296,7 +320,7 @@ impl AppState {
 
             bottom_panel_open: false,
             bottom_panel_tab: BottomPanelTab::Messages,
-            history: crate::history::load(),
+            history,
             messages: Vec::new(),
 
             command_bar_open: false,
@@ -486,6 +510,21 @@ impl AppState {
             error,
         };
         crate::history::append(&item);
+        // Boost usage count for words in this query
+        {
+            let mut usage = self.completion_usage.borrow_mut();
+            for word in item.sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if !word.is_empty() {
+                    *usage.entry(word.to_lowercase()).or_default() += 1;
+                }
+            }
+        }
+        // Add to predictive completion history
+        {
+            let mut hist = self.completion_history.borrow_mut();
+            hist.insert(0, item.sql.clone());
+            hist.truncate(500);
+        }
         self.history.push(item);
     }
 
@@ -518,6 +557,26 @@ impl AppState {
         self.catalog = catalog;
         self.catalog_gen += 1;
         self.schema_objects.clear();
+        self.rebuild_usage();
+    }
+
+    pub fn rebuild_usage(&self) {
+        let mut map = std::collections::HashMap::new();
+        let conn_name = self
+            .active_connection
+            .as_ref()
+            .map(|c| c.name.as_str())
+            .unwrap_or("");
+        for item in &self.history {
+            if conn_name.is_empty() || item.connection == conn_name {
+                for word in item.sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !word.is_empty() {
+                        *map.entry(word.to_lowercase()).or_default() += 1;
+                    }
+                }
+            }
+        }
+        *self.completion_usage.borrow_mut() = map;
     }
 
     pub fn note_recent_table(&mut self, schema: &str, table: &str) {

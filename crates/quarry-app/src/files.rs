@@ -95,7 +95,7 @@ pub fn remember_file(path: &std::path::Path) {
     }
 }
 
-fn session_path() -> Option<PathBuf> {
+pub(crate) fn session_path() -> Option<PathBuf> {
     Some(crate::connections::config_dir()?.join("session.json"))
 }
 

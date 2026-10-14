@@ -15,7 +15,12 @@ use gpui::*;
 pub struct Sidebar;
 
 impl Sidebar {
-    pub fn render(state: &AppState, theme: &Theme, cx: &Context<QuarryWindow>) -> impl IntoElement {
+    pub fn render(
+        state: &AppState,
+        theme: &Theme,
+        dock: crate::layout::Dock,
+        cx: &Context<QuarryWindow>,
+    ) -> impl IntoElement {
         if !state.sidebar_visible {
             return div().into_any_element();
         }
@@ -486,17 +491,37 @@ impl Sidebar {
                 .child(text)
         };
 
+        let is_right = dock.sidebar == crate::layout::Side::Right;
+        let this_entity = cx.entity().clone();
         v_flex()
             .size_full()
             .bg(theme.bg_sidebar)
-            .border_r_1()
+            .when(is_right, |d| d.border_l_1())
+            .when(!is_right, |d| d.border_r_1())
             .border_color(theme.border)
             .child(
                 h_flex()
+                    .id("sidebar-header")
                     .h(px(BAR_H))
                     .px_3()
                     .items_center()
                     .justify_between()
+                    .cursor_grab()
+                    .on_drag(crate::layout::DraggedPane(crate::layout::Pane::Sidebar), {
+                        let this_entity = this_entity.clone();
+                        move |_, _, _, cx| {
+                            this_entity.update(cx, |this, _| {
+                                this.active_drag_pane = Some(crate::layout::Pane::Sidebar);
+                            });
+                            cx.new(|_| DragGhost::new("Database Explorer"))
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _, window, cx| {
+                            this.open_sidebar_dock_menu(window, cx);
+                        }),
+                    )
                     .child(section_title("DATABASE"))
                     .child(
                         zbutton("sidebar-add-conn")

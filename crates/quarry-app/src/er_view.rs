@@ -37,6 +37,15 @@ pub struct Edge {
     pub to: (usize, usize),
 }
 
+/// Active drag operation for a table card in the ER diagram
+#[derive(Clone, Debug)]
+pub struct DiagramCardDrag {
+    pub key: (String, String),
+    pub start_mouse: Point<Pixels>,
+    pub last_mouse: Point<Pixels>,
+    pub moved: bool,
+}
+
 /// Retained layout cache for the ER diagram canvas to avoid per-frame graph traversals
 #[derive(Clone, Debug, Default)]
 pub struct DiagramLayoutCache {
@@ -224,16 +233,39 @@ impl QuarryWindow {
         let cached = cache.as_ref().unwrap();
         let card_keys = cached.card_keys.clone();
         let edges = cached.edges.clone();
-        let pos = cached.pos.clone();
+        let cached_pos = cached.pos.clone();
         let min_level = cached.min_level;
-        let width = cached.width;
-        let height = cached.height;
+        let cached_width = cached.width;
+        let cached_height = cached.height;
         drop(cache);
 
         let cards: Vec<(&TableSchema, i32)> = card_keys
             .iter()
             .filter_map(|(s, n, l)| self.state.catalog.find_table(Some(s), n).map(|t| (t, *l)))
             .collect();
+
+        // Calculate card positions applying user drag offsets
+        let pos: Vec<Point<f32>> = cards
+            .iter()
+            .enumerate()
+            .map(|(ix, (tbl, _))| {
+                let base = cached_pos.get(ix).copied().unwrap_or(point(0.0, 0.0));
+                let offset = self
+                    .diagram_card_offsets
+                    .get(&(tbl.schema_name.clone(), tbl.table_name.clone()))
+                    .copied()
+                    .unwrap_or(point(0.0, 0.0));
+                point(base.x + offset.x, base.y + offset.y)
+            })
+            .collect();
+        let width = pos
+            .iter()
+            .map(|p| p.x + CARD_W + PAD)
+            .fold(cached_width, f32::max);
+        let height = pos
+            .iter()
+            .map(|p| p.y + HEADER_H + 200.0)
+            .fold(cached_height, f32::max);
         // Layout is in unzoomed units; `z` scales fixed sizes, and the rem size scales text and spacing
         let z = self.diagram_zoom;
         let sz = move |v: f32| px(v * z);
@@ -311,11 +343,17 @@ impl QuarryWindow {
         let card = |ix: usize, tbl: &TableSchema, p: Point<f32>, cx: &mut Context<Self>| {
             let focus = ix == 0;
             let (s, n) = (tbl.schema_name.clone(), tbl.table_name.clone());
+            let is_this_dragged = self
+                .diagram_card_drag
+                .as_ref()
+                .is_some_and(|d| d.key == (s.clone(), n.clone()));
             // Direct neighbours of the centre get a join button
             let joins_center = !focus
                 && edges
                     .iter()
                     .any(|e| (e.from.0 == 0 && e.to.0 == ix) || (e.from.0 == ix && e.to.0 == 0));
+            let s_head = s.clone();
+            let n_head = n.clone();
             let header = h_flex()
                 .items_center()
                 .id(("er-head", ix))
@@ -329,6 +367,31 @@ impl QuarryWindow {
                 } else {
                     t.bg_panel.into()
                 })
+                .cursor(if is_this_dragged {
+                    CursorStyle::ClosedHand
+                } else {
+                    CursorStyle::OpenHand
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let key = (s_head.clone(), n_head.clone());
+                        if e.click_count == 2 {
+                            this.diagram_card_offsets.remove(&key);
+                            this.diagram_card_drag = None;
+                            cx.notify();
+                            return;
+                        }
+                        this.diagram_card_drag = Some(DiagramCardDrag {
+                            key,
+                            start_mouse: e.position,
+                            last_mouse: e.position,
+                            moved: false,
+                        });
+                        cx.notify();
+                    }),
+                )
                 .child(
                     div()
                         .size(sz(16.0))
@@ -375,6 +438,7 @@ impl QuarryWindow {
                             .tooltip(move |window, cx| {
                                 Tooltip::new("Open a JOIN with the centre table").build(window, cx)
                             })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
                                 let sql = join_sql(&a, &b, this.state.dialect());
@@ -382,19 +446,6 @@ impl QuarryWindow {
                             }))
                             .child(Icon::new(IconName::Merge).small()),
                     )
-                })
-                .when(!focus, |d| {
-                    d.cursor_pointer()
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_pin(
-                                crate::pins::Pin::Table {
-                                    schema: s.clone(),
-                                    table: n.clone(),
-                                },
-                                window,
-                                cx,
-                            )
-                        }))
                 });
             let rows = tbl.columns.iter().enumerate().map(|(ci, c)| {
                 let fk = fk_of(tbl, &c.name);
@@ -502,17 +553,44 @@ impl QuarryWindow {
                             .child(c.raw_type_name.to_lowercase()),
                     )
             });
+            let s_card = s.clone();
+            let n_card = n.clone();
             v_flex()
+                .id(("er-card", ix))
                 .absolute()
                 .left(sz(p.x))
                 .top(sz(p.y))
                 .w(sz(CARD_W))
                 .rounded(px(6.0))
                 .border_1()
-                .border_color(if focus { t.accent } else { t.border })
+                .border_color(if is_this_dragged || focus {
+                    t.accent
+                } else {
+                    t.border
+                })
                 .bg(t.bg_sidebar)
                 .overflow_hidden()
-                .shadow_sm()
+                .cursor(if is_this_dragged {
+                    CursorStyle::ClosedHand
+                } else {
+                    CursorStyle::OpenHand
+                })
+                .when(is_this_dragged, |d| d.shadow_xl())
+                .when(!is_this_dragged, |d| d.shadow_sm())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, e: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let key = (s_card.clone(), n_card.clone());
+                        this.diagram_card_drag = Some(DiagramCardDrag {
+                            key,
+                            start_mouse: e.position,
+                            last_mouse: e.position,
+                            moved: false,
+                        });
+                        cx.notify();
+                    }),
+                )
                 .child(header)
                 .child(v_flex().py_1().children(rows.collect::<Vec<_>>()))
         };
@@ -528,6 +606,13 @@ impl QuarryWindow {
             centred
         });
         let visible = |p: Point<f32>, tbl: &TableSchema| {
+            if self
+                .diagram_card_drag
+                .as_ref()
+                .is_some_and(|d| d.key == (tbl.schema_name.clone(), tbl.table_name.clone()))
+            {
+                return true;
+            }
             if view.size.width <= px(0.) {
                 return true; // not measured yet
             }
@@ -537,11 +622,21 @@ impl QuarryWindow {
             let (x0, y0) = (ox + p.x * z, oy + p.y * z);
             x0 < vw && y0 < vh && x0 + CARD_W * z > 0.0 && y0 + h * z > 0.0
         };
-        let card_els: Vec<_> = cards
-            .iter()
-            .enumerate()
-            .filter(|(ix, (tbl, _))| visible(pos[*ix], tbl))
-            .map(|(ix, (tbl, _))| card(ix, tbl, pos[ix], cx))
+        let mut card_indices: Vec<usize> = (0..cards.len())
+            .filter(|&ix| visible(pos[ix], cards[ix].0))
+            .collect();
+        if let Some(drag) = &self.diagram_card_drag {
+            if let Some(pos_in_vec) = card_indices.iter().position(|&ix| {
+                let tbl = cards[ix].0;
+                tbl.schema_name == drag.key.0 && tbl.table_name == drag.key.1
+            }) {
+                let ix = card_indices.remove(pos_in_vec);
+                card_indices.push(ix);
+            }
+        }
+        let card_els: Vec<_> = card_indices
+            .into_iter()
+            .map(|ix| card(ix, cards[ix].0, pos[ix], cx))
             .collect();
 
         // Each column says what it holds, e.g. "REFERENCES · 2 HOPS · 3 TABLES"
@@ -658,7 +753,7 @@ impl QuarryWindow {
                     .child("foreign key"),
             )
             .child(div().truncate().child(crate::ui::format_keys(
-                "Hover a column to trace its joins · drag to move · pinch or ⌘ scroll to zoom",
+                "Hover a column to trace its joins · drag cards or canvas to move · double-click card to snap back · pinch or ⌘ scroll to zoom",
             )));
         let content = size(width, height);
         let zoom_button = |id: &'static str, label: &'static str, tip: &'static str| {
@@ -673,6 +768,7 @@ impl QuarryWindow {
                 .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                 .child(label)
         };
+        let has_offsets = !self.diagram_card_offsets.is_empty();
         let zoom_controls = h_flex()
             .items_center()
             .p_0p5()
@@ -717,7 +813,20 @@ impl QuarryWindow {
                         cx.notify();
                     },
                 )),
-            );
+            )
+            .when(has_offsets, |d| {
+                d.child(
+                    zoom_button(
+                        "er-reset-cards",
+                        "Reset Cards",
+                        "Reset moved table cards back to default layout",
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.diagram_card_offsets.clear();
+                        cx.notify();
+                    })),
+                )
+            });
 
         let view = self.diagram_view.clone();
         let measure = canvas(
@@ -731,7 +840,8 @@ impl QuarryWindow {
         )
         .absolute()
         .size_full();
-        let dragging = self.diagram_drag.is_some();
+        let is_card_dragging = self.diagram_card_drag.is_some();
+        let is_canvas_dragging = self.diagram_drag.is_some();
         v_flex()
             .size_full()
             .child(
@@ -753,7 +863,7 @@ impl QuarryWindow {
                     .min_h_0()
                     .relative()
                     .overflow_hidden()
-                    .cursor(if dragging {
+                    .cursor(if is_card_dragging || is_canvas_dragging {
                         CursorStyle::ClosedHand
                     } else {
                         CursorStyle::OpenHand
@@ -780,22 +890,43 @@ impl QuarryWindow {
                         }),
                     )
                     .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _, cx| {
-                        if let Some(last) = this.diagram_drag {
-                            if e.pressed_button == Some(MouseButton::Left) {
-                                this.diagram_pan = Some(this.diagram_pan() + (e.position - last));
-                                this.diagram_drag = Some(e.position);
-                                cx.notify();
-                            } else {
-                                this.diagram_drag = None;
+                        if e.pressed_button != Some(MouseButton::Left) {
+                            if this.diagram_drag.take().is_some()
+                                || this.diagram_card_drag.take().is_some()
+                            {
                                 cx.notify();
                             }
+                            return;
+                        }
+                        if let Some(drag) = &mut this.diagram_card_drag {
+                            let z = this.diagram_zoom;
+                            let dx = f32::from(e.position.x - drag.last_mouse.x) / z;
+                            let dy = f32::from(e.position.y - drag.last_mouse.y) / z;
+                            let total_dx = f32::from(e.position.x - drag.start_mouse.x);
+                            let total_dy = f32::from(e.position.y - drag.start_mouse.y);
+                            if (total_dx * total_dx + total_dy * total_dy) > 16.0 {
+                                drag.moved = true;
+                            }
+                            let off = this
+                                .diagram_card_offsets
+                                .entry(drag.key.clone())
+                                .or_insert(point(0.0, 0.0));
+                            off.x += dx;
+                            off.y += dy;
+                            drag.last_mouse = e.position;
+                            cx.notify();
+                            return;
+                        }
+                        if let Some(last) = this.diagram_drag {
+                            this.diagram_pan = Some(this.diagram_pan() + (e.position - last));
+                            this.diagram_drag = Some(e.position);
+                            cx.notify();
                         }
                     }))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.diagram_drag = None;
-                            cx.notify();
+                        cx.listener(|this, _, window, cx| {
+                            this.finish_diagram_drag(window, cx);
                         }),
                     )
                     .child(
@@ -844,6 +975,33 @@ impl QuarryWindow {
             ((view.width - px(content.width * z)) / 2.0).max(px(0.)),
             px(0.),
         ));
+    }
+
+    /// Completes any active canvas pan or table card drag operation
+    fn finish_diagram_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.diagram_drag = None;
+        if let Some(drag) = self.diagram_card_drag.take() {
+            if !drag.moved {
+                let is_center = self
+                    .diagram_layout
+                    .borrow()
+                    .as_ref()
+                    .and_then(|c| c.card_keys.first())
+                    .map(|(s, t, _)| s == &drag.key.0 && t == &drag.key.1)
+                    .unwrap_or(false);
+                if !is_center {
+                    self.open_pin(
+                        crate::pins::Pin::Table {
+                            schema: drag.key.0,
+                            table: drag.key.1,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
+            cx.notify();
+        }
     }
 }
 
@@ -917,9 +1075,11 @@ impl Element for Scaled {
 #[cfg(test)]
 mod tests {
     use super::{diagram, join_sql, Edge};
+    use gpui::{point, Point};
     use quarry_core::schema::{
         ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableSchema,
     };
+    use std::collections::HashMap;
 
     fn catalog() -> SchemaCatalog {
         let col = |n: &str| ColumnSchema {
@@ -995,5 +1155,18 @@ mod tests {
             sql.contains("JOIN \"public\".\"orders\" o ON o.\"customer_id\" = c.\"id\""),
             "{sql}"
         );
+    }
+
+    #[test]
+    fn test_card_offset_positioning() {
+        let mut offsets: HashMap<(String, String), Point<f32>> = HashMap::new();
+        offsets.insert(("public".into(), "customers".into()), point(50.0, -25.0));
+
+        let base_pos = point(100.0, 100.0);
+        let key = ("public".into(), "customers".into());
+        let offset = offsets.get(&key).copied().unwrap_or(point(0.0, 0.0));
+        let pos = point(base_pos.x + offset.x, base_pos.y + offset.y);
+
+        assert_eq!(pos, point(150.0, 75.0));
     }
 }

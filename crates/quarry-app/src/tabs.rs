@@ -25,8 +25,14 @@ impl QuarryWindow {
         let Some(tab) = self.state.close_tab(idx) else {
             return;
         };
-        // Kept (with its grid, editor and pending edits) so ⇧⌘T can bring it back (U9)
         let id = tab.id().to_string();
+        if self.split_id.as_deref() == Some(&id) {
+            self.split_id = None;
+        }
+        if self.state.tabs.len() <= 1 {
+            self.split_id = None;
+        }
+        // Kept (with its grid, editor and pending edits) so ⇧⌘T can bring it back (U9)
         let subs = [id.clone(), format!("{id}:editor")]
             .into_iter()
             .filter_map(|k| self.tab_subscriptions.remove(&k).map(|s| (k, s)))
@@ -71,6 +77,87 @@ impl QuarryWindow {
         cx.notify();
     }
 
+    /// Toggles split orientation between Vertical (side-by-side) and Horizontal (stacked)
+    pub(crate) fn toggle_split_direction(&mut self, cx: &mut Context<Self>) {
+        let current = layout::split_direction();
+        let next = match current {
+            layout::SplitDirection::Vertical => layout::SplitDirection::Horizontal,
+            layout::SplitDirection::Horizontal => layout::SplitDirection::Vertical,
+        };
+        layout::set_split_direction(next);
+        let label = match next {
+            layout::SplitDirection::Vertical => "Vertical split (side-by-side)",
+            layout::SplitDirection::Horizontal => "Horizontal split (stacked)",
+        };
+        self.toast(label, false, cx);
+        cx.notify();
+    }
+
+    /// Swaps the visual positions of the two split panes
+    pub(crate) fn swap_pane_positions(&mut self, cx: &mut Context<Self>) {
+        if self.split_tab().is_some() {
+            self.split_active_right = !self.split_active_right;
+            cx.notify();
+        }
+    }
+
+    /// Closes a specific split pane by its position (is_second_pane: false = first pane, true = second pane)
+    pub(crate) fn close_split_pane(
+        &mut self,
+        is_second_pane: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_second_pane {
+            if self.split_active_right {
+                self.close_tab_at(self.state.active_tab_index, cx);
+                self.refocus_root(window, cx);
+            } else {
+                self.split_id = None;
+                cx.notify();
+            }
+        } else if !self.split_active_right {
+            self.close_tab_at(self.state.active_tab_index, cx);
+            self.refocus_root(window, cx);
+        } else {
+            self.split_id = None;
+            self.split_active_right = false;
+            cx.notify();
+        }
+    }
+
+    /// Handles dropping a tab (from the tab strip) onto a specific split pane (0: first, 1: second)
+    pub(crate) fn drop_tab_on_split_pane(
+        &mut self,
+        from_idx: usize,
+        target_pane: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if from_idx >= self.state.tabs.len() {
+            return;
+        }
+        let dropped_id = self.state.tabs[from_idx].id().to_string();
+        let is_target_active = if target_pane == 1 {
+            self.split_active_right
+        } else {
+            !self.split_active_right
+        };
+
+        if is_target_active {
+            if self.split_id.as_deref() == Some(&dropped_id) {
+                self.swap_pane_positions(cx);
+            } else {
+                self.state.active_tab_index = from_idx;
+                cx.notify();
+            }
+        } else if self.state.active_tab().map(|t| t.id()) == Some(&dropped_id) {
+            self.swap_pane_positions(cx);
+        } else {
+            self.split_id = Some(dropped_id);
+            cx.notify();
+        }
+    }
+
     /// Clicking into the inactive pane makes its tab active; both tabs stay on their side
     pub(crate) fn swap_split(&mut self, cx: &mut Context<Self>) {
         let (Some(split), Some(active)) = (
@@ -104,6 +191,190 @@ impl QuarryWindow {
                 }
             }
         }
+        cx.notify();
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn open_tab_in_split(&mut self, tab_id: String, cx: &mut Context<Self>) {
+        self.open_tab_in_split_side(tab_id, layout::Side::Right, cx);
+    }
+
+    /// Opens a tab in split view docked specifically to Left, Right, Top, or Bottom
+    pub(crate) fn open_tab_in_split_side(
+        &mut self,
+        tab_id: String,
+        side: layout::Side,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.tabs.len() <= 1 {
+            return;
+        }
+        let current_active_id = self.state.active_tab().map(|t| t.id().to_string());
+        match side {
+            layout::Side::Left => {
+                layout::set_split_direction(layout::SplitDirection::Vertical);
+                if let Some(ix) = self.state.tabs.iter().position(|t| t.id() == tab_id) {
+                    self.state.active_tab_index = ix;
+                }
+                if let Some(other) = current_active_id.filter(|id| *id != tab_id) {
+                    self.split_id = Some(other);
+                } else if let Some(other_tab) = self.state.tabs.iter().find(|t| t.id() != tab_id) {
+                    self.split_id = Some(other_tab.id().to_string());
+                }
+                self.split_active_right = false;
+            }
+            layout::Side::Right => {
+                layout::set_split_direction(layout::SplitDirection::Vertical);
+                if current_active_id.as_deref() == Some(&tab_id) {
+                    if let Some(ix) = self.state.tabs.iter().position(|t| t.id() != tab_id) {
+                        self.state.active_tab_index = ix;
+                    }
+                }
+                self.split_id = Some(tab_id);
+                self.split_active_right = false;
+            }
+            layout::Side::Top => {
+                layout::set_split_direction(layout::SplitDirection::Horizontal);
+                if let Some(ix) = self.state.tabs.iter().position(|t| t.id() == tab_id) {
+                    self.state.active_tab_index = ix;
+                }
+                if let Some(other) = current_active_id.filter(|id| *id != tab_id) {
+                    self.split_id = Some(other);
+                } else if let Some(other_tab) = self.state.tabs.iter().find(|t| t.id() != tab_id) {
+                    self.split_id = Some(other_tab.id().to_string());
+                }
+                self.split_active_right = false;
+            }
+            layout::Side::Bottom => {
+                layout::set_split_direction(layout::SplitDirection::Horizontal);
+                if current_active_id.as_deref() == Some(&tab_id) {
+                    if let Some(ix) = self.state.tabs.iter().position(|t| t.id() != tab_id) {
+                        self.state.active_tab_index = ix;
+                    }
+                }
+                self.split_id = Some(tab_id);
+                self.split_active_right = false;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Moves a split pane (0: first/left/top, 1: second/right/bottom) to a specific side (Left, Right, Top, Bottom)
+    pub(crate) fn move_split_pane_to_side(
+        &mut self,
+        from_ix: usize,
+        side: layout::Side,
+        cx: &mut Context<Self>,
+    ) {
+        match side {
+            layout::Side::Left => {
+                layout::set_split_direction(layout::SplitDirection::Vertical);
+                if from_ix != 0 {
+                    self.swap_pane_positions(cx);
+                } else {
+                    cx.notify();
+                }
+            }
+            layout::Side::Right => {
+                layout::set_split_direction(layout::SplitDirection::Vertical);
+                if from_ix != 1 {
+                    self.swap_pane_positions(cx);
+                } else {
+                    cx.notify();
+                }
+            }
+            layout::Side::Top => {
+                layout::set_split_direction(layout::SplitDirection::Horizontal);
+                if from_ix != 0 {
+                    self.swap_pane_positions(cx);
+                } else {
+                    cx.notify();
+                }
+            }
+            layout::Side::Bottom => {
+                layout::set_split_direction(layout::SplitDirection::Horizontal);
+                if from_ix != 1 {
+                    self.swap_pane_positions(cx);
+                } else {
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Moves the active pane to the Left (docking it left)
+    pub(crate) fn move_pane_left(&mut self, cx: &mut Context<Self>) {
+        if self.split_tab().is_none() {
+            if self.state.tabs.len() > 1 {
+                self.toggle_split(cx);
+            } else {
+                return;
+            }
+        }
+        layout::set_split_direction(layout::SplitDirection::Vertical);
+        self.split_active_right = false;
+        self.toast("Active pane docked to left", false, cx);
+        cx.notify();
+    }
+
+    /// Moves the active pane to the Right (docking it right)
+    pub(crate) fn move_pane_right(&mut self, cx: &mut Context<Self>) {
+        if self.split_tab().is_none() {
+            if self.state.tabs.len() > 1 {
+                self.toggle_split(cx);
+            } else {
+                return;
+            }
+        }
+        layout::set_split_direction(layout::SplitDirection::Vertical);
+        self.split_active_right = true;
+        self.toast("Active pane docked to right", false, cx);
+        cx.notify();
+    }
+
+    /// Moves the active pane to the Top (docking it top)
+    pub(crate) fn move_pane_up(&mut self, cx: &mut Context<Self>) {
+        if self.split_tab().is_none() {
+            if self.state.tabs.len() > 1 {
+                self.toggle_split(cx);
+            } else {
+                return;
+            }
+        }
+        layout::set_split_direction(layout::SplitDirection::Horizontal);
+        self.split_active_right = false;
+        self.toast("Active pane docked to top", false, cx);
+        cx.notify();
+    }
+
+    /// Moves the active pane to the Bottom (docking it bottom)
+    pub(crate) fn move_pane_down(&mut self, cx: &mut Context<Self>) {
+        if self.split_tab().is_none() {
+            if self.state.tabs.len() > 1 {
+                self.toggle_split(cx);
+            } else {
+                return;
+            }
+        }
+        layout::set_split_direction(layout::SplitDirection::Horizontal);
+        self.split_active_right = true;
+        self.toast("Active pane docked to bottom", false, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn reorder_tab(&mut self, from_ix: usize, to_ix: usize, cx: &mut Context<Self>) {
+        if from_ix >= self.state.tabs.len() || to_ix >= self.state.tabs.len() || from_ix == to_ix {
+            return;
+        }
+        let active_id = self.state.active_tab().map(|t| t.id().to_string());
+        let tab = self.state.tabs.remove(from_ix);
+        self.state.tabs.insert(to_ix, tab);
+        if let Some(id) = active_id {
+            if let Some(pos) = self.state.tabs.iter().position(|t| t.id() == id) {
+                self.state.active_tab_index = pos;
+            }
+        }
+        self.schedule_session_save(cx);
         cx.notify();
     }
 

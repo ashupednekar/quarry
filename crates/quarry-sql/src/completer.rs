@@ -366,9 +366,146 @@ pub fn resolve_qualifier<'a>(
     catalog: &'a SchemaCatalog,
 ) -> Option<&'a TableSchema> {
     refs.iter()
-        .find(|r| r.qualifier().eq_ignore_ascii_case(qualifier))
+        .find(|r| {
+            r.qualifier().eq_ignore_ascii_case(qualifier)
+                || r.name.eq_ignore_ascii_case(qualifier)
+                || qualifier
+                    .rsplit('.')
+                    .next()
+                    .is_some_and(|bare| r.qualifier().eq_ignore_ascii_case(bare))
+        })
         .and_then(|r| r.table)
         .or_else(|| lookup(qualifier, catalog))
+}
+
+fn detect_group_by_needed(stmt: &str) -> Option<Vec<String>> {
+    let it = tokens(stmt);
+    let mut depth = 0;
+    let mut in_select = false;
+    let mut select_items = Vec::new();
+    let mut cur_item = Vec::new();
+    let mut has_agg = false;
+
+    for (t, _) in &it {
+        match *t {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && is_kw(t, "select") {
+            in_select = true;
+            continue;
+        }
+        if depth == 0 && is_kw(t, "from") {
+            break;
+        }
+        if !in_select {
+            continue;
+        }
+        if depth == 0 && *t == "," {
+            if !cur_item.is_empty() {
+                select_items.push(std::mem::take(&mut cur_item));
+            }
+        } else {
+            cur_item.push(*t);
+        }
+    }
+    if !cur_item.is_empty() {
+        select_items.push(cur_item);
+    }
+    if !in_select || select_items.is_empty() {
+        return None;
+    }
+
+    let is_agg_fn = |w: &str| {
+        is_kw(w, "count")
+            || is_kw(w, "sum")
+            || is_kw(w, "avg")
+            || is_kw(w, "min")
+            || is_kw(w, "max")
+            || is_kw(w, "string_agg")
+            || is_kw(w, "array_agg")
+            || is_kw(w, "count_if")
+            || is_kw(w, "group_concat")
+            || is_kw(w, "every")
+            || is_kw(w, "bool_and")
+            || is_kw(w, "bool_or")
+    };
+
+    let mut non_aggs = Vec::new();
+    for item in select_items {
+        if item.iter().any(|w| is_agg_fn(w)) {
+            has_agg = true;
+        } else {
+            let words: Vec<&str> = item
+                .into_iter()
+                .filter(|w| !matches!(*w, "(" | ")"))
+                .collect();
+            if words.is_empty() || words == ["*"] {
+                continue;
+            }
+            let expr = match words.iter().position(|w| is_kw(w, "as")) {
+                Some(idx) => words[..idx].join(" "),
+                None => words.join(" "),
+            };
+            if !expr.is_empty() && !non_aggs.contains(&expr) {
+                non_aggs.push(expr);
+            }
+        }
+    }
+
+    if has_agg && !non_aggs.is_empty() {
+        Some(non_aggs)
+    } else {
+        None
+    }
+}
+
+fn find_column_in_refs<'a>(
+    raw_col: &str,
+    refs: &[TableRef<'a>],
+    catalog: &'a SchemaCatalog,
+) -> Option<&'a quarry_core::ColumnSchema> {
+    let clean = raw_col.replace('"', "");
+    if let Some((q, col)) = clean.split_once('.') {
+        if let Some(table) = resolve_qualifier(q, refs, catalog) {
+            return table
+                .columns
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(col));
+        }
+    } else {
+        for r in refs {
+            if let Some(table) = r.table {
+                if let Some(c) = table
+                    .columns
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(&clean))
+                {
+                    return Some(c);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_fk_between<'a>(
+    t1: &'a TableSchema,
+    t2: &'a TableSchema,
+) -> Option<(&'a str, &'a str, bool)> {
+    // Returns (t1_col, t2_col, t1_points_to_t2)
+    for fk in &t1.foreign_keys {
+        if fk.to_table.eq_ignore_ascii_case(&t2.table_name) {
+            return Some((&fk.from_column, &fk.to_column, true));
+        }
+    }
+    for fk in &t2.foreign_keys {
+        if fk.to_table.eq_ignore_ascii_case(&t1.table_name) {
+            return Some((&fk.to_column, &fk.from_column, false));
+        }
+    }
+    None
 }
 
 impl SchemaCompleter {
@@ -379,11 +516,359 @@ impl SchemaCompleter {
         cursor_offset: usize,
         catalog: &SchemaCatalog,
     ) -> Vec<CompletionCandidate> {
+        Self::complete_with_usage(sql, cursor_offset, catalog, None)
+    }
+
+    /// Complete with frequency usage ranking as a tiebreaker for equal match scores.
+    pub fn complete_with_usage(
+        sql: &str,
+        cursor_offset: usize,
+        catalog: &SchemaCatalog,
+        usage: Option<&std::collections::HashMap<String, u32>>,
+    ) -> Vec<CompletionCandidate> {
         let prefix = Self::extract_prefix(sql, cursor_offset.min(sql.len())).to_lowercase();
         let mut out = Self::candidates(sql, cursor_offset, catalog);
-        out.sort_by_key(|c| match_score(&prefix, &c.label).unwrap_or(u8::MAX));
+        out.sort_by(|a, b| {
+            let score_a = match_score(&prefix, &a.label).unwrap_or(u8::MAX);
+            let score_b = match_score(&prefix, &b.label).unwrap_or(u8::MAX);
+            if score_a != score_b {
+                return score_a.cmp(&score_b);
+            }
+            if let Some(usage) = usage {
+                let count_a = usage.get(&a.label.to_lowercase()).copied().unwrap_or(0);
+                let count_b = usage.get(&b.label.to_lowercase()).copied().unwrap_or(0);
+                if count_a != count_b {
+                    return count_b.cmp(&count_a); // higher usage comes first
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
         out.truncate(50);
         out
+    }
+
+    /// Returns a ghost text continuation at the end of an open statement, predicting
+    /// next clauses (`GROUP BY`, `ORDER BY`, `WHERE`, `JOIN ... ON`), safe guards
+    /// (`WHERE ` on UPDATE/DELETE), value defaults, or `LIMIT 100`.
+    pub fn continuation(
+        sql: &str,
+        cursor_offset: usize,
+        catalog: &SchemaCatalog,
+    ) -> Option<String> {
+        let cursor_offset = cursor_offset.min(sql.len());
+        let (stmt, at) = match crate::find_statement_at_offset(sql, cursor_offset) {
+            Some(s) if cursor_offset >= s.start && cursor_offset <= s.end => {
+                (&sql[s.start..s.end], cursor_offset - s.start)
+            }
+            _ => (sql, cursor_offset),
+        };
+        let before = &stmt[..at];
+        let trimmed_before = before.trim_end();
+        let after = stmt[at..].trim();
+        if !after.is_empty() && after != ";" {
+            return None;
+        }
+
+        let toks = tokens(trimmed_before);
+        if toks.is_empty() {
+            return None;
+        }
+
+        let pad = if before.ends_with(' ') { "" } else { " " };
+        let has_kw = |kw: &str| toks.iter().any(|(t, _)| is_kw(t, kw));
+        let last_tok = toks.last().map(|(t, _)| *t).unwrap_or("");
+        let refs = table_refs(stmt, catalog);
+
+        // 1. Operator value completions: `= `, `IS `, `IS NOT `, `IN `, `>= `
+        if let Some(stripped) = trimmed_before.strip_suffix('=') {
+            let before_eq = stripped.trim_end();
+            let col_name = before_eq.split_whitespace().last().unwrap_or("");
+            if let Some(c) = find_column_in_refs(col_name, &refs, catalog) {
+                if c.data_type == quarry_core::ColumnType::Boolean
+                    || c.name.starts_with("is_")
+                    || c.name.starts_with("has_")
+                    || c.name.starts_with("can_")
+                {
+                    return Some(format!("{pad}true"));
+                } else if c.name.eq_ignore_ascii_case("status") || c.name.ends_with("_status") {
+                    return Some(format!("{pad}'active'"));
+                } else if c.name.eq_ignore_ascii_case("type") || c.name.ends_with("_type") {
+                    return Some(format!("{pad}'default'"));
+                }
+            }
+        }
+
+        if is_kw(last_tok, "is") && before.ends_with(' ') {
+            return Some(format!("{pad}NULL"));
+        }
+
+        if is_kw(last_tok, "in") && before.ends_with(' ') {
+            if let Some(prev) = toks.iter().rev().nth(1) {
+                if let Some(c) = find_column_in_refs(prev.0, &refs, catalog) {
+                    if matches!(
+                        c.data_type,
+                        quarry_core::ColumnType::Integer
+                            | quarry_core::ColumnType::BigInt
+                            | quarry_core::ColumnType::Float
+                    ) {
+                        return Some(format!("{pad}(1, 2, 3)"));
+                    } else {
+                        return Some(format!("{pad}('...')"));
+                    }
+                }
+            }
+        }
+
+        if (trimmed_before.ends_with(">=")
+            || trimmed_before.ends_with('>')
+            || trimmed_before.ends_with("<="))
+            && before.ends_with(' ')
+        {
+            let op_len = if trimmed_before.ends_with(">=") || trimmed_before.ends_with("<=") {
+                2
+            } else {
+                1
+            };
+            let before_op = trimmed_before[..trimmed_before.len() - op_len].trim_end();
+            let col_name = before_op.split_whitespace().last().unwrap_or("");
+            if let Some(c) = find_column_in_refs(col_name, &refs, catalog) {
+                if matches!(
+                    c.data_type,
+                    quarry_core::ColumnType::Timestamp | quarry_core::ColumnType::Date
+                ) || c.name.ends_with("_at")
+                    || c.name.contains("date")
+                    || c.name.contains("time")
+                {
+                    return Some(format!("{pad}CURRENT_DATE - INTERVAL '7 days'"));
+                }
+            }
+        }
+
+        // 2. WHERE context defaults (when cursor is after WHERE + space)
+        if is_kw(last_tok, "where") && before.ends_with(' ') {
+            if let Some(r) = refs.first() {
+                if let Some(table) = r.table {
+                    let q = r
+                        .alias
+                        .as_ref()
+                        .map(|a| format!("{a}."))
+                        .unwrap_or_default();
+                    if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("deleted_at"))
+                    {
+                        return Some(format!("{pad}{q}deleted_at IS NULL"));
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("is_deleted"))
+                    {
+                        return Some(format!("{pad}{q}is_deleted = false"));
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("status"))
+                    {
+                        return Some(format!("{pad}{q}status = 'active'"));
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("is_active"))
+                    {
+                        return Some(format!("{pad}{q}is_active = true"));
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("active"))
+                    {
+                        return Some(format!("{pad}{q}active = true"));
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("id"))
+                    {
+                        return Some(format!("{pad}{q}id = "));
+                    }
+                }
+            }
+        }
+
+        // 3. ORDER BY auto-synthesis (when cursor is after ORDER BY or ORDER + space)
+        let is_order_by =
+            (is_kw(last_tok, "by") && toks.len() >= 2 && is_kw(toks[toks.len() - 2].0, "order"))
+                || (is_kw(last_tok, "order") && before.ends_with(' '));
+        if is_order_by && before.ends_with(' ') {
+            if let Some(r) = refs.first() {
+                if let Some(table) = r.table {
+                    let q = r
+                        .alias
+                        .as_ref()
+                        .map(|a| format!("{a}."))
+                        .unwrap_or_default();
+                    let col_name = if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("created_at"))
+                    {
+                        Some("created_at")
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("inserted_at"))
+                    {
+                        Some("inserted_at")
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("created_date"))
+                    {
+                        Some("created_date")
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("updated_at"))
+                    {
+                        Some("updated_at")
+                    } else if table
+                        .columns
+                        .iter()
+                        .any(|c| c.name.eq_ignore_ascii_case("id"))
+                    {
+                        Some("id")
+                    } else {
+                        table.primary_keys.first().map(|s| s.as_str())
+                    };
+
+                    if let Some(c) = col_name {
+                        let by_pad = if is_kw(last_tok, "order") { "BY " } else { "" };
+                        return Some(format!("{pad}{by_pad}{q}{c} DESC"));
+                    }
+                }
+            }
+        }
+
+        // 4. GROUP BY auto-synthesis
+        if let Some(non_aggs) = detect_group_by_needed(stmt) {
+            let cols_str = non_aggs.join(", ");
+            if is_kw(last_tok, "group") && before.ends_with(' ') {
+                return Some(format!("{pad}BY {cols_str}"));
+            }
+            if is_kw(last_tok, "by")
+                && toks.len() >= 2
+                && is_kw(toks[toks.len() - 2].0, "group")
+                && before.ends_with(' ')
+            {
+                return Some(format!("{pad}{cols_str}"));
+            }
+            if !has_kw("group")
+                && !has_kw("having")
+                && !has_kw("order")
+                && !has_kw("limit")
+                && has_kw("from")
+            {
+                let from_pos = toks.iter().rposition(|(t, _)| is_kw(t, "from"))?;
+                if from_pos + 1 < toks.len() {
+                    return Some(format!("{pad}GROUP BY {cols_str}"));
+                }
+            }
+        }
+
+        // 5. JOIN <table> auto-wiring: `SELECT ... FROM users u JOIN orders o ` -> `ON o.user_id = u.id`
+        if has_kw("join") && before.ends_with(' ') {
+            let join_pos = toks.iter().rposition(|(t, _)| is_kw(t, "join"))?;
+            let has_on_after = toks[join_pos..].iter().any(|(t, _)| is_kw(t, "on"));
+            if !has_on_after && join_pos + 1 < toks.len() {
+                let target_name = toks[join_pos + 1].0.replace('"', "");
+                let target_alias = if join_pos + 2 < toks.len()
+                    && !matches!(
+                        toks[join_pos + 2].0,
+                        "," | "(" | ")" | ";" | "where" | "join" | "group" | "order"
+                    ) {
+                    Some(toks[join_pos + 2].0.replace('"', ""))
+                } else {
+                    None
+                };
+                let target_table = lookup(&target_name, catalog);
+                let target_q = target_alias.as_deref().unwrap_or(&target_name);
+
+                if let Some(tt) = target_table {
+                    for r in &refs {
+                        if let Some(other_table) = r.table {
+                            if other_table.table_name.eq_ignore_ascii_case(&tt.table_name) {
+                                continue;
+                            }
+                            if let Some((t_col, o_col, _)) = find_fk_between(tt, other_table) {
+                                let other_q = r.qualifier();
+                                return Some(format!(
+                                    "{pad}ON {target_q}.{t_col} = {other_q}.{o_col}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Safety continuations: DELETE FROM <table> and UPDATE <table> SET ...
+        if has_kw("delete") && has_kw("from") && !has_kw("where") {
+            let from_pos = toks.iter().rposition(|(t, _)| is_kw(t, "from"))?;
+            if from_pos + 1 < toks.len() {
+                return Some(format!("{pad}WHERE "));
+            }
+        }
+        if has_kw("update") && has_kw("set") && !has_kw("where") {
+            let set_pos = toks.iter().rposition(|(t, _)| is_kw(t, "set"))?;
+            if set_pos + 1 < toks.len() {
+                return Some(format!("{pad}WHERE "));
+            }
+        }
+
+        // 7. INSERT INTO <table> scaffold
+        if has_kw("insert")
+            && has_kw("into")
+            && !has_kw("values")
+            && !has_kw("select")
+            && !toks.iter().any(|(t, _)| *t == "(")
+        {
+            let into_pos = toks.iter().rposition(|(t, _)| is_kw(t, "into"))?;
+            if into_pos + 1 < toks.len() {
+                let table_name = toks[into_pos + 1].0.replace('"', "");
+                if let Some(table) = lookup(&table_name, catalog) {
+                    let cols: Vec<&str> = table
+                        .columns
+                        .iter()
+                        .filter(|c| !(c.is_primary_key && c.name.eq_ignore_ascii_case("id")))
+                        .map(|c| c.name.as_str())
+                        .collect();
+                    if !cols.is_empty() {
+                        let vals = vec!["'...'"; cols.len()].join(", ");
+                        return Some(format!("{pad}({}) VALUES ({vals})", cols.join(", ")));
+                    }
+                }
+            }
+        }
+
+        // 8. SELECT continuation: after SELECT ... FROM table with no JOIN, WHERE, or LIMIT
+        if has_kw("select")
+            && has_kw("from")
+            && !has_kw("join")
+            && !has_kw("where")
+            && !has_kw("limit")
+            && !has_kw("group")
+            && !has_kw("order")
+        {
+            let from_pos = toks.iter().rposition(|(t, _)| is_kw(t, "from"))?;
+            if from_pos + 1 < toks.len() {
+                let table_tok = toks[from_pos + 1].0.replace('"', "");
+                let table_name = table_tok.rsplit('.').next().unwrap_or(&table_tok);
+                if lookup(table_name, catalog).is_some() {
+                    return Some(format!("{pad}LIMIT 100"));
+                }
+            }
+        }
+
+        None
     }
 
     fn candidates(
@@ -419,7 +904,11 @@ impl SchemaCompleter {
                     .columns
                     .iter()
                     .filter(|c| starts(&c.name))
-                    .map(|c| column(c, c.raw_type_name.to_lowercase()))
+                    .map(|c| {
+                        let type_str = c.raw_type_name.to_lowercase();
+                        let pk = if c.is_primary_key { " · PK" } else { "" };
+                        column(c, format!("{type_str}{pk}"))
+                    })
                     .collect();
             }
             if let Some(cols) = subquery_columns(stmt, &q, catalog) {
@@ -433,7 +922,9 @@ impl SchemaCompleter {
                     })
                     .collect();
             }
-            if catalog.schemas.iter().any(|s| s.eq_ignore_ascii_case(&q)) {
+            let is_schema = catalog.schemas.iter().any(|s| s.eq_ignore_ascii_case(&q))
+                || catalog.tables.iter().any(|t| t.schema_name.eq_ignore_ascii_case(&q));
+            if is_schema {
                 return catalog
                     .tables
                     .iter()
@@ -441,7 +932,11 @@ impl SchemaCompleter {
                     .map(|t| CompletionCandidate {
                         label: t.table_name.clone(),
                         kind: CompletionKind::Table,
-                        detail: Some(format!("{} columns", t.columns.len())),
+                        detail: Some(format!(
+                            "{} ({} cols)",
+                            if t.is_view { "view" } else { "table" },
+                            t.columns.len()
+                        )),
                     })
                     .collect();
             }
@@ -509,9 +1004,9 @@ impl SchemaCompleter {
                         label: t.table_name.clone(),
                         kind: CompletionKind::Table,
                         detail: Some(format!(
-                            "{}{} · {} columns",
+                            "{} · {} ({} cols)",
                             t.schema_name,
-                            if t.is_view { " view" } else { "" },
+                            if t.is_view { "view" } else { "table" },
                             t.columns.len()
                         )),
                     }),
@@ -530,17 +1025,68 @@ impl SchemaCompleter {
             return out;
         }
 
-        // 2b. Elsewhere: columns of the tables in scope first, then keywords, tables, and other columns
+        // 2b. After ON: join condition from foreign keys between the joining table and in-scope tables
+        if is_kw(last, "on") && refs.len() >= 2 {
+            let cur_ref = refs.last().unwrap();
+            let prev_refs = &refs[..refs.len() - 1];
+            if let Some(cur_table) = cur_ref.table {
+                let cur_q = cur_ref.qualifier();
+                for fk in &cur_table.foreign_keys {
+                    for prev in prev_refs {
+                        if let Some(prev_table) = prev.table {
+                            if fk.to_table.eq_ignore_ascii_case(&prev_table.table_name) {
+                                let cond = format!(
+                                    "{cur_q}.{} = {}.{}",
+                                    fk.from_column,
+                                    prev.qualifier(),
+                                    fk.to_column
+                                );
+                                if starts(&cond) {
+                                    out.push(CompletionCandidate {
+                                        label: cond,
+                                        kind: CompletionKind::Column,
+                                        detail: Some("FK condition".into()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                for prev in prev_refs {
+                    if let Some(prev_table) = prev.table {
+                        for fk in &prev_table.foreign_keys {
+                            if fk.to_table.eq_ignore_ascii_case(&cur_table.table_name) {
+                                let cond = format!(
+                                    "{cur_q}.{} = {}.{}",
+                                    fk.to_column,
+                                    prev.qualifier(),
+                                    fk.from_column
+                                );
+                                if starts(&cond) {
+                                    out.push(CompletionCandidate {
+                                        label: cond,
+                                        kind: CompletionKind::Column,
+                                        detail: Some("FK condition".into()),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2c. Elsewhere: columns of the tables in scope first, then keywords, tables, and other columns
         for r in &refs {
             if let Some(t) = r.table {
                 for c in t.columns.iter().filter(|c| starts(&c.name)) {
                     if !out.iter().any(|o: &CompletionCandidate| o.label == c.name) {
+                        let pk = if c.is_primary_key { " · PK" } else { "" };
                         out.push(column(
                             c,
                             format!(
-                                "{}.{} {}",
+                                "{} · {}{pk}",
                                 r.qualifier(),
-                                c.name,
                                 c.raw_type_name.to_lowercase()
                             ),
                         ));
@@ -566,7 +1112,12 @@ impl SchemaCompleter {
                 .map(|t| CompletionCandidate {
                     label: t.table_name.clone(),
                     kind: CompletionKind::Table,
-                    detail: Some(format!("{} columns", t.columns.len())),
+                    detail: Some(format!(
+                        "{} · {} ({} cols)",
+                        t.schema_name,
+                        if t.is_view { "view" } else { "table" },
+                        t.columns.len()
+                    )),
                 }),
         );
         // Columns from anywhere only while nothing is in scope yet (`SELECT em|` before FROM is typed)
@@ -577,12 +1128,12 @@ impl SchemaCompleter {
                         .iter()
                         .any(|o| o.label == c.name && o.kind == CompletionKind::Column)
                     {
+                        let pk = if c.is_primary_key { " · PK" } else { "" };
                         out.push(column(
                             c,
                             format!(
-                                "{}.{} {}",
+                                "{} · {}{pk}",
                                 t.table_name,
-                                c.name,
                                 c.raw_type_name.to_lowercase()
                             ),
                         ));
@@ -610,13 +1161,28 @@ impl SchemaCompleter {
         let before_prefix = &before_cursor[..before_cursor.len() - prefix.len()];
 
         if let Some(trimmed) = before_prefix.strip_suffix('.') {
-            let start = trimmed
-                .rfind(|c: char| !c.is_alphanumeric() && c != '_')
-                .map(|idx| idx + 1)
-                .unwrap_or(0);
-            let qualifier = &trimmed[start..];
-            if !qualifier.is_empty() {
-                return Some(qualifier.to_string());
+            let trimmed = trimmed.trim_end();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let b = trimmed.as_bytes();
+            let mut i = b.len();
+            while i > 0 {
+                let c = b[i - 1];
+                if c.is_ascii_alphanumeric()
+                    || matches!(c, b'_' | b'.' | b'"' | b'`' | b'[' | b']')
+                    || c >= 0x80
+                {
+                    i -= 1;
+                } else {
+                    break;
+                }
+            }
+            let raw_qualifier = &trimmed[i..];
+            let clean = raw_qualifier.replace(['"', '`', '[', ']'], "");
+            let clean = clean.trim();
+            if !clean.is_empty() {
+                return Some(clean.to_string());
             }
         }
         None
@@ -704,7 +1270,7 @@ pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, 
 }
 
 /// 0 = prefix, 1 = substring, 2 = letters in order; None = no match. Case-insensitive.
-fn match_score(prefix: &str, label: &str) -> Option<u8> {
+pub fn match_score(prefix: &str, label: &str) -> Option<u8> {
     let label = label.to_lowercase();
     if label.starts_with(prefix) {
         return Some(0);
@@ -728,7 +1294,7 @@ fn join_candidate(table: &str, on: &str) -> CompletionCandidate {
     CompletionCandidate {
         label: format!("{table} ON {on}"),
         kind: CompletionKind::Table,
-        detail: Some("join on foreign key".into()),
+        detail: Some("FK join".into()),
     }
 }
 
@@ -885,7 +1451,26 @@ mod tests {
         assert_eq!(labels("select * from c|"), ["customers"]);
         assert_eq!(labels("select * from customers, o|"), ["orders"]);
         // schema. lists its tables
+        assert_eq!(labels("select * from public.|"), ["customers", "orders"]);
         assert_eq!(labels("select * from public.o|"), ["orders"]);
+        assert_eq!(labels("select * from \"public\".|"), ["customers", "orders"]);
+        assert_eq!(labels("select * from \"public\".o|"), ["orders"]);
+        // table. lists its columns
+        assert_eq!(labels("select customers.|"), ["id", "email"]);
+        assert_eq!(labels("select \"customers\".|"), ["id", "email"]);
+        assert_eq!(labels("select * from customers where customers.|"), ["id", "email"]);
+        assert_eq!(labels("select * from customers c where c.|"), ["id", "email"]);
+        assert_eq!(labels("select public.customers.|"), ["id", "email"]);
+        assert_eq!(labels("select \"public\".\"customers\".|"), ["id", "email"]);
+        // schema. lists tables even if catalog.schemas is empty
+        let mut cat_no_schemas = shop();
+        cat_no_schemas.schemas.clear();
+        let at = "select * from public.".len();
+        let res: Vec<_> = SchemaCompleter::complete("select * from public.", at, &cat_no_schemas)
+            .into_iter()
+            .map(|c| c.label)
+            .collect();
+        assert_eq!(res, ["customers", "orders"]);
         // Only this statement's tables are in scope
         assert_eq!(
             labels("select * from orders;\nselect e| from customers")[0],
@@ -948,6 +1533,73 @@ mod tests {
         assert_eq!(
             labels("select * from orders o join cu|")[0],
             "customers ON customers.id = o.customer_id"
+        );
+    }
+
+    #[test]
+    fn suggests_on_condition_from_foreign_keys() {
+        assert_eq!(
+            labels("select * from orders o join customers c on |")[0],
+            "c.id = o.customer_id"
+        );
+    }
+
+    #[test]
+    fn usage_boost_breaks_ties() {
+        let cat = shop();
+        let (sql, offset) = ("select  from orders", 7);
+        // Default ranking: columns in scope order
+        let default_res = SchemaCompleter::complete(sql, offset, &cat);
+        assert_eq!(default_res[0].label, "id");
+
+        // With usage boost: if customer_id was heavily used, it takes top spot over id
+        let mut usage = std::collections::HashMap::new();
+        usage.insert("customer_id".to_string(), 100);
+        let boosted_res = SchemaCompleter::complete_with_usage(sql, offset, &cat, Some(&usage));
+        assert_eq!(boosted_res[0].label, "customer_id");
+    }
+
+    #[test]
+    fn statement_continuations() {
+        let cat = shop();
+        assert_eq!(
+            SchemaCompleter::continuation("select * from customers ", 24, &cat),
+            Some("LIMIT 100".to_string())
+        );
+        assert_eq!(
+            SchemaCompleter::continuation("select * from customers where id = 1 ", 37, &cat),
+            None
+        );
+        assert_eq!(
+            SchemaCompleter::continuation("update customers set name = 'x' ", 32, &cat),
+            Some("WHERE ".to_string())
+        );
+        assert_eq!(
+            SchemaCompleter::continuation("delete from customers ", 22, &cat),
+            Some("WHERE ".to_string())
+        );
+        // GROUP BY auto-synthesis on aggregate + non-aggregate select
+        assert_eq!(
+            SchemaCompleter::continuation("select customer_id, count(*) from orders ", 41, &cat),
+            Some("GROUP BY customer_id".to_string())
+        );
+        assert_eq!(
+            SchemaCompleter::continuation(
+                "select customer_id, count(*) from orders group ",
+                47,
+                &cat
+            ),
+            Some("BY customer_id".to_string())
+        );
+        // JOIN <table> ON auto-wiring
+        assert_eq!(
+            SchemaCompleter::continuation("select * from customers c join orders o ", 40, &cat),
+            Some("ON o.customer_id = c.id".to_string())
+        );
+        // ORDER BY
+        assert_eq!(
+            SchemaCompleter::continuation("select * from customers order by ", 33, &cat),
+            Some("id DESC".to_string())
         );
     }
 }

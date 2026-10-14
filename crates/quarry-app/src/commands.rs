@@ -8,7 +8,20 @@ use super::*;
 impl QuarryWindow {
     /// Escape: close the topmost overlay
     pub(crate) fn dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+        if cx.has_active_drag() {
+            cx.stop_active_drag(window);
+            self.active_drag_pane = None;
+            self.active_drag_tab = None;
+            self.active_drag_split_pane = None;
+            cx.notify();
+            return;
+        }
         if self.tab_switcher.take().is_some() {
+            cx.notify();
+            return;
+        }
+        if self.pending_crash_report.take().is_some() {
+            crash_reporter::acknowledge_last_crash();
             cx.notify();
             return;
         }
@@ -181,6 +194,20 @@ impl QuarryWindow {
             self.refocus_root(window, cx);
         } else if action_id == "action:split" {
             self.toggle_split(cx);
+        } else if action_id == "action:toggle_split_direction" {
+            self.toggle_split_direction(cx);
+        } else if action_id == "action:focus_other_pane" {
+            self.swap_split(cx);
+        } else if action_id == "action:swap_split_panes" {
+            self.swap_pane_positions(cx);
+        } else if action_id == "action:move_pane_left" {
+            self.move_pane_left(cx);
+        } else if action_id == "action:move_pane_right" {
+            self.move_pane_right(cx);
+        } else if action_id == "action:move_pane_up" {
+            self.move_pane_up(cx);
+        } else if action_id == "action:move_pane_down" {
+            self.move_pane_down(cx);
         } else if action_id == "action:reopen_tab" {
             self.reopen_closed_tab(&ReopenClosedTab, window, cx);
         } else if action_id == "action:format" {
@@ -213,6 +240,20 @@ impl QuarryWindow {
             self.rollback_tx(&RollbackTx, window, cx);
         } else if action_id == "action:toggle_bottom" {
             self.toggle_bottom_panel(&ToggleBottomPanel, window, cx);
+        } else if action_id == "action:move_sidebar_left" {
+            self.move_sidebar(layout::Side::Left, window, cx);
+        } else if action_id == "action:move_sidebar_right" {
+            self.move_sidebar(layout::Side::Right, window, cx);
+        } else if action_id == "action:move_bottom_bottom" {
+            self.move_bottom_panel(layout::Side::Bottom, window, cx);
+        } else if action_id == "action:move_bottom_right" {
+            self.move_bottom_panel(layout::Side::Right, window, cx);
+        } else if action_id == "action:reset_layout" {
+            self.reset_layout(window, cx);
+        } else if action_id == "action:report_issue" {
+            cx.open_url("https://github.com/krishna/quarry/issues/new");
+        } else if action_id == "action:view_last_crash" {
+            self.view_last_crash(cx);
         }
 
         cx.notify();

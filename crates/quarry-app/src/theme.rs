@@ -338,14 +338,21 @@ pub fn available() -> Vec<String> {
 }
 
 /// Interface text
-pub const UI_FONT: &str = "Space Grotesk";
+pub const UI_FONT: &str = "Satoshi";
 /// SQL, cell values and anything that should line up; the Nerd Font build also carries icon glyphs
 pub const MONO_FONT: &str = "JetBrainsMono NF";
 
-/// Registers the bundled fonts (OFL, licences beside them in assets/fonts) and makes them the defaults
+/// Registers the bundled fonts (OFL/FFL, licences beside them in assets/fonts) and makes them the defaults
 pub fn load_fonts(cx: &mut gpui::App) {
     use std::borrow::Cow;
     let fonts: Vec<Cow<'static, [u8]>> = vec![
+        Cow::Borrowed(include_bytes!("../assets/fonts/Satoshi-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Satoshi-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Satoshi-Bold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Regular.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Medium.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-SemiBold.ttf")),
+        Cow::Borrowed(include_bytes!("../assets/fonts/Geist-Bold.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/SpaceGrotesk-Regular.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/SpaceGrotesk-Medium.ttf")),
         Cow::Borrowed(include_bytes!("../assets/fonts/SpaceGrotesk-Bold.ttf")),
@@ -360,13 +367,18 @@ pub fn load_fonts(cx: &mut gpui::App) {
         eprintln!("quarry: bundled fonts failed to load, using system fonts: {e}");
         return;
     }
-    apply_fonts(cx, "");
+    apply_fonts(cx, "", "");
 }
 
-/// gpui-kit resets fonts on every theme change, so this runs after each one. `mono` overrides MONO_FONT (settings.json).
-pub fn apply_fonts(cx: &mut gpui::App, mono: &str) {
+/// gpui-kit resets fonts on every theme change, so this runs after each one.
+/// `ui` overrides UI_FONT and `mono` overrides MONO_FONT (settings.json).
+pub fn apply_fonts(cx: &mut gpui::App, ui: &str, mono: &str) {
     let kit = gpui::component::theme::Theme::global_mut(cx);
-    kit.font_family = UI_FONT.into();
+    kit.font_family = if ui.trim().is_empty() {
+        UI_FONT.into()
+    } else {
+        ui.to_string().into()
+    };
     kit.mono_font_family = if mono.trim().is_empty() {
         MONO_FONT.into()
     } else {

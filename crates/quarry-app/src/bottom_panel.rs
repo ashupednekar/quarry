@@ -957,18 +957,41 @@ impl QuarryWindow {
             }
         };
 
+        let is_right = self.dock.bottom_panel == crate::layout::Side::Right;
+        let this_entity = cx.entity().clone();
         v_flex()
             .size_full()
             .bg(theme.bg_panel)
-            .border_t_1()
+            .when(is_right, |d| d.border_l_1())
+            .when(!is_right, |d| d.border_t_1())
             .border_color(theme.border)
             .child(
                 h_flex()
+                    .id("bottom-panel-header")
                     .px_3()
                     .gap_4()
                     .items_center()
                     .border_b_1()
                     .border_color(theme.border)
+                    .cursor_grab()
+                    .on_drag(
+                        crate::layout::DraggedPane(crate::layout::Pane::BottomPanel),
+                        {
+                            let this_entity = this_entity.clone();
+                            move |_, _, _, cx| {
+                                this_entity.update(cx, |this, _| {
+                                    this.active_drag_pane = Some(crate::layout::Pane::BottomPanel);
+                                });
+                                cx.new(|_| DragGhost::new("Panel"))
+                            }
+                        },
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, _, window, cx| {
+                            this.open_bottom_panel_dock_menu(window, cx);
+                        }),
+                    )
                     .child(tab("Output", BottomPanelTab::Messages))
                     .child(tab("History", BottomPanelTab::History))
                     .child(tab("Activity Log", BottomPanelTab::Logs))

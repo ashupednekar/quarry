@@ -7,8 +7,8 @@ pub mod rewrites;
 pub mod splitter;
 
 pub use completer::{
-    find_usages, lint, mentioned_unloaded, rename_identifier, resolve_qualifier, table_refs,
-    CompletionCandidate, CompletionKind, SchemaCompleter, TableRef,
+    find_usages, lint, match_score, mentioned_unloaded, rename_identifier, resolve_qualifier,
+    table_refs, CompletionCandidate, CompletionKind, SchemaCompleter, TableRef,
 };
 pub use params::{bind_params, find_params};
 pub use rewrites::{rewrites, with_limit};

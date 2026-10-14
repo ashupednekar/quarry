@@ -15,6 +15,8 @@ pub struct Settings {
     pub theme: String,
     /// Interface text size in points
     pub font_size: f32,
+    /// Font for interface text; empty keeps the bundled Satoshi
+    pub ui_font_family: String,
     /// SQL editor and data cells; 0 follows the interface size
     pub mono_font_size: f32,
     /// Font for SQL and data cells; empty keeps the bundled JetBrainsMono Nerd Font
@@ -55,6 +57,7 @@ impl Default for Settings {
         Self {
             theme: "system".into(),
             font_size: 16.0,
+            ui_font_family: String::new(),
             mono_font_size: 0.0,
             mono_font_family: String::new(),
             tab_size: 2,
@@ -362,6 +365,7 @@ mod tests {
             (s.theme.as_str(), s.rows_per_page, s.confirm_on_prod),
             ("dark", 1000, true)
         );
+        assert_eq!(s.ui_font_family, "");
     }
 
     #[test]
@@ -374,10 +378,11 @@ mod tests {
 
     #[test]
     fn test_try_load_validation() {
-        let valid_json = r#"{"font_size": 18.0, "theme": "Paper"}"#;
+        let valid_json = r#"{"font_size": 18.0, "theme": "Paper", "ui_font_family": "Geist"}"#;
         let s: Settings = serde_json::from_str(valid_json).unwrap();
         assert_eq!(s.font_size, 18.0);
         assert_eq!(s.theme, "Paper");
+        assert_eq!(s.ui_font_family, "Geist");
 
         let invalid_json = r#"{"font_size": "not-a-number"}"#;
         let err = serde_json::from_str::<Settings>(invalid_json).unwrap_err();

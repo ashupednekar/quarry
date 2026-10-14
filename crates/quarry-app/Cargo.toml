@@ -17,7 +17,7 @@ category = "DeveloperTool"
 before-packaging-command = "cargo build --release -p quarry-app"
 out-dir = "../../dist"
 binaries = [{ path = "quarry", main = true }]
-# Generated from assets/icon/quarry.svg by assets/icon/build.sh; each format picks the file it needs
+# Each format picks the file it needs
 icons = [
   "../../assets/icon/quarry.icns",
   "../../assets/icon/quarry.ico",

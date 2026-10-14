@@ -66,7 +66,28 @@ fn slice_completion_context(text: &Rope, offset: usize) -> (String, usize, lsp_t
     }
 }
 
-pub struct SchemaCompletions(pub SharedCatalog);
+pub type SharedUsage = Rc<RefCell<std::collections::HashMap<String, u32>>>;
+pub type SharedHistory = Rc<RefCell<Vec<String>>>;
+
+pub struct SchemaCompletions {
+    pub catalog: SharedCatalog,
+    pub usage: Option<SharedUsage>,
+    pub history: Option<SharedHistory>,
+}
+
+impl SchemaCompletions {
+    pub fn new(
+        catalog: SharedCatalog,
+        usage: Option<SharedUsage>,
+        history: Option<SharedHistory>,
+    ) -> Self {
+        Self {
+            catalog,
+            usage,
+            history,
+        }
+    }
+}
 
 impl CompletionProvider for SchemaCompletions {
     fn completions(
@@ -78,26 +99,28 @@ impl CompletionProvider for SchemaCompletions {
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let (sql, local_offset, range) = slice_completion_context(text, offset);
-        let catalog = self.0.borrow().clone();
+        let catalog = self.catalog.borrow().clone();
+        let usage = self.usage.as_ref().map(|u| u.borrow().clone());
         cx.background_executor().spawn(async move {
-            let items = SchemaCompleter::complete(&sql, local_offset, &catalog)
-                .into_iter()
-                .map(|c| CompletionItem {
-                    kind: Some(match c.kind {
-                        CompletionKind::Keyword => CompletionItemKind::KEYWORD,
-                        CompletionKind::Table => CompletionItemKind::STRUCT,
-                        CompletionKind::Column => CompletionItemKind::FIELD,
-                        CompletionKind::Schema => CompletionItemKind::MODULE,
-                    }),
-                    detail: c.detail,
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                        range,
-                        new_text: c.label.clone(),
-                    })),
-                    label: c.label,
-                    ..Default::default()
-                })
-                .collect();
+            let items =
+                SchemaCompleter::complete_with_usage(&sql, local_offset, &catalog, usage.as_ref())
+                    .into_iter()
+                    .map(|c| CompletionItem {
+                        kind: Some(match c.kind {
+                            CompletionKind::Keyword => CompletionItemKind::KEYWORD,
+                            CompletionKind::Table => CompletionItemKind::STRUCT,
+                            CompletionKind::Column => CompletionItemKind::FIELD,
+                            CompletionKind::Schema => CompletionItemKind::MODULE,
+                        }),
+                        detail: c.detail,
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: c.label.clone(),
+                        })),
+                        label: c.label,
+                        ..Default::default()
+                    })
+                    .collect();
             Ok(CompletionResponse::Array(items))
         })
     }
@@ -123,62 +146,27 @@ impl CompletionProvider for SchemaCompletions {
         cx: &mut App,
     ) -> Task<anyhow::Result<InlineCompletionResponse>> {
         let (sql, local_offset, _) = slice_completion_context(text, offset);
-        let catalog = self.0.borrow().clone();
+        let catalog = self.catalog.borrow().clone();
+        let mut usage_map = self
+            .usage
+            .as_ref()
+            .map(|u| u.borrow().clone())
+            .unwrap_or_default();
+        // Also boost identifier usage counts from current buffer
+        for word in sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            if !word.is_empty() {
+                *usage_map.entry(word.to_lowercase()).or_default() += 1;
+            }
+        }
+        let history_items = self.history.as_ref().map(|h| h.borrow().clone());
         cx.background_executor().spawn(async move {
-            if local_offset == 0 || local_offset > sql.len() {
-                return Ok(InlineCompletionResponse::Array(vec![]));
-            }
-
-            let before_cursor = &sql[..local_offset];
-            let last_char = before_cursor.chars().last();
-            let is_typing_token =
-                last_char.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
-            if !is_typing_token {
-                return Ok(InlineCompletionResponse::Array(vec![]));
-            }
-
-            let prefix_start = before_cursor
-                .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-                .map_or(0, |i| i + 1);
-            let prefix = &before_cursor[prefix_start..];
-
-            let completions = SchemaCompleter::complete(&sql, local_offset, &catalog);
-            let Some(best) = completions.into_iter().next() else {
-                return Ok(InlineCompletionResponse::Array(vec![]));
-            };
-
-            let insert_text = if prefix.is_empty() {
-                if before_cursor.ends_with('.') {
-                    Some(best.label)
-                } else {
-                    None
-                }
-            } else if best
-                .label
-                .to_lowercase()
-                .starts_with(&prefix.to_lowercase())
-                && best.label.len() > prefix.len()
-            {
-                let raw_suffix = &best.label[prefix.len()..];
-                let is_all_upper = prefix
-                    .chars()
-                    .all(|c| !c.is_alphabetic() || c.is_uppercase());
-                let is_all_lower = prefix
-                    .chars()
-                    .all(|c| !c.is_alphabetic() || c.is_lowercase());
-                let suffix = if is_all_upper {
-                    raw_suffix.to_uppercase()
-                } else if is_all_lower {
-                    raw_suffix.to_lowercase()
-                } else {
-                    raw_suffix.to_string()
-                };
-                Some(suffix)
-            } else {
-                None
-            };
-
-            if let Some(insert_text) = insert_text {
+            if let Some(insert_text) = evaluate_inline_completion(
+                &sql,
+                local_offset,
+                &catalog,
+                Some(&usage_map),
+                history_items.as_deref(),
+            ) {
                 if !insert_text.is_empty() {
                     return Ok(InlineCompletionResponse::Array(vec![
                         InlineCompletionItem {
@@ -191,9 +179,226 @@ impl CompletionProvider for SchemaCompletions {
                     ]));
                 }
             }
-
             Ok(InlineCompletionResponse::Array(vec![]))
         })
+    }
+}
+
+/// Matches the current statement buffer against past queries in history (zsh/fish style).
+/// Returns the remaining suffix if there is a clear, confident prefix match.
+pub fn match_history_prefix(sql: &str, local_offset: usize, history: &[String]) -> Option<String> {
+    if local_offset == 0 || local_offset > sql.len() {
+        return None;
+    }
+    let before = &sql[..local_offset];
+    let trimmed = before.trim();
+    if trimmed.len() < 5 {
+        return None;
+    }
+
+    let norm_typed: String = trimmed.split_whitespace().collect::<Vec<_>>().join(" ");
+    let norm_typed_lower = norm_typed.to_lowercase();
+
+    for query in history {
+        let clean_q = query.trim();
+        let norm_q: String = clean_q.split_whitespace().collect::<Vec<_>>().join(" ");
+        let norm_q_lower = norm_q.to_lowercase();
+
+        if norm_q_lower.starts_with(&norm_typed_lower) && norm_q.len() > norm_typed.len() {
+            let mut suffix = norm_q[norm_typed.len()..].to_string();
+            if before.ends_with(' ') && suffix.starts_with(' ') {
+                suffix = suffix.trim_start().to_string();
+            } else if !before.ends_with(' ') && !suffix.starts_with(' ') && !suffix.starts_with(';')
+            {
+                suffix = format!(" {suffix}");
+            }
+            if let Some(semi_pos) = suffix.find(';') {
+                suffix.truncate(semi_pos + 1);
+            }
+            if suffix.len() > 120 {
+                if let Some(space_pos) = suffix[..120].rfind(' ') {
+                    suffix.truncate(space_pos);
+                }
+            }
+            if !suffix.trim().is_empty() {
+                return Some(suffix);
+            }
+        }
+    }
+    None
+}
+
+/// Evaluates inline completion suggestions (ghost text) with confidence gating,
+/// clause continuations, keyword skipping, query history matching, and catalog casing preservation.
+pub fn evaluate_inline_completion(
+    sql: &str,
+    local_offset: usize,
+    catalog: &SchemaCatalog,
+    usage: Option<&std::collections::HashMap<String, u32>>,
+    history: Option<&[String]>,
+) -> Option<String> {
+    if local_offset == 0 || local_offset > sql.len() {
+        return None;
+    }
+
+    let before_cursor = &sql[..local_offset];
+
+    // 1. Clause keyword check after space (e.g. `JOIN ` or `ON `)
+    let trimmed = before_cursor.trim_end();
+    let ends_with_space = before_cursor.len() > trimmed.len();
+    let last_word = trimmed
+        .split_whitespace()
+        .last()
+        .unwrap_or("")
+        .to_lowercase();
+
+    if ends_with_space && (last_word == "join" || last_word == "on") {
+        let completions = SchemaCompleter::complete_with_usage(sql, local_offset, catalog, usage);
+        if last_word == "join" {
+            let fk_candidates: Vec<_> = completions
+                .into_iter()
+                .filter(|c| c.label.contains(" ON "))
+                .collect();
+            if !fk_candidates.is_empty() {
+                let confident = if fk_candidates.len() == 1 {
+                    true
+                } else {
+                    let count_0 = usage
+                        .and_then(|u| u.get(&fk_candidates[0].label.to_lowercase()))
+                        .copied()
+                        .unwrap_or(0);
+                    let count_1 = usage
+                        .and_then(|u| u.get(&fk_candidates[1].label.to_lowercase()))
+                        .copied()
+                        .unwrap_or(0);
+                    count_0 > count_1
+                };
+                if confident {
+                    return Some(fk_candidates[0].label.clone());
+                }
+            }
+        } else if last_word == "on" {
+            let on_candidates: Vec<_> = completions
+                .into_iter()
+                .filter(|c| c.detail.as_deref().unwrap_or("").contains("foreign key"))
+                .collect();
+            if !on_candidates.is_empty() {
+                let confident = if on_candidates.len() == 1 {
+                    true
+                } else {
+                    let count_0 = usage
+                        .and_then(|u| u.get(&on_candidates[0].label.to_lowercase()))
+                        .copied()
+                        .unwrap_or(0);
+                    let count_1 = usage
+                        .and_then(|u| u.get(&on_candidates[1].label.to_lowercase()))
+                        .copied()
+                        .unwrap_or(0);
+                    count_0 > count_1
+                };
+                if confident {
+                    return Some(on_candidates[0].label.clone());
+                }
+            }
+        }
+    }
+
+    // 2. Query History Matcher (zsh/fish-style autosuggestion for recurring queries)
+    if let Some(history) = history {
+        if let Some(ghost) = match_history_prefix(sql, local_offset, history) {
+            return Some(ghost);
+        }
+    }
+
+    // 3. Continuation check (e.g. `LIMIT 100`, `WHERE `, `GROUP BY`, `ORDER BY`, `= `, `IS `)
+    if let Some(cont) = SchemaCompleter::continuation(sql, local_offset, catalog) {
+        if !cont.is_empty() {
+            return Some(cont);
+        }
+    }
+
+    // 4. Normal token completion while typing
+    let last_char = before_cursor.chars().last();
+    let is_typing_token = last_char.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+    if !is_typing_token {
+        return None;
+    }
+
+    let prefix_start = before_cursor
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |i| i + 1);
+    let prefix = &before_cursor[prefix_start..];
+
+    let completions = SchemaCompleter::complete_with_usage(sql, local_offset, catalog, usage);
+    if completions.is_empty() {
+        return None;
+    }
+
+    let best = &completions[0];
+
+    // Rule 3: Skip bare SQL keywords (e.g. typing `se` ghosts `lect`)
+    if best.kind == CompletionKind::Keyword && !best.label.contains(' ') {
+        return None;
+    }
+
+    // Rule 2: Confidence gate
+    if completions.len() > 1 {
+        let runner_up = &completions[1];
+        let prefix_lower = prefix.to_lowercase();
+        let score_best = quarry_sql::match_score(&prefix_lower, &best.label).unwrap_or(u8::MAX);
+        let score_runner =
+            quarry_sql::match_score(&prefix_lower, &runner_up.label).unwrap_or(u8::MAX);
+        let count_best = usage
+            .and_then(|u| u.get(&best.label.to_lowercase()))
+            .copied()
+            .unwrap_or(0);
+        let count_runner = usage
+            .and_then(|u| u.get(&runner_up.label.to_lowercase()))
+            .copied()
+            .unwrap_or(0);
+
+        let strictly_better =
+            score_best < score_runner || (score_best == score_runner && count_best > count_runner);
+        if !strictly_better {
+            return None;
+        }
+    }
+
+    if prefix.is_empty() {
+        if before_cursor.ends_with('.') {
+            Some(best.label.clone())
+        } else {
+            None
+        }
+    } else if best
+        .label
+        .to_lowercase()
+        .starts_with(&prefix.to_lowercase())
+        && best.label.len() > prefix.len()
+    {
+        let raw_suffix = &best.label[prefix.len()..];
+        // Rule 6: Case from the catalog. Only keywords follow typing case.
+        let suffix = if best.kind == CompletionKind::Keyword {
+            let is_all_upper = prefix
+                .chars()
+                .all(|c| !c.is_alphabetic() || c.is_uppercase());
+            let is_all_lower = prefix
+                .chars()
+                .all(|c| !c.is_alphabetic() || c.is_lowercase());
+            if is_all_upper {
+                raw_suffix.to_uppercase()
+            } else if is_all_lower {
+                raw_suffix.to_lowercase()
+            } else {
+                raw_suffix.to_string()
+            }
+        } else {
+            // Identifiers keep catalog casing (e.g. MixedCase, Oracle UPPERCASE)
+            raw_suffix.to_string()
+        };
+        Some(suffix)
+    } else {
+        None
     }
 }
 
@@ -535,7 +740,7 @@ fn keys(t: &quarry_core::TableSchema, c: &quarry_core::ColumnSchema) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::hover_markdown;
+    use super::{evaluate_inline_completion, hover_markdown};
     use quarry_core::schema::{ColumnSchema, ColumnType, SchemaCatalog, TableSchema};
 
     fn col(name: &str, pk: bool) -> ColumnSchema {
@@ -593,5 +798,108 @@ mod tests {
         // `id` is in two tables, so a bare hover can't say which
         assert_eq!(hover_markdown(sql, at("id from"), &cat), None);
         assert_eq!(hover_markdown(sql, at("select"), &cat), None);
+    }
+
+    #[test]
+    fn inline_completion_rules() {
+        let col = |name: &str| ColumnSchema {
+            name: name.into(),
+            data_type: ColumnType::Integer,
+            raw_type_name: "int".into(),
+            is_nullable: false,
+            is_primary_key: false,
+            default_value: None,
+            ordinal_position: 1,
+        };
+        let t = |name: &str, cols, fks| TableSchema {
+            schema_name: "public".into(),
+            table_name: name.into(),
+            is_view: false,
+            columns: cols,
+            primary_keys: vec!["id".into()],
+            foreign_keys: fks,
+        };
+        let fk = quarry_core::schema::ForeignKeyRef {
+            from_column: "customer_id".into(),
+            to_schema: "public".into(),
+            to_table: "customers".into(),
+            to_column: "id".into(),
+        };
+        let cat = SchemaCatalog {
+            schemas: vec!["public".into()],
+            tables: vec![
+                t("customers", vec![col("id"), col("email")], vec![]),
+                t(
+                    "orders",
+                    vec![col("id"), col("customer_id"), col("total")],
+                    vec![fk],
+                ),
+                t("CUSTOMERS_UPPER", vec![col("id")], vec![]),
+            ],
+            default_schema: None,
+            ..Default::default()
+        };
+
+        // 1. JOIN with one FK ghosts the clause
+        let sql_join = "SELECT * FROM customers c JOIN ";
+        assert_eq!(
+            evaluate_inline_completion(sql_join, sql_join.len(), &cat, None, None),
+            Some("orders ON orders.customer_id = c.id".into())
+        );
+
+        // 2. Bare keyword prefix ghosts nothing
+        let sql_kw = "se";
+        assert_eq!(
+            evaluate_inline_completion(sql_kw, sql_kw.len(), &cat, None, None),
+            None
+        );
+
+        // 3. Two equal candidates ghost nothing (confidence gate)
+        let sql_ambiguous = "SELECT * FROM orders WHERE c";
+        // Candidates `customer_id` vs keywords like `CASE`, `COUNT` etc.
+        // If ambiguous (multiple matching), confidence gate blocks it
+        let res = evaluate_inline_completion(sql_ambiguous, sql_ambiguous.len(), &cat, None, None);
+        assert_eq!(res, None);
+
+        // 4. History-heavy column wins a tie
+        let mut usage = std::collections::HashMap::new();
+        usage.insert("customer_id".into(), 100);
+        let res_boosted = evaluate_inline_completion(
+            sql_ambiguous,
+            sql_ambiguous.len(),
+            &cat,
+            Some(&usage),
+            None,
+        );
+        assert_eq!(res_boosted, Some("ustomer_id".into()));
+
+        // 5. Oracle UPPERCASE name keeps its case
+        let sql_oracle = "SELECT * FROM cu";
+        // Boost CUSTOMERS_UPPER so it's confident
+        let mut oracle_usage = std::collections::HashMap::new();
+        oracle_usage.insert("customers_upper".into(), 100);
+        let oracle_ghost = evaluate_inline_completion(
+            sql_oracle,
+            sql_oracle.len(),
+            &cat,
+            Some(&oracle_usage),
+            None,
+        );
+        assert_eq!(oracle_ghost, Some("STOMERS_UPPER".into()));
+
+        // 6. Continuation LIMIT 100 on SELECT
+        let sql_select = "SELECT * FROM customers ";
+        assert_eq!(
+            evaluate_inline_completion(sql_select, sql_select.len(), &cat, None, None),
+            Some("LIMIT 100".into())
+        );
+
+        // 7. Query history matching (zsh/fish autosuggestion)
+        let history = vec!["SELECT id, email FROM customers WHERE id = 42;".to_string()];
+        let sql_hist = "SELECT id, email FROM customers ";
+        assert_eq!(
+            evaluate_inline_completion(sql_hist, sql_hist.len(), &cat, None, Some(&history)),
+            Some("WHERE id = 42;".into())
+        );
     }
 }

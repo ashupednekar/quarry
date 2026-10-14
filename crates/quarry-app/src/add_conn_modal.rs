@@ -46,7 +46,13 @@ impl AddConnModal {
                     t,
                     fields[0].label,
                     Some(fields[0].placeholder),
-                    compact_input(path_input),
+                    file_input(
+                        path_input,
+                        "btn-browse-db-file",
+                        cx.listener(|this, _, window, cx| {
+                            this.browse_sqlite_file(window, cx);
+                        }),
+                    ),
                 ))
             })
             // Several fields: pasting a URL first fills them, and edits to them rewrite it
@@ -146,7 +152,13 @@ impl AddConnModal {
                         t,
                         "Private key",
                         Some("Blank uses ssh-agent and ~/.ssh/config"),
-                        compact_input(&ssh_inputs[2]),
+                        file_input(
+                            &ssh_inputs[2],
+                            "btn-browse-ssh-key",
+                            cx.listener(|this, _, window, cx| {
+                                this.browse_ssh_key_file(window, cx);
+                            }),
+                        ),
                     ))
                 })
         };
@@ -510,4 +522,22 @@ fn field_rows(
 /// Default-height input: the modal's dense form doesn't need form_input's 44px
 fn compact_input(state: &Entity<InputState>) -> Div {
     div().child(Input::new(state).text_sm().px_3())
+}
+
+/// Compact input with a trailing folder button to open the system file picker
+fn file_input(
+    state: &Entity<InputState>,
+    btn_id: &'static str,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Div {
+    div().child(
+        Input::new(state).text_sm().px_3().suffix(
+            zbutton(btn_id)
+                .icon(IconName::FolderOpen)
+                .ghost()
+                .xsmall()
+                .tooltip("Choose file…")
+                .on_click(on_click),
+        ),
+    )
 }

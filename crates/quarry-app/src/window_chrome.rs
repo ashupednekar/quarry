@@ -208,6 +208,7 @@ impl QuarryWindow {
         let t = &self.theme;
         (!self.state.tabs.is_empty()).then(|| {
             h_flex()
+                .id("tab-strip-bar")
                 .h(px(BAR_H))
                 .w_full()
                 .px_1()
@@ -216,6 +217,12 @@ impl QuarryWindow {
                 .border_b_1()
                 .border_color(t.border)
                 .items_end()
+                .drag_over::<layout::DraggedTab>(|style, _, _, _| style)
+                .on_drop(cx.listener(|this, &layout::DraggedTab(from_idx): &layout::DraggedTab, _, cx| {
+                    this.active_drag_tab = None;
+                    let last = this.state.tabs.len().saturating_sub(1);
+                    this.reorder_tab(from_idx, last, cx);
+                }))
                 .children(self.state.tabs.iter().enumerate().map(|(idx, tab)| {
                     let is_active = idx == self.state.active_tab_index;
                     let icon = match tab {
@@ -237,6 +244,10 @@ impl QuarryWindow {
                         }
                         _ => None,
                     };
+                    let this_entity = cx.entity().clone();
+                    let tab_title = tab.title().to_string();
+                    let bg_hover = t.bg_hover;
+                    let accent = t.accent;
                     h_flex()
                         .id(("tab-select", idx))
                         .h(px(CONTROL_H))
@@ -248,6 +259,23 @@ impl QuarryWindow {
                         .cursor_pointer()
                         .when(is_active, |d| d.bg(t.bg_app))
                         .when(!is_active, |d| d.hover(|s| s.bg(t.bg_hover)))
+                        .on_drag(layout::DraggedTab(idx), {
+                            let this_entity = this_entity.clone();
+                            let tab_title = tab_title.clone();
+                            move |_, _, _, cx| {
+                                this_entity.update(cx, |this, _| {
+                                    this.active_drag_tab = Some(idx);
+                                });
+                                cx.new(|_| DragGhost::new(tab_title.clone()))
+                            }
+                        })
+                        .drag_over::<layout::DraggedTab>(move |style, _, _, _| {
+                            style.bg(bg_hover).border_b_2().border_color(accent)
+                        })
+                        .on_drop(cx.listener(move |this, &layout::DraggedTab(from_idx): &layout::DraggedTab, _, cx| {
+                            this.active_drag_tab = None;
+                            this.reorder_tab(from_idx, idx, cx);
+                        }))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.state.active_tab_index = idx;
                             cx.notify();
@@ -265,6 +293,31 @@ impl QuarryWindow {
                                 .text_xs()
                                 .text_color(if is_active { t.text_primary } else { t.text_secondary })
                                 .child(tab.title().to_string()),
+                        )
+                        .when(
+                            self.split_id.as_deref() == Some(tab.id()) && self.split_tab().is_some(),
+                            |d| {
+                                d.child(
+                                    div()
+                                        .px_1()
+                                        .py(px(1.0))
+                                        .rounded_xs()
+                                        .bg(t.accent.opacity(0.14))
+                                        .text_color(t.accent)
+                                        .child(
+                                            Icon::new(
+                                                if layout::split_direction()
+                                                    == layout::SplitDirection::Horizontal
+                                                {
+                                                    IconName::Rows2
+                                                } else {
+                                                    IconName::Columns2
+                                                },
+                                            )
+                                            .size(px(10.0)),
+                                        ),
+                                )
+                            },
                         )
                         .when(
                             // Unsaved: a new tab with text in it, or a file that differs from disk
@@ -301,7 +354,11 @@ impl QuarryWindow {
                 .child(
                     h_flex().h(px(CONTROL_H)).px_1().items_center().child(
                         zbutton("tab-split-btn")
-                            .icon(IconName::Columns2)
+                            .icon(if layout::split_direction() == layout::SplitDirection::Horizontal {
+                                IconName::Rows2
+                            } else {
+                                IconName::Columns2
+                            })
                             .ghost()
                             .xsmall()
                             .when(self.split_tab().is_some(), |b| b.text_color(t.accent))
@@ -310,6 +367,267 @@ impl QuarryWindow {
                     ),
                 )
         })
+    }
+
+    fn render_split_pane(
+        &mut self,
+        tab: &Tab,
+        is_active: bool,
+        is_second_pane: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let t = self.theme.clone();
+        let icon = match tab {
+            Tab::Query { .. } => IconName::SquareTerminal,
+            Tab::Table { .. } => IconName::Table,
+        };
+        let env_color = match tab {
+            Tab::Table {
+                connection: Some(c),
+                ..
+            } => match c.env {
+                Environment::Prod => Some(t.danger),
+                Environment::Staging => Some(t.warning),
+                Environment::Local => None,
+            },
+            _ => None,
+        };
+        let table_obj = match tab {
+            Tab::Table {
+                schema_name,
+                table_name,
+                ..
+            } => Some(object_menu::DbObject::Table {
+                schema: schema_name.clone(),
+                table: table_name.clone(),
+            }),
+            _ => None,
+        };
+        let is_modified = matches!(
+            tab,
+            Tab::Query { editor, saved_text, .. }
+                if editor.read(cx).value().as_ref() != saved_text.as_str()
+        );
+        let is_horizontal = layout::split_direction() == layout::SplitDirection::Horizontal;
+        let dir_icon = if is_horizontal {
+            IconName::Columns2
+        } else {
+            IconName::Rows2
+        };
+        let dir_tooltip = if is_horizontal {
+            "Split vertically (⌥⌘\\)"
+        } else {
+            "Split horizontally (⌥⌘\\)"
+        };
+        let p_ix: usize = if is_second_pane { 1 } else { 0 };
+        let this_entity = cx.entity().clone();
+        let tab_title = tab.title().to_string();
+
+        let tab_chip = h_flex()
+            .id(("split-pane-tab", p_ix))
+            .h(px(CONTROL_H))
+            .pl_2p5()
+            .pr_1()
+            .gap_1p5()
+            .items_center()
+            .rounded_t(px(5.0))
+            .cursor_pointer()
+            .when(is_active, |d| d.bg(t.bg_app))
+            .when(!is_active, |d| d.hover(|s| s.bg(t.bg_hover)))
+            .on_drag(layout::DraggedSplitPane(p_ix), {
+                let this_entity = this_entity.clone();
+                let tab_title = tab_title.clone();
+                move |_, _, _, cx| {
+                    this_entity.update(cx, |this, _| {
+                        this.active_drag_split_pane = Some(p_ix);
+                    });
+                    cx.new(|_| DragGhost::new(tab_title.clone()))
+                }
+            })
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if !is_active {
+                    this.swap_split(cx);
+                }
+            }))
+            .when_some(env_color, |d, c| d.border_b_2().border_color(c))
+            .when_some(table_obj, |d, obj| {
+                d.on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, _, window, cx| {
+                        this.open_object_menu(obj.clone(), window, cx);
+                    }),
+                )
+            })
+            .child(Icon::new(icon).xsmall().text_color(if is_active {
+                t.accent
+            } else {
+                t.text_muted
+            }))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(if is_active {
+                        t.text_primary
+                    } else {
+                        t.text_secondary
+                    })
+                    .child(tab.title().to_string()),
+            )
+            .when(is_modified, |d| {
+                d.child(div().size(px(6.0)).rounded_full().bg(t.text_secondary))
+            })
+            .child(
+                zbutton(("split-tab-close", p_ix))
+                    .icon(IconName::X)
+                    .ghost()
+                    .xsmall()
+                    .tooltip("Close tab")
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.close_split_pane(is_second_pane, window, cx);
+                    })),
+            );
+
+        let header = h_flex()
+            .id(("split-pane-header", p_ix))
+            .h(px(BAR_H))
+            .w_full()
+            .px_1()
+            .gap_px()
+            .bg(t.bg_panel)
+            .border_b_1()
+            .border_color(t.border)
+            .items_end()
+            .child(tab_chip)
+            .child(div().flex_1())
+            .child(
+                h_flex()
+                    .h(px(CONTROL_H))
+                    .px_1()
+                    .items_center()
+                    .gap_1()
+                    .when(!is_horizontal && p_ix == 1, |d| {
+                        d.child(
+                            zbutton(("split-dock-left", p_ix))
+                                .icon(IconName::ArrowLeft)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Dock pane to left (⌥⌘[)")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_split_pane_to_side(1, layout::Side::Left, cx);
+                                })),
+                        )
+                    })
+                    .when(!is_horizontal && p_ix == 0, |d| {
+                        d.child(
+                            zbutton(("split-dock-right", p_ix))
+                                .icon(IconName::ArrowRight)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Dock pane to right (⌥⌘])")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_split_pane_to_side(0, layout::Side::Right, cx);
+                                })),
+                        )
+                    })
+                    .when(is_horizontal && p_ix == 1, |d| {
+                        d.child(
+                            zbutton(("split-dock-top", p_ix))
+                                .icon(IconName::ArrowUp)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Dock pane to top (⌥⇧⌘[)")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_split_pane_to_side(1, layout::Side::Top, cx);
+                                })),
+                        )
+                    })
+                    .when(is_horizontal && p_ix == 0, |d| {
+                        d.child(
+                            zbutton(("split-dock-bottom", p_ix))
+                                .icon(IconName::ArrowDown)
+                                .ghost()
+                                .xsmall()
+                                .tooltip("Dock pane to bottom (⌥⇧⌘])")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.move_split_pane_to_side(0, layout::Side::Bottom, cx);
+                                })),
+                        )
+                    })
+                    .child(
+                        zbutton(("split-swap", p_ix))
+                            .icon(IconName::ArrowLeftRight)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Swap pane positions")
+                            .on_click(cx.listener(|this, _, _, cx| this.swap_pane_positions(cx))),
+                    )
+                    .child(
+                        zbutton(("split-dir", p_ix))
+                            .icon(dir_icon)
+                            .ghost()
+                            .xsmall()
+                            .tooltip(crate::ui::format_keys(dir_tooltip))
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.toggle_split_direction(cx)),
+                            ),
+                    )
+                    .child(
+                        zbutton(("split-close-pane", p_ix))
+                            .icon(IconName::X)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Close pane")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.close_split_pane(is_second_pane, window, cx);
+                            })),
+                    ),
+            );
+
+        let content = self.render_tab_view(tab, cx);
+
+        v_flex()
+            .id(("split-pane-container", p_ix))
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| style.bg(rgba(0x4080ff10)))
+            .on_drop(cx.listener(
+                move |this,
+                      &layout::DraggedSplitPane(from_ix): &layout::DraggedSplitPane,
+                      _,
+                      cx| {
+                    this.active_drag_split_pane = None;
+                    if from_ix != p_ix {
+                        this.swap_pane_positions(cx);
+                    }
+                },
+            ))
+            .drag_over::<layout::DraggedTab>(|style, _, _, _| style.bg(rgba(0x4080ff10)))
+            .on_drop(cx.listener(
+                move |this, &layout::DraggedTab(from_idx): &layout::DraggedTab, _, cx| {
+                    this.active_drag_tab = None;
+                    this.drop_tab_on_split_pane(from_idx, p_ix, cx);
+                },
+            ))
+            .child(header)
+            .child(
+                div()
+                    .flex_1()
+                    .size_full()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .when(!is_active, |d| {
+                        d.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| this.swap_split(cx)),
+                        )
+                    })
+                    .child(content),
+            )
+            .into_any_element()
     }
 
     pub(crate) fn render_center(
@@ -322,40 +640,92 @@ impl QuarryWindow {
             None if self.state.session.is_none() => self.render_onboarding(cx),
             None => self.render_launcher(cx),
             Some(tab) => match self.split_tab().filter(|_| self.state.tabs.len() > 1) {
-                // Split view (U8): two tabs side by side; clicking the inactive pane activates it in place
+                // Split view: Zed-style two pane layout with sleek headers, focus cues, and orientation support
                 Some(split) => {
-                    let active = self.render_tab_view(tab, cx);
-                    let other = div()
-                        .size_full()
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.swap_split(cx)),
+                    let (first, second) = if self.split_active_right {
+                        (
+                            self.render_split_pane(&split, false, false, cx),
+                            self.render_split_pane(tab, true, true, cx),
                         )
-                        .child(self.render_tab_view(&split, cx))
-                        .into_any_element();
-                    let (left, right) = if self.split_active_right {
-                        (other, active)
                     } else {
-                        (active, other)
+                        (
+                            self.render_split_pane(tab, true, false, cx),
+                            self.render_split_pane(&split, false, true, cx),
+                        )
                     };
-                    h_resizable("split-view")
-                        // Each pane clips: a toolbar wider than its half must not paint over the other
-                        .child(
-                            resizable_panel()
-                                .child(div().size_full().min_w_0().overflow_hidden().child(left)),
-                        )
-                        .child(
-                            resizable_panel().child(
-                                div()
-                                    .size_full()
-                                    .min_w_0()
-                                    .overflow_hidden()
-                                    .border_l_1()
-                                    .border_color(t.border)
-                                    .child(right),
-                            ),
-                        )
-                        .into_any_element()
+
+                    match layout::split_direction() {
+                        layout::SplitDirection::Vertical => {
+                            let mut group = h_resizable("split-view:vertical")
+                                .on_resize(layout::remember("split-view:vertical"));
+                            if let Some(s0) = layout::get_size("split-view:vertical", 0) {
+                                group = group.child(resizable_panel().size(s0).child(first));
+                            } else {
+                                group = group.child(resizable_panel().child(first));
+                            }
+                            if let Some(s1) = layout::get_size("split-view:vertical", 1) {
+                                group = group.child(
+                                    resizable_panel().size(s1).child(
+                                        div()
+                                            .size_full()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .border_l_1()
+                                            .border_color(t.border)
+                                            .child(second),
+                                    ),
+                                );
+                            } else {
+                                group = group.child(
+                                    resizable_panel().child(
+                                        div()
+                                            .size_full()
+                                            .min_w_0()
+                                            .overflow_hidden()
+                                            .border_l_1()
+                                            .border_color(t.border)
+                                            .child(second),
+                                    ),
+                                );
+                            }
+                            group.into_any_element()
+                        }
+                        layout::SplitDirection::Horizontal => {
+                            let mut group = v_resizable("split-view:horizontal")
+                                .on_resize(layout::remember("split-view:horizontal"));
+                            if let Some(s0) = layout::get_size("split-view:horizontal", 0) {
+                                group = group.child(resizable_panel().size(s0).child(first));
+                            } else {
+                                group = group.child(resizable_panel().child(first));
+                            }
+                            if let Some(s1) = layout::get_size("split-view:horizontal", 1) {
+                                group = group.child(
+                                    resizable_panel().size(s1).child(
+                                        div()
+                                            .size_full()
+                                            .min_h_0()
+                                            .overflow_hidden()
+                                            .border_t_1()
+                                            .border_color(t.border)
+                                            .child(second),
+                                    ),
+                                );
+                            } else {
+                                group = group.child(
+                                    resizable_panel().child(
+                                        div()
+                                            .size_full()
+                                            .min_h_0()
+                                            .overflow_hidden()
+                                            .border_t_1()
+                                            .border_color(t.border)
+                                            .child(second),
+                                    ),
+                                );
+                            }
+                            group.into_any_element()
+                        }
+                    }
                 }
                 None => self.render_tab_view(tab, cx),
             },

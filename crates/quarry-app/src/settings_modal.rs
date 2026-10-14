@@ -102,7 +102,40 @@ impl QuarryWindow {
                         |s, v| s.theme = v,
                         cx,
                     )),
-            )
+            );
+
+        let current_ui_font = if s.ui_font_family.eq_ignore_ascii_case("Satoshi") {
+            String::new()
+        } else {
+            s.ui_font_family.clone()
+        };
+        let mut ui_font_options = vec![
+            ("".to_string(), "Satoshi (Default)".to_string()),
+            ("Geist".to_string(), "Geist".to_string()),
+            ("Space Grotesk".to_string(), "Space Grotesk".to_string()),
+        ];
+        if !current_ui_font.is_empty()
+            && !ui_font_options
+                .iter()
+                .any(|(v, _)| v.eq_ignore_ascii_case(&current_ui_font))
+        {
+            ui_font_options.push((current_ui_font.clone(), current_ui_font.clone()));
+        }
+
+        let appearance = appearance
+            .child(setting_row(
+                &t,
+                "Interface font",
+                "Application typography",
+                choices(
+                    &t,
+                    "ui-font",
+                    ui_font_options,
+                    &current_ui_font,
+                    |s, v| s.ui_font_family = v,
+                    cx,
+                ),
+            ))
             .child(setting_row(
                 &t,
                 "Interface size",

@@ -71,6 +71,33 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:save_file", "Save Query", "⌘S"),
     ("action:reopen_tab", "Reopen Closed Tab", "⇧⌘T"),
     ("action:split", "Toggle Split View", "⌘\\"),
+    (
+        "action:toggle_split_direction",
+        "Toggle Split Orientation (Vertical / Horizontal)",
+        "⌥⌘\\",
+    ),
+    ("action:focus_other_pane", "Focus Other Split Pane", "⌥⌘→"),
+    ("action:swap_split_panes", "Swap Split Panes", ""),
+    (
+        "action:move_pane_left",
+        "Move Active Split Pane to Left",
+        "⌥⌘[",
+    ),
+    (
+        "action:move_pane_right",
+        "Move Active Split Pane to Right",
+        "⌥⌘]",
+    ),
+    (
+        "action:move_pane_up",
+        "Move Active Split Pane to Top",
+        "⌥⇧⌘[",
+    ),
+    (
+        "action:move_pane_down",
+        "Move Active Split Pane to Bottom",
+        "⌥⇧⌘]",
+    ),
     ("action:close_all", "Close All Tabs", ""),
     ("action:pin", "Pin / Unpin Current Tab", ""),
     ("action:format", "Format SQL", "⇧⌥F"),
@@ -86,7 +113,16 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:commit_tx", "Commit Transaction", ""),
     ("action:rollback_tx", "Roll Back Transaction", ""),
     ("action:toggle_sidebar", "Toggle Sidebar", "⌘B"),
+    ("action:move_sidebar_left", "Move Sidebar to Left", ""),
+    ("action:move_sidebar_right", "Move Sidebar to Right", ""),
     ("action:toggle_bottom", "Toggle Bottom Panel", "⌘J"),
+    (
+        "action:move_bottom_bottom",
+        "Move Bottom Panel to Bottom",
+        "",
+    ),
+    ("action:move_bottom_right", "Move Bottom Panel to Right", ""),
+    ("action:reset_layout", "Reset Layout", ""),
     ("action:theme", "Toggle Light/Dark Theme", ""),
     ("action:increase_font", "Zoom In (Increase Font Size)", "⌘+"),
     (
@@ -97,6 +133,8 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:reset_font", "Reset Zoom (Actual Size)", "⌘0"),
     ("action:settings", "Settings…", "⌘,"),
     ("action:keymap", "Open Keymap", ""),
+    ("action:report_issue", "Report Issue on GitHub…", ""),
+    ("action:view_last_crash", "View Last Crash Report…", ""),
 ];
 
 /// Commands shown when the box is empty

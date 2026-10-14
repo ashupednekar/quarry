@@ -421,4 +421,69 @@ impl QuarryWindow {
             },
         );
     }
+
+    /// Opens the system file picker to choose a local SQLite database file
+    pub fn browse_sqlite_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose Database File".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                let path_str = path.to_string_lossy().to_string();
+                this.conn_path_input.update(cx, |i, cx| {
+                    i.set_value(path_str.clone(), window, cx);
+                });
+                let name = this.conn_name_input.read(cx).value().trim().to_string();
+                if name.is_empty() {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        this.conn_name_input.update(cx, |i, cx| {
+                            i.set_value(stem.to_string(), window, cx);
+                        });
+                    }
+                }
+                this.fill_conn_fields(window, cx);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens the system file picker to choose an SSH private key file
+    pub fn browse_ssh_key_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Choose Private Key".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                let path_str = path.to_string_lossy().to_string();
+                if let Some(key_input) = this.ssh_inputs.get(2) {
+                    key_input.update(cx, |i, cx| {
+                        i.set_value(path_str, window, cx);
+                    });
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
 }
