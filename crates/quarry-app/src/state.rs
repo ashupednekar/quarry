@@ -192,7 +192,6 @@ pub enum BottomPanelTab {
 
 #[allow(dead_code)]
 pub struct AppState {
-    pub workspace_name: String,
     pub active_connection: Option<ConnectionProfile>,
     /// A saved query being renamed in the sidebar, and the name box
     pub renaming_query: Option<(std::path::PathBuf, Entity<InputState>)>,
@@ -300,7 +299,6 @@ impl AppState {
             history.iter().rev().map(|item| item.sql.clone()).collect();
 
         let mut state = Self {
-            workspace_name: "quarry".to_string(),
             active_connection: None,
             renaming_query: None,
             saved_connections: crate::connections::load(),
