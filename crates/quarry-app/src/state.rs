@@ -8,7 +8,6 @@ use gpui::component::table::TableState;
 use gpui::Entity;
 use quarry_core::schema::{SchemaCatalog, TableSchema};
 use quarry_core::session::DatabaseSession;
-use quarry_core::sqlite::SqliteSession;
 use quarry_core::{ActivityLog, LoggedSession};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -342,7 +341,7 @@ impl AppState {
             review_modal_show_sql: false,
 
             add_conn_modal_open: false,
-            add_conn_driver: "sqlite",
+            add_conn_driver: "postgres",
             add_conn_env: Environment::Local,
             add_conn_read_only: false,
             add_conn_ssh: false,
@@ -359,88 +358,6 @@ impl AppState {
         state
     }
 
-    /// Automatically sets up an in-memory SQLite database on first launch with sample tables
-    pub async fn init_demo_playground(&mut self) {
-        let profile = ConnectionProfile {
-            id: "local-sqlite".to_string(),
-            name: "local-sqlite".to_string(),
-            driver: "sqlite".to_string(),
-            path_or_url: ":memory:".to_string(),
-            env: Environment::Local,
-            read_only: false,
-            ssh: None,
-            statement_timeout_secs: None,
-        };
-
-        self.saved_connections.insert(0, profile.clone());
-
-        if let Ok(raw) = SqliteSession::open_in_memory() {
-            let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(
-                Arc::new(raw),
-                profile.name.clone(),
-                self.activity_log.clone(),
-            ));
-            let seed_sql = r#"
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    role TEXT DEFAULT 'developer',
-                    active BOOLEAN DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE products (
-                    id INTEGER PRIMARY KEY,
-                    sku TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    stock INTEGER DEFAULT 0
-                );
-
-                CREATE TABLE orders (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES users(id),
-                    total REAL NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                INSERT INTO users (id, email, name, role, active) VALUES
-                    (1, 'alice@company.com', 'Alice Smith', 'admin', 1),
-                    (2, 'bob@company.com', 'Bob Jones', 'developer', 1),
-                    (3, 'carol@staging.io', 'Carol White', 'analyst', 0);
-
-                INSERT INTO products (id, sku, name, price, stock) VALUES
-                    (1, 'PRD-001', 'Ergonomic Keyboard', 149.99, 45),
-                    (2, 'PRD-002', 'Ultra-wide Monitor', 499.00, 12),
-                    (3, 'PRD-003', 'Standing Desk', 620.50, 8);
-
-                INSERT INTO orders (id, user_id, total, status) VALUES
-                    (101, 1, 149.99, 'completed'),
-                    (102, 2, 1119.50, 'processing'),
-                    (103, 1, 499.00, 'pending');
-            "#;
-
-            for stmt in quarry_sql::split_statements(seed_sql) {
-                if let Err(e) = session.execute(&stmt.sql).await {
-                    self.messages.push(format!("Seed failed: {}", e));
-                }
-            }
-            if let Ok(cat) = session.introspect().await {
-                self.set_catalog(cat);
-            }
-
-            self.open_sessions
-                .insert(profile.id.clone(), (session.clone(), self.catalog.clone()));
-            self.set_session(Some(session));
-            self.active_connection = Some(profile);
-
-            self.messages.push(
-                "Connected to local SQLite playground. Seeded users, products, orders.".to_string(),
-            );
-        }
-    }
 
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active_tab_index)

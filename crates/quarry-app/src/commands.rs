@@ -235,8 +235,6 @@ impl QuarryWindow {
             self.decrease_font_size(&DecreaseFontSize, window, cx);
         } else if action_id == "action:reset_font" {
             self.reset_font_size(&ResetFontSize, window, cx);
-        } else if action_id == "action:demo" {
-            self.open_demo(window, cx);
         } else if action_id == "action:toggle_tx" {
             self.toggle_tx_mode(&ToggleTxMode, window, cx);
         } else if action_id == "action:commit_tx" {

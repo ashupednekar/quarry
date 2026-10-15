@@ -64,7 +64,7 @@ use gpui::*;
 use grid::{DataGrid, Fetch, ResultSet, TableSource};
 use quarry_core::DatabaseSession;
 use review_modal::ReviewModal;
-use runtime::{run_db, run_db_bg, stream_db, DB_RUNTIME};
+use runtime::{run_db, run_db_bg, stream_db};
 use sidebar::Sidebar;
 use state::{open_session, AppState, ConnectionProfile, Environment, Tab};
 use status_bar::StatusBar;
@@ -438,15 +438,6 @@ impl QuarryWindow {
             }
         }));
         this
-    }
-
-    /// Loads the in-memory demo database (users, products, orders) and opens it
-    fn open_demo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // In-memory SQLite seeding is sub-millisecond; fine to block here.
-        DB_RUNTIME.block_on(self.state.init_demo_playground());
-        self.open_table_tab("users", "main", window, cx);
-        self.refresh_active_tab(window, cx);
-        cx.notify();
     }
 
     /// Theme follows the OS appearance unless the user picked one
@@ -1290,17 +1281,9 @@ impl QuarryWindow {
                         h_flex()
                             .gap_2()
                             .child(
-                                zbutton("onboard-demo").pad_sm()
-                                    .icon(IconName::Database)
-                                    .label("Open the demo database")
-                                    .small()
-                                    .on_click(cx.listener(|this, _, window, cx| this.open_demo(window, cx))),
-                            )
-                            .child(
                                 zbutton("onboard-form").pad_sm()
                                     .icon(IconName::Settings2)
                                     .label("More options")
-                                    .ghost()
                                     .small()
                                     .on_click(cx.listener(|this, _, window, cx| this.open_add_conn(window, cx))),
                             ),
