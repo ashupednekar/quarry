@@ -94,7 +94,7 @@ pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(t.text_muted)
                                 .child(n.detail.clone()),
                         ),
@@ -102,7 +102,7 @@ pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
                 .children(rows.map(|r| {
                     div()
                         .w(px(120.0))
-                        .text_xs()
+                        .text_sm()
                         .text_right()
                         .text_color(if n.misestimated() {
                             t.warning
@@ -114,7 +114,7 @@ pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
                 .child(
                     div()
                         .w(px(80.0))
-                        .text_xs()
+                        .text_sm()
                         .text_right()
                         .text_color(t.text_secondary)
                         .children(metric),
@@ -139,7 +139,7 @@ pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
         .gap_4()
         .px_3()
         .py_1p5()
-        .text_xs()
+        .text_sm()
         .text_color(t.text_muted)
         .border_b_1()
         .border_color(t.border)

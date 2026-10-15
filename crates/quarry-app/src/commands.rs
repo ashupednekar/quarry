@@ -45,6 +45,11 @@ impl QuarryWindow {
             cx.notify();
             return;
         }
+        if self.filter_builder.take().is_some() {
+            self.refocus_root(window, cx);
+            cx.notify();
+            return;
+        }
         if self.export.open {
             self.export.open = false;
             cx.notify();

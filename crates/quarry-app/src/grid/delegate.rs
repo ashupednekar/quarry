@@ -13,12 +13,7 @@ impl TableDelegate for ResultSet {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.loaded_len()
-            + if self.source.is_some() {
-                self.pending.row_inserts.len()
-            } else {
-                0
-            }
+        self.total_row_count()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -143,6 +138,21 @@ impl TableDelegate for ResultSet {
         grid_menu(menu, self)
     }
 
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .justify_center()
+            .items_center()
+            .gap_2()
+            .text_color(cx.theme().muted_foreground)
+            .child(Icon::new(IconName::Inbox).size_8().opacity(0.6))
+            .child(div().text_sm().child("No rows"))
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -255,7 +265,7 @@ impl TableDelegate for ResultSet {
                                 .px_1p5()
                                 .py_0p5()
                                 .rounded(px(3.0))
-                                .text_xs()
+                                .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
                                 .bg(c.token_bg)
                                 .text_color(c.success)
@@ -285,7 +295,7 @@ impl TableDelegate for ResultSet {
                                 .px_1p5()
                                 .py_0p5()
                                 .rounded(px(3.0))
-                                .text_xs()
+                                .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
                                 .bg(c.token_bg)
                                 .text_color(c.danger)
@@ -322,7 +332,7 @@ impl TableDelegate for ResultSet {
                         .px_1p5()
                         .py_0p5()
                         .rounded(px(3.0))
-                        .text_xs()
+                        .text_sm()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(c.muted)
                         .bg(c.token_bg)
@@ -402,7 +412,7 @@ impl TableDelegate for ResultSet {
                     .gap_y_1()
                     .px_2()
                     .py_1()
-                    .text_xs()
+                    .text_sm()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         div()
@@ -634,9 +644,30 @@ impl TableDelegate for ResultSet {
             .w_px()
             .bg(c.grid_line);
 
-        // JetBrains DataGrip-style selection box (only when table is focused)
+        let in_range = self
+            .selected_range
+            .as_ref()
+            .map_or(false, |r| r.contains(row_ix, display_col));
+        let is_multi_range = self
+            .selected_range
+            .as_ref()
+            .map_or(false, |r| !r.is_single_cell());
+
+        // Range selection fill (for non-primary cells in a multi-cell selection)
+        let range_box = (in_range && is_multi_range && !is_selected).then(|| {
+            div()
+                .id("cell-range-box")
+                .absolute()
+                .top(px(-4.0))
+                .bottom(px(-4.0))
+                .left(px(-8.0))
+                .right(px(-8.0))
+                .bg(Theme::tint(c.accent, 0.16))
+        });
+
+        // JetBrains DataGrip-style selection box (only when table is focused or active range)
         let is_focused = cx.focus_handle().contains_focused(window, cx);
-        let selection_box = (is_selected && is_focused).then(|| {
+        let selection_box = (is_selected && (is_focused || in_range)).then(|| {
             div()
                 .id("cell-selection-box")
                 .absolute()
@@ -647,14 +678,14 @@ impl TableDelegate for ResultSet {
                 .bg(if edited {
                     Hsla::from(c.pending_bg)
                 } else {
-                    Theme::tint(c.accent, 0.14)
+                    Theme::tint(c.accent, 0.22)
                 })
                 .border_2()
                 .border_color(c.accent)
         });
 
         // Pending uncommitted edit background (when not selected)
-        let pending_box = (edited && !is_selected).then(|| {
+        let pending_box = (edited && !is_selected && !in_range).then(|| {
             div()
                 .id("cell-pending-bg")
                 .absolute()
@@ -682,6 +713,7 @@ impl TableDelegate for ResultSet {
             .relative()
             .child(divider)
             .children(pending_box)
+            .children(range_box)
             .children(selection_box)
             .children(modified_corner)
             .size_full()
@@ -692,6 +724,35 @@ impl TableDelegate for ResultSet {
             .when(state == RowState::Inserted, |d| d.bg(c.inserted_bg))
             .when(state == RowState::Deleted, |d| d.bg(c.deleted_bg))
             .child(content)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |table, e: &MouseDownEvent, window, cx| {
+                    table
+                        .delegate_mut()
+                        .handle_cell_mouse_down(row_ix, display_col, e.modifiers.shift);
+                    if table.delegate().inspector_open() {
+                        table.delegate_mut().inspect(row_ix, display_col, window, cx);
+                    }
+                    table.refresh(cx);
+                }),
+            )
+            .on_mouse_move(
+                cx.listener(move |table, _, _, cx| {
+                    if table.delegate().is_dragging {
+                        table.delegate_mut().handle_cell_mouse_drag(row_ix, display_col);
+                        table.refresh(cx);
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |table, _, _, cx| {
+                    if table.delegate().is_dragging {
+                        table.delegate_mut().end_drag();
+                        table.refresh(cx);
+                    }
+                }),
+            )
             .into_any_element()
     }
 }

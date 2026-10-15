@@ -288,7 +288,7 @@ impl QuarryWindow {
                 div()
                     .w(px(104.0))
                     .flex_shrink_0()
-                    .text_xs()
+                    .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(t.text_secondary)
                     .child(label),
@@ -382,7 +382,7 @@ impl QuarryWindow {
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .child(if e.whole_table {
                                 if is_table {
@@ -401,7 +401,7 @@ impl QuarryWindow {
                     .child(
                         div()
                             .flex_1()
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .child(format!("{picked} of {} selected", e.columns.len())),
                     )
@@ -410,7 +410,7 @@ impl QuarryWindow {
                             .pad_xs()
                             .label("All")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .disabled(busy || picked == e.columns.len())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.export.columns.iter_mut().for_each(|c| c.1 = true);
@@ -422,7 +422,7 @@ impl QuarryWindow {
                             .pad_xs()
                             .label("None")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .disabled(busy || picked == 0)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.export.columns.iter_mut().for_each(|c| c.1 = false);
@@ -458,7 +458,7 @@ impl QuarryWindow {
             .child(
                 div()
                     .flex_1()
-                    .text_xs()
+                    .text_sm()
                     .text_color(t.text_muted)
                     .child(match running {
                         Some(n) => format!("{n} rows written…"),
@@ -503,8 +503,9 @@ impl QuarryWindow {
             });
 
         Some(
-            modal_backdrop("export-card-backdrop", dismiss_on_click, cx)
-                .child(
+            crate::ui::fade_in(
+                "export-card-backdrop-fade",
+                modal_backdrop("export-card-backdrop", dismiss_on_click, cx).child(
                     modal_card("export-card", 560.0, &t)
                         // Enter in any field exports, like the primary button
                         .on_action(cx.listener(
@@ -527,8 +528,9 @@ impl QuarryWindow {
                         ))
                         .child(modal_body("export-body").max_h(px(460.0)).child(body))
                         .child(footer),
-                )
-                .into_any_element(),
+                ),
+            )
+            .into_any_element(),
         )
     }
 }

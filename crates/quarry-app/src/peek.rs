@@ -102,7 +102,7 @@ impl QuarryWindow {
         let cell = |text: String, muted: bool| {
             div()
                 .w(px(110.0))
-                .text_xs()
+                .text_sm()
                 .font_family(mono.clone())
                 .text_color(if muted { t.text_muted } else { t.text_primary })
                 .truncate()
@@ -110,17 +110,17 @@ impl QuarryWindow {
         };
         let rows: AnyElement = match &p.rows {
             None => div()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_muted)
                 .child("Loading…")
                 .into_any_element(),
             Some(Err(e)) => div()
-                .text_xs()
+                .text_sm()
                 .text_color(t.danger)
                 .child(e.clone())
                 .into_any_element(),
             Some(Ok(r)) if r.rows.is_empty() => div()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_muted)
                 .child("No rows")
                 .into_any_element(),
@@ -160,7 +160,7 @@ impl QuarryWindow {
                 .pad_xs()
                 .label(label)
                 .ghost()
-                .xsmall()
+                .small()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.peek = None;
                     this.peek_task = None;
@@ -181,7 +181,7 @@ impl QuarryWindow {
             .w(px(520.0))
             .p_3()
             .gap_2()
-            .rounded(px(8.0))
+            .rounded(px(10.0))
             .bg(t.bg_sidebar)
             .border_1()
             .border_color(t.border)
@@ -197,7 +197,7 @@ impl QuarryWindow {
                             .text_color(t.text_primary)
                             .child(p.table.table_name.clone()),
                     )
-                    .child(div().text_xs().text_color(t.text_muted).child(format!(
+                    .child(div().text_sm().text_color(t.text_muted).child(format!(
                         "{} · {} columns{}",
                         p.table.schema_name,
                         p.table.columns.len(),
@@ -219,7 +219,7 @@ impl QuarryWindow {
                         };
                         h_flex()
                             .gap_1()
-                            .text_xs()
+                            .text_sm()
                             .child(div().text_color(t.text_secondary).child(c.name.clone()))
                             .child(div().text_color(t.text_muted).child(format!(
                                 "{}{}",
@@ -272,7 +272,7 @@ impl QuarryWindow {
                     }))
                     .child(div().flex_1())
                     .when(cols.len() < p.table.columns.len(), |d| {
-                        d.child(div().text_xs().text_color(t.text_muted).child(format!(
+                        d.child(div().text_sm().text_color(t.text_muted).child(format!(
                             "{} of {} columns shown",
                             cols.len(),
                             p.table.columns.len()

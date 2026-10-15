@@ -130,7 +130,7 @@ impl QuarryWindow {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .truncate()
                             .child(d)
@@ -156,7 +156,7 @@ impl QuarryWindow {
                         .bg(t.bg_panel)
                         .border_1()
                         .border_color(t.border)
-                        .rounded(px(8.0))
+                        .rounded(px(10.0))
                         .shadow_lg()
                         .children(rows),
                 )

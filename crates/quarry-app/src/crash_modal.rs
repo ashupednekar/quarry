@@ -23,7 +23,7 @@ impl CrashModal {
         let report_for_copy = report.clone();
         let report_for_gh = report.clone();
 
-        modal_backdrop(
+        crate::ui::fade_in("crash-modal-backdrop-fade", modal_backdrop(
             "crash-modal-backdrop",
             cx.listener(|this, _, _, cx| this.dismiss_crash_report(cx)),
             cx,
@@ -61,7 +61,7 @@ impl CrashModal {
                                         )
                                         .child(
                                             div()
-                                                .text_xs()
+                                                .text_sm()
                                                 .font_weight(FontWeight::BOLD)
                                                 .text_color(theme.danger)
                                                 .child(msg.clone()),
@@ -69,7 +69,7 @@ impl CrashModal {
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_sm()
                                         .font_family(crate::theme::MONO_FONT)
                                         .text_color(theme.text_secondary)
                                         .child(format!("Location: {}", loc)),
@@ -80,7 +80,7 @@ impl CrashModal {
                                 .gap_1()
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_sm()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme.text_secondary)
                                         .child("Stack Backtrace Excerpt:"),
@@ -96,7 +96,7 @@ impl CrashModal {
                                         .max_h(px(160.0))
                                         .overflow_y_scroll()
                                         .font_family(crate::theme::MONO_FONT)
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme.text_muted)
                                         .child(
                                             report
@@ -110,7 +110,7 @@ impl CrashModal {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(theme.text_muted)
                                 .child("Would you like to file an issue on GitHub? You can also copy the complete report to your clipboard."),
                         ),
@@ -177,6 +177,6 @@ impl CrashModal {
                                 ),
                         ),
                 ),
-        )
+        ))
     }
 }

@@ -119,8 +119,8 @@ impl ReviewModal {
                 .id(id)
                 .px_2p5()
                 .py_1()
-                .rounded(px(5.0))
-                .text_xs()
+                .rounded(px(6.0))
+                .text_sm()
                 .cursor_pointer()
                 .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
                 .when(!on, |d| {
@@ -222,7 +222,7 @@ impl ReviewModal {
                         .child(badge(r.kind))
                         .child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .font_family(mono.clone())
                                 .text_color(t.text_secondary)
                                 .truncate()
@@ -231,7 +231,7 @@ impl ReviewModal {
                 )
                 .child(
                     v_flex()
-                        .text_xs()
+                        .text_sm()
                         .font_family(mono.clone())
                         .when(r.lines.iter().any(|l| matches!(l, Line::Change(..))), |d| {
                             d.child(table_head())
@@ -263,7 +263,7 @@ impl ReviewModal {
                     div()
                         .w(px(20.0))
                         .flex_shrink_0()
-                        .text_xs()
+                        .text_sm()
                         .text_color(t.text_muted)
                         .child(format!("{}", idx + 1)),
                 )
@@ -271,7 +271,7 @@ impl ReviewModal {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_xs()
+                        .text_sm()
                         .font_family(mono.clone())
                         .text_color(t.text_primary)
                         .child(sql.clone()),
@@ -279,58 +279,61 @@ impl ReviewModal {
         });
 
         let close = cx.listener(move |this, _, _, cx| this.close_review_modal(cx));
-        modal_backdrop(
-            "review-modal-backdrop",
-            cx.listener(move |this, _, _, cx| this.close_review_modal(cx)),
-            cx,
-        )
-        .child(
-            modal_card("review-modal-card", 760.0, theme)
-                .max_h(px(620.0))
-                .overflow_hidden()
-                .child(modal_header(
-                    theme,
-                    "Review changes",
-                    Some(
-                        format!(
-                            "{} on {table_name} · applied in one transaction",
-                            summary(&rows)
-                        )
-                        .into(),
-                    ),
-                    close,
-                ))
-                .child(tabs)
-                .child(
-                    modal_body("review-sql-scroll")
-                        .flex_1()
-                        .gap_2()
-                        .when(!show_sql, |d| d.children(changes))
-                        .when(show_sql, |d| d.children(sql)),
-                )
-                .child(
-                    modal_footer(theme)
-                        .child(
-                            zbutton("review-cancel-btn")
-                                .pad_sm()
-                                .label("Cancel")
-                                .ghost()
-                                .small()
-                                .on_click(
-                                    cx.listener(move |this, _, _, cx| this.close_review_modal(cx)),
-                                ),
-                        )
-                        .child(
-                            zbutton("review-commit-btn")
-                                .pad_sm()
-                                .label(crate::ui::format_keys("Submit ⌘↵"))
-                                .primary()
-                                .small()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.commit_pending_changes(window, cx)
-                                })),
+        crate::ui::fade_in(
+            "review-modal-backdrop-fade",
+            modal_backdrop(
+                "review-modal-backdrop",
+                cx.listener(move |this, _, _, cx| this.close_review_modal(cx)),
+                cx,
+            )
+            .child(
+                modal_card("review-modal-card", 760.0, theme)
+                    .max_h(px(620.0))
+                    .overflow_hidden()
+                    .child(modal_header(
+                        theme,
+                        "Review changes",
+                        Some(
+                            format!(
+                                "{} on {table_name} · applied in one transaction",
+                                summary(&rows)
+                            )
+                            .into(),
                         ),
-                ),
+                        close,
+                    ))
+                    .child(tabs)
+                    .child(
+                        modal_body("review-sql-scroll")
+                            .flex_1()
+                            .gap_2()
+                            .when(!show_sql, |d| d.children(changes))
+                            .when(show_sql, |d| d.children(sql)),
+                    )
+                    .child(
+                        modal_footer(theme)
+                            .child(
+                                zbutton("review-cancel-btn")
+                                    .pad_sm()
+                                    .label("Cancel")
+                                    .ghost()
+                                    .small()
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.close_review_modal(cx)
+                                    })),
+                            )
+                            .child(
+                                zbutton("review-commit-btn")
+                                    .pad_sm()
+                                    .label(crate::ui::format_keys("Submit ⌘↵"))
+                                    .primary()
+                                    .small()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.commit_pending_changes(window, cx)
+                                    })),
+                            ),
+                    ),
+            ),
         )
         .into_any_element()
     }

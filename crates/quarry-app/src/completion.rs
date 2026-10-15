@@ -6,7 +6,7 @@
 use gpui::component::input::{CompletionProvider, HoverProvider, Rope, RopeExt};
 use gpui::{App, Task, Window};
 use lsp_types::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionTriggerKind, CompletionResponse, CompletionTextEdit,
     Hover, HoverContents, InlineCompletionContext, InlineCompletionItem, InlineCompletionResponse,
     MarkupContent, MarkupKind, TextEdit,
 };
@@ -94,11 +94,19 @@ impl CompletionProvider for SchemaCompletions {
         &self,
         text: &Rope,
         offset: usize,
-        _: CompletionContext,
+        ctx: CompletionContext,
         _: &mut Window,
         cx: &mut App,
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let (sql, local_offset, range) = slice_completion_context(text, offset);
+        // Backspace past the start of a word (or onto a space) closes the menu instead of listing everything
+        let in_word = sql[..local_offset]
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+        if !in_word && ctx.trigger_kind != CompletionTriggerKind::INVOKED {
+            return Task::ready(Ok(CompletionResponse::Array(vec![])));
+        }
         let catalog = self.catalog.borrow().clone();
         let usage = self.usage.as_ref().map(|u| u.borrow().clone());
         cx.background_executor().spawn(async move {
@@ -125,12 +133,14 @@ impl CompletionProvider for SchemaCompletions {
         })
     }
 
-    /// Typing a word character or `.` (for table.column) opens suggestions
+    /// Typing a word character or `.` (for table.column) opens suggestions; so does deleting
+    /// (backspace), which `completions` answers only when the cursor is still inside a word
     fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
-        new_text
-            .chars()
-            .last()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        new_text.is_empty()
+            || new_text
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
     }
 
     fn inline_completion_debounce(&self) -> std::time::Duration {
@@ -208,9 +218,6 @@ pub fn match_history_prefix(sql: &str, local_offset: usize, history: &[String]) 
             let mut suffix = norm_q[norm_typed.len()..].to_string();
             if before.ends_with(' ') && suffix.starts_with(' ') {
                 suffix = suffix.trim_start().to_string();
-            } else if !before.ends_with(' ') && !suffix.starts_with(' ') && !suffix.starts_with(';')
-            {
-                suffix = format!(" {suffix}");
             }
             if let Some(semi_pos) = suffix.find(';') {
                 suffix.truncate(semi_pos + 1);

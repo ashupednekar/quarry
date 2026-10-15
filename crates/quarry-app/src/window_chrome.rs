@@ -104,13 +104,13 @@ impl QuarryWindow {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .child("Commands, tables, SQL…"),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .flex_shrink_0()
                             .child(crate::ui::format_keys("⌘K")),
@@ -152,7 +152,7 @@ impl QuarryWindow {
                 .gap_2()
                 .min_w_0()
                 .overflow_hidden()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_muted)
                 .tooltip(move |window, cx| {
                     gpui::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
@@ -276,8 +276,12 @@ impl QuarryWindow {
                             this.active_drag_tab = None;
                             this.reorder_tab(from_idx, idx, cx);
                         }))
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
                             this.state.active_tab_index = idx;
+                            // Double-clicking a preview tab keeps it
+                            if e.click_count() >= 2 {
+                                this.preview_tab = None;
+                            }
                             cx.notify();
                         }))
                         .when_some(env_color, |d, c| d.border_b_2().border_color(c))
@@ -290,8 +294,15 @@ impl QuarryWindow {
                         .child(Icon::new(icon).xsmall().text_color(if is_active { t.accent } else { t.text_muted }))
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(if is_active { t.text_primary } else { t.text_secondary })
+                                .text_sm()
+                                // A preview tab (replaced by the next click) reads a step quieter; italic
+                                // where the UI font has one
+                                .text_color(match (is_active, self.preview_tab.as_deref() == Some(tab.id())) {
+                                    (true, false) => t.text_primary,
+                                    (false, true) => t.text_muted,
+                                    _ => t.text_secondary,
+                                })
+                                .when(self.preview_tab.as_deref() == Some(tab.id()), |d| d.italic())
                                 .child(tab.title().to_string()),
                         )
                         .when(
@@ -465,7 +476,7 @@ impl QuarryWindow {
             }))
             .child(
                 div()
-                    .text_xs()
+                    .text_sm()
                     .text_color(if is_active {
                         t.text_primary
                     } else {

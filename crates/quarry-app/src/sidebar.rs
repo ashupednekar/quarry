@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
 
 use crate::object_menu::DbObject;
-use crate::state::{AppState, Environment};
+use crate::state::{AppState, Environment, Tab};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::QuarryWindow;
@@ -56,12 +56,12 @@ impl Sidebar {
         let label = |text: String, color: Rgba| {
             div()
                 .flex_1()
-                .text_xs()
+                .text_sm()
                 .text_color(color)
                 .truncate()
                 .child(text)
         };
-        let muted = |text: String| div().text_xs().text_color(theme.text_muted).child(text);
+        let muted = |text: String| div().text_sm().text_color(theme.text_muted).child(text);
 
         let mut tree = v_flex().py_2().px_2().gap_px();
         if state.saved_connections.is_empty() {
@@ -73,7 +73,7 @@ impl Sidebar {
                     .items_start()
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(theme.text_muted)
                             .child("No connections yet."),
                     )
@@ -111,10 +111,10 @@ impl Sidebar {
                         .child(div().size(px(6.0)).rounded_full().bg(color))
                         .child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_muted)
-                                .child(conn.env.label()),
+                                .child(conn.env.name()),
                         ),
                 );
             }
@@ -157,8 +157,7 @@ impl Sidebar {
                         } else {
                             theme.text_secondary
                         },
-                    ))
-                    .child(muted(kind.to_string())),
+                    )),
             );
             if !expanded {
                 continue;
@@ -228,11 +227,9 @@ impl Sidebar {
                         .child(icon(IconName::Layers, theme.text_muted))
                         .child(label(schema.clone(), theme.text_secondary))
                         // Not loaded yet (big databases): no count rather than a wrong 0
-                        .child(muted(if state.catalog.is_loaded(schema) {
-                            tables.len().to_string()
-                        } else {
-                            "…".into()
-                        })),
+                        .when(state.catalog.is_loaded(schema), |d| {
+                            d.child(muted(tables.len().to_string()))
+                        }),
                 );
                 if !expanded {
                     continue;
@@ -259,8 +256,9 @@ impl Sidebar {
                                     table: tbl.table_name.clone(),
                                 }),
                             )
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_sidebar_table(&t_name, &s_name, window, cx)
+                            .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
+                                let keep = e.click_count() >= 2;
+                                this.open_sidebar_table(&t_name, &s_name, keep, window, cx)
                             }))
                             // Peek (U7): hovering previews the table without opening it
                             .on_hover(cx.listener(move |this, hovered: &bool, window, cx| {
@@ -350,7 +348,7 @@ impl Sidebar {
                                     div()
                                         .flex_none()
                                         .max_w(px(140.0))
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme.text_secondary)
                                         .truncate()
                                         .child(obj.name.clone()),
@@ -359,7 +357,7 @@ impl Sidebar {
                                     div()
                                         .flex_1()
                                         .min_w_0()
-                                        .text_xs()
+                                        .text_sm()
                                         .text_color(theme.text_muted)
                                         .truncate()
                                         .child(obj.detail.clone()),
@@ -382,7 +380,7 @@ impl Sidebar {
                 div()
                     .px_2()
                     .py_1()
-                    .text_xs()
+                    .text_sm()
                     .text_color(theme.text_muted)
                     .child(crate::ui::format_keys("Save a query (⌘S) to see it here.")),
             );
@@ -441,7 +439,7 @@ impl Sidebar {
                     .px_2()
                     .pt_2()
                     .pb_1()
-                    .text_xs()
+                    .text_sm()
                     .text_color(theme.text_muted)
                     .child("Recent"),
             );
@@ -485,7 +483,7 @@ impl Sidebar {
         }
         let section_title = |text: &'static str| {
             div()
-                .text_xs()
+                .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.text_muted)
                 .child(text)
@@ -522,14 +520,14 @@ impl Sidebar {
                             this.open_sidebar_dock_menu(window, cx);
                         }),
                     )
-                    .child(section_title("DATABASE"))
+                    .child(section_title("Connections"))
                     .child(
                         zbutton("sidebar-add-conn")
                             .pad_xs()
                             .icon(IconName::Plus)
                             .label("New")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .tooltip(format_keys("New connection (⇧⌘N)"))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_add_conn(window, cx)
@@ -563,7 +561,7 @@ impl Sidebar {
                                                 .flex_none()
                                                 .px_3()
                                                 .items_center()
-                                                .child(section_title("QUERIES")),
+                                                .child(section_title("Queries")),
                                         )
                                         .child(
                                             div()
@@ -598,14 +596,45 @@ impl QuarryWindow {
         &mut self,
         table: &str,
         schema: &str,
+        keep: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.peek = None;
         self.peek_task = None;
+        // One click previews in a tab the next click reuses; a double-click keeps it
+        let opening = self.state.find_tab(table).is_none();
+        let replace = (opening && !keep)
+            .then(|| self.preview_tab.as_deref())
+            .flatten()
+            .and_then(|id| self.state.tabs.iter().position(|t| t.id() == id))
+            .filter(|&ix| self.tab_untouched(ix, cx));
+        if let Some(ix) = replace {
+            self.close_tab_at(ix, cx);
+        }
         self.open_table_tab(table, schema, window, cx);
+        let active = self.state.active_tab().map(|t| t.id().to_string());
+        if let Some(ix) = replace {
+            self.reorder_tab(self.state.tabs.len() - 1, ix, cx);
+        }
+        if opening && !keep {
+            self.preview_tab = active;
+        } else if keep && self.preview_tab == active {
+            self.preview_tab = None;
+        }
         self.refresh_active_tab(window, cx);
         cx.notify();
+    }
+
+    /// A table tab with no filter typed and no unsaved edits: safe to swap for another preview
+    fn tab_untouched(&self, ix: usize, cx: &App) -> bool {
+        match self.state.tabs.get(ix) {
+            Some(tab @ Tab::Table { filter, .. }) => {
+                filter.read(cx).value().is_empty()
+                    && tab.grid().read(cx).delegate().pending.is_empty()
+            }
+            _ => false,
+        }
     }
 
     fn toggle_sidebar_schema(&mut self, schema: String, cx: &mut Context<Self>) {

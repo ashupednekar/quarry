@@ -134,7 +134,7 @@ impl QuarryWindow {
                     .px_2()
                     .py_0p5()
                     .rounded(px(4.0))
-                    .text_xs()
+                    .text_sm()
                     .cursor_pointer()
                     .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
                     .when(!on, |d| {
@@ -169,7 +169,7 @@ impl QuarryWindow {
             None => {
                 return div()
                     .p_4()
-                    .text_xs()
+                    .text_sm()
                     .text_color(t.text_muted)
                     .child("Loading…")
                     .into_any_element()
@@ -177,7 +177,7 @@ impl QuarryWindow {
             Some(Err(e)) => {
                 return div()
                     .p_4()
-                    .text_xs()
+                    .text_sm()
                     .text_color(t.danger)
                     .child(e.clone())
                     .into_any_element()
@@ -193,7 +193,7 @@ impl QuarryWindow {
                             .pad_xs()
                             .label("Open in Query Tab")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .on_click({
                                 let ddl = detail.ddl.clone();
                                 cx.listener(move |this, _, window, cx| {
@@ -216,7 +216,7 @@ impl QuarryWindow {
         let Some(table) = self.state.catalog.find_table(Some(schema_name), table_name) else {
             return div()
                 .p_4()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_muted)
                 .child("Not in the schema; refresh it from the connection's menu")
                 .into_any_element();
@@ -228,7 +228,7 @@ impl QuarryWindow {
                 .pt_5()
                 .pb_1()
                 .gap_2()
-                .text_xs()
+                .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(t.text_muted)
                 .child(s)
@@ -241,7 +241,7 @@ impl QuarryWindow {
                         .child(n.to_string())
                 }))
         };
-        let none = |s: &'static str| div().py_1().text_xs().text_color(t.text_muted).child(s);
+        let none = |s: &'static str| div().py_1().text_sm().text_color(t.text_muted).child(s);
         let cell = |w: f32, text: String, color: Rgba| {
             div()
                 .w(px(w))
@@ -266,7 +266,7 @@ impl QuarryWindow {
                 .gap_3()
                 .border_b_1()
                 .border_color(t.border)
-                .text_xs()
+                .text_sm()
                 .font_family(mono.clone())
                 .hover(|s| s.bg(t.bg_hover))
         };
@@ -279,7 +279,7 @@ impl QuarryWindow {
                 .border_b_1()
                 .border_color(t.border)
                 .bg(t.bg_panel)
-                .text_xs()
+                .text_sm()
                 .font_weight(FontWeight::MEDIUM)
         };
         let badge = |label: &'static str, color: Rgba| {
@@ -362,7 +362,7 @@ impl QuarryWindow {
                             .child(format!("{}.{}", table.schema_name, table.table_name)),
                     )
                     .when(table.is_view, |d| d.child(badge("VIEW", t.accent)))
-                    .child(div().text_xs().text_color(t.text_muted).child(format!(
+                    .child(div().text_sm().text_color(t.text_muted).child(format!(
                         "{} · {} · {} · referenced by {}",
                         count(table.columns.len(), "column"),
                         count(detail.indexes.len(), "index"),
@@ -370,7 +370,7 @@ impl QuarryWindow {
                         referenced_by.len()
                     ))),
             )
-            .children(comment_of("").map(|c| div().text_xs().text_color(t.text_secondary).child(c)))
+            .children(comment_of("").map(|c| div().text_sm().text_color(t.text_secondary).child(c)))
             .when(!detail.stats.is_empty(), |d| {
                 d.child(h_flex().items_center().flex_wrap().gap_2().children(
                     detail.stats.iter().map(|(label, value)| {
@@ -383,7 +383,7 @@ impl QuarryWindow {
                             .bg(t.bg_panel)
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .text_color(t.text_muted)
                                     .child(label.clone()),
                             )

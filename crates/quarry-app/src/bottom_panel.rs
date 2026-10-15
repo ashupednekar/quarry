@@ -584,7 +584,7 @@ impl QuarryWindow {
         let tab = |label: &'static str, which: BottomPanelTab| {
             underline_tab(theme, label, label, active == which)
                 .h(px(32.0))
-                .text_xs()
+                .text_sm()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.state.bottom_panel_tab = which;
                     if which == BottomPanelTab::Server {
@@ -606,6 +606,8 @@ impl QuarryWindow {
                 |_, _, _| {},
                 |_, _, _| {},
                 |_, _, _, _| {},
+                |_, _, _, _| {},
+                |_, _, _, _| {},
             )
         };
 
@@ -621,14 +623,14 @@ impl QuarryWindow {
                 .when(self.state.messages.is_empty(), |d| {
                     d.child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(theme.text_muted)
                             .child("Connections, runs and errors show up here."),
                     )
                 })
                 .children(self.state.messages.iter().rev().take(500).map(|m| {
                     div()
-                        .text_xs()
+                        .text_sm()
                         .text_color(
                             if m.starts_with("Error")
                                 || m.starts_with("Could not")
@@ -679,7 +681,7 @@ impl QuarryWindow {
                             .child(div().flex_1())
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .text_color(theme.text_muted)
                                     .child("Double-click to open"),
                             )
@@ -688,7 +690,7 @@ impl QuarryWindow {
                                     .pad_xs()
                                     .label("Open")
                                     .ghost()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Some(row) = this.selected_history_row(cx) {
                                             this.open_history_row(row, false, window, cx);
@@ -701,7 +703,7 @@ impl QuarryWindow {
                                     .icon(IconName::Play)
                                     .label("Run")
                                     .ghost()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Some(row) = this.selected_history_row(cx) {
                                             this.open_history_row(row, true, window, cx);
@@ -738,7 +740,7 @@ impl QuarryWindow {
                             .child(div().flex_1())
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .text_color(theme.text_muted)
                                     .child("Everything Quarry ran, newest first"),
                             )
@@ -748,7 +750,7 @@ impl QuarryWindow {
                                     .icon(IconName::Copy)
                                     .label("Copy")
                                     .ghost()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         cx.write_to_clipboard(ClipboardItem::new_string(
                                             this.panel.log_csv.clone(),
@@ -766,7 +768,7 @@ impl QuarryWindow {
                                     .icon(IconName::Download)
                                     .label("Export CSV")
                                     .ghost()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.export_log(cx))),
                             ),
                     )
@@ -888,7 +890,7 @@ impl QuarryWindow {
                                             .icon(IconName::FileCode)
                                             .label(file)
                                             .ghost()
-                                            .xsmall()
+                                            .small()
                                             .tooltip("Pick a log file")
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.open_log_file_menu(window, cx)
@@ -899,7 +901,7 @@ impl QuarryWindow {
                                             .pad_xs()
                                             .label(format!("Load older ({} KB)", p.log_pages * 64))
                                             .ghost()
-                                            .xsmall()
+                                            .small()
                                             .tooltip("Read another 64 KB further back")
                                             .on_click(cx.listener(|this, _, window, cx| {
                                                 this.panel.log_pages += 1;
@@ -914,7 +916,7 @@ impl QuarryWindow {
                                             .pad_xs()
                                             .label("Cancel query")
                                             .ghost()
-                                            .xsmall()
+                                            .small()
                                             .disabled(pid.is_none())
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.panel.confirm_kill = pid.map(|p| (p, false));
@@ -926,7 +928,7 @@ impl QuarryWindow {
                                             .pad_xs()
                                             .label("Terminate")
                                             .ghost()
-                                            .xsmall()
+                                            .small()
                                             .disabled(pid.is_none())
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.panel.confirm_kill = pid.map(|p| (p, true));
@@ -940,7 +942,7 @@ impl QuarryWindow {
                             div()
                                 .px_3()
                                 .py_2()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(theme.text_muted)
                                 .child(msg),
                         )
@@ -1027,8 +1029,9 @@ impl QuarryWindow {
             ("Cancel query?", format!("The query running on backend {pid} will be stopped. The session stays connected."), "Cancel query")
         };
         Some(
-            modal_backdrop("kill-backdrop", dismiss_on_click, cx)
-                .child(
+            crate::ui::fade_in(
+                "kill-backdrop-fade",
+                modal_backdrop("kill-backdrop", dismiss_on_click, cx).child(
                     modal_card("kill-card", 380.0, theme)
                         .p_4()
                         .gap_3()
@@ -1041,7 +1044,7 @@ impl QuarryWindow {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(theme.text_secondary)
                                 .child(detail),
                         )
@@ -1071,8 +1074,9 @@ impl QuarryWindow {
                                         })),
                                 ),
                         ),
-                )
-                .into_any_element(),
+                ),
+            )
+            .into_any_element(),
         )
     }
 }

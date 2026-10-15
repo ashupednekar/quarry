@@ -461,7 +461,7 @@ impl QuarryWindow {
                 div()
                     .w(px(110.0))
                     .flex_shrink_0()
-                    .text_xs()
+                    .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(t.text_secondary)
                     .child(label),
@@ -496,7 +496,7 @@ impl QuarryWindow {
                     .when(st.encoding == Encoding::Latin1, |this| {
                         this.child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(t.warning)
                                 .child("Not valid UTF-8, read as Latin-1"),
                         )
@@ -530,7 +530,7 @@ impl QuarryWindow {
                 )
             })
             .when_some(st.parse_error.clone(), |this, e| {
-                this.child(div().text_xs().text_color(t.danger).child(e))
+                this.child(div().text_sm().text_color(t.danger).child(e))
             });
 
         let target_name = st.existing.as_ref().map(|e| format!("Into {}", e.1));
@@ -540,7 +540,7 @@ impl QuarryWindow {
                     zbutton("target-existing")
                         .pad_xs()
                         .label(name)
-                        .xsmall()
+                        .small()
                         .disabled(busy)
                         .map(|b| {
                             if !st.new_table {
@@ -577,7 +577,7 @@ impl QuarryWindow {
                     .child(
                         div()
                             .w(px(180.0))
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_primary)
                             .truncate()
                             .child(h.clone()),
@@ -642,7 +642,7 @@ impl QuarryWindow {
 
         let status: AnyElement = match (&st.running, &st.report) {
             (Some(job), _) => div()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_secondary)
                 .child(format!(
                     "{} / {} rows…",
@@ -651,7 +651,7 @@ impl QuarryWindow {
                 ))
                 .into_any_element(),
             (None, Some(r)) if r.rolled_back => div()
-                .text_xs()
+                .text_sm()
                 .text_color(t.danger)
                 .child(format!(
                     "Nothing was imported. Row {}: {}",
@@ -659,7 +659,7 @@ impl QuarryWindow {
                 ))
                 .into_any_element(),
             (None, Some(r)) => div()
-                .text_xs()
+                .text_sm()
                 .text_color(if r.failures.is_empty() {
                     t.success
                 } else {
@@ -673,7 +673,7 @@ impl QuarryWindow {
                 ))
                 .into_any_element(),
             _ => div()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_muted)
                 .child(format!(
                     "{} rows · {} columns",
@@ -743,8 +743,9 @@ impl QuarryWindow {
 
         let section = |title: &'static str| section_title(&t, title);
         Some(
-            modal_backdrop("import-card-backdrop", dismiss_on_click, cx)
-                .child(
+            crate::ui::fade_in(
+                "import-card-backdrop-fade",
+                modal_backdrop("import-card-backdrop", dismiss_on_click, cx).child(
                     modal_card("import-card", 760.0, &t)
                         // Enter in any field imports, like the primary button
                         .on_action(cx.listener(
@@ -789,6 +790,8 @@ impl QuarryWindow {
                                             |_, _, _| {},
                                             |_, _, _| {},
                                             |_, _, _, _| {},
+                                            |_, _, _, _| {},
+                                            |_, _, _, _| {},
                                         )),
                                 )
                                 .child(target)
@@ -801,8 +804,9 @@ impl QuarryWindow {
                                 .child(behavior),
                         )
                         .child(footer),
-                )
-                .into_any_element(),
+                ),
+            )
+            .into_any_element(),
         )
     }
 }

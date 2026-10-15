@@ -34,6 +34,8 @@ pub struct Settings {
     pub code_folding: bool,
     /// Vim modal editing in the SQL editor
     pub vim_mode: bool,
+    /// Vim's Normal and Visual modes show a block cursor instead of the bar
+    pub vim_block_cursor: bool,
 
     // Data grid
     /// Rows fetched per page in table tabs
@@ -56,7 +58,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            font_size: 16.0,
+            font_size: 14.0,
             ui_font_family: String::new(),
             mono_font_size: 0.0,
             mono_font_family: String::new(),
@@ -67,6 +69,7 @@ impl Default for Settings {
             autocomplete: true,
             code_folding: true,
             vim_mode: false,
+            vim_block_cursor: true,
             rows_per_page: 500,
             null_display: "NULL".into(),
             max_column_width: 420.0,
@@ -85,7 +88,8 @@ impl Settings {
         if self.mono_font_size > 0.0 {
             self.mono_font_size
         } else {
-            self.font_size - 2.0
+            // Code is what you read closely: a step above the interface
+            self.font_size + 1.0
         }
     }
 
@@ -310,15 +314,15 @@ mod tests {
     #[test]
     fn font_size_adjustment() {
         let mut s = Settings::default();
-        assert_eq!(s.font_size, 16.0);
-        assert_eq!(s.mono_size(), 14.0);
-
-        s.increase_font_size();
-        assert_eq!(s.font_size, 17.0);
+        assert_eq!(s.font_size, 14.0);
         assert_eq!(s.mono_size(), 15.0);
 
+        s.increase_font_size();
+        assert_eq!(s.font_size, 15.0);
+        assert_eq!(s.mono_size(), 16.0);
+
         s.decrease_font_size();
-        assert_eq!(s.font_size, 16.0);
+        assert_eq!(s.font_size, 14.0);
 
         s.font_size = Settings::MAX_FONT_SIZE;
         s.increase_font_size();
@@ -329,15 +333,15 @@ mod tests {
         assert_eq!(s.font_size, Settings::MIN_FONT_SIZE);
 
         s.reset_font_size();
-        assert_eq!(s.font_size, 16.0);
+        assert_eq!(s.font_size, 14.0);
 
         // With explicit mono font size
         s.mono_font_size = 12.0;
         s.increase_font_size();
-        assert_eq!(s.font_size, 17.0);
+        assert_eq!(s.font_size, 15.0);
         assert_eq!(s.mono_font_size, 13.0);
         s.reset_font_size();
-        assert_eq!(s.font_size, 16.0);
+        assert_eq!(s.font_size, 14.0);
         assert_eq!(s.mono_font_size, 0.0);
     }
 

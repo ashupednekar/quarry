@@ -42,6 +42,8 @@ pub fn bind_keys(cx: &mut App) {
             Some("Input"),
         ),
         KeyBinding::new("shift-alt-f", FormatSql, Some("Input")),
+        KeyBinding::new("secondary-alt-f", crate::grid::OpenFilterBuilder, None),
+        KeyBinding::new("secondary-alt-f", crate::grid::OpenFilterBuilder, Some("Input")),
         KeyBinding::new("secondary-shift-s", SaveFileAs, None),
         KeyBinding::new("secondary-o", OpenFile, None),
         KeyBinding::new("secondary-shift-t", ReopenClosedTab, None),

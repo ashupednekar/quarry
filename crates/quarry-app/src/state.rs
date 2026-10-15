@@ -29,6 +29,15 @@ impl Environment {
             Environment::Prod => "PROD",
         }
     }
+
+    /// For calm UI text: "Local", "Staging", "Production"
+    pub fn name(&self) -> &'static str {
+        match self {
+            Environment::Local => "Local",
+            Environment::Staging => "Staging",
+            Environment::Prod => "Production",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -437,6 +446,10 @@ impl AppState {
 
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active_tab_index)
+    }
+
+    pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
+        self.tabs.get_mut(self.active_tab_index)
     }
 
     /// ⇧⎋: hide the sidebar and bottom panel, or bring them back as they were

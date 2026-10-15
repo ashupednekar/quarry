@@ -357,12 +357,125 @@ impl ResultSet {
             }
         });
         editor.update(cx, |e, cx| e.set_readonly(read_only, cx));
+        let parsed_json = serde_json::from_str::<serde_json::Value>(&text).ok();
+        let is_valid_json = parsed_json.is_some();
+        let search_input = if is_valid_json {
+            Some(cx.new(|cx| InputState::new(window, cx).placeholder("Filter JSON…")))
+        } else {
+            None
+        };
+        let mut expanded_paths = std::collections::HashSet::new();
+        expanded_paths.insert("$".to_string());
+        if let Some(serde_json::Value::Object(map)) = &parsed_json {
+            for k in map.keys() {
+                expanded_paths.insert(format!("$.{k}"));
+            }
+        } else if let Some(serde_json::Value::Array(arr)) = &parsed_json {
+            for i in 0..arr.len().min(10) {
+                expanded_paths.insert(format!("$[{i}]"));
+            }
+        }
+
         self.inspector = Some(Inspector {
             row,
             col,
             editor,
             initial: text,
+            mode: if is_valid_json {
+                InspectorMode::Tree
+            } else {
+                InspectorMode::Text
+            },
+            parsed_json,
+            expanded_paths,
+            search_input,
         });
+    }
+
+    pub fn set_inspector_mode(&mut self, mode: InspectorMode, _window: &mut Window, cx: &mut App) {
+        if let Some(ins) = self.inspector.as_mut() {
+            if mode == InspectorMode::Tree {
+                let text = ins.editor.read(cx).value().to_string();
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    ins.parsed_json = Some(val);
+                    ins.mode = InspectorMode::Tree;
+                    self.notice = None;
+                } else {
+                    self.notice = Some("Cannot switch to Tree view: JSON syntax error".to_string());
+                }
+            } else {
+                ins.mode = InspectorMode::Text;
+            }
+        }
+    }
+
+    pub fn format_inspector_json(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(ins) = self.inspector.as_mut() {
+            let text = ins.editor.read(cx).value().to_string();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                    ins.editor.update(cx, |e, cx| e.set_value(pretty, window, cx));
+                    ins.parsed_json = Some(val);
+                }
+            }
+        }
+    }
+
+    pub fn minify_inspector_json(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(ins) = self.inspector.as_mut() {
+            let text = ins.editor.read(cx).value().to_string();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Ok(compact) = serde_json::to_string(&val) {
+                    ins.editor.update(cx, |e, cx| e.set_value(compact, window, cx));
+                    ins.parsed_json = Some(val);
+                }
+            }
+        }
+    }
+
+    pub fn toggle_json_tree_path(&mut self, path: String) {
+        if let Some(ins) = self.inspector.as_mut() {
+            if ins.expanded_paths.contains(&path) {
+                ins.expanded_paths.remove(&path);
+            } else {
+                ins.expanded_paths.insert(path);
+            }
+        }
+    }
+
+    pub fn expand_all_json_tree(&mut self) {
+        if let Some(ins) = self.inspector.as_mut() {
+            if let Some(val) = &ins.parsed_json {
+                fn collect_paths(
+                    v: &serde_json::Value,
+                    path: String,
+                    set: &mut std::collections::HashSet<String>,
+                ) {
+                    set.insert(path.clone());
+                    match v {
+                        serde_json::Value::Object(map) => {
+                            for (k, child) in map {
+                                collect_paths(child, format!("{path}.{k}"), set);
+                            }
+                        }
+                        serde_json::Value::Array(arr) => {
+                            for (i, child) in arr.iter().enumerate() {
+                                collect_paths(child, format!("{path}[{i}]"), set);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                collect_paths(val, "$".to_string(), &mut ins.expanded_paths);
+            }
+        }
+    }
+
+    pub fn collapse_all_json_tree(&mut self) {
+        if let Some(ins) = self.inspector.as_mut() {
+            ins.expanded_paths.clear();
+            ins.expanded_paths.insert("$".to_string());
+        }
     }
 
     /// Writes the value editor's text back into the cell (validated like any edit)

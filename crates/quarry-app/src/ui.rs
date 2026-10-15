@@ -150,7 +150,7 @@ pub fn modal_header(
                         .child(title.into()),
                 )
                 .when_some(subtitle, |d, s| {
-                    d.child(div().text_xs().text_color(t.text_muted).truncate().child(s))
+                    d.child(div().text_sm().text_color(t.text_muted).truncate().child(s))
                 }),
         )
         .child(
@@ -203,21 +203,21 @@ pub fn field(
         .gap_2()
         .child(
             div()
-                .text_xs()
+                .text_sm()
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(t.text_secondary)
                 .child(label.into()),
         )
         .child(control)
         .when_some(hint, |d, h| {
-            d.child(div().text_xs().text_color(t.text_muted).child(h))
+            d.child(div().text_sm().text_color(t.text_muted).child(h))
         })
 }
 
 /// Small caps-free section heading inside a modal
 pub fn section_title(t: &crate::theme::Theme, title: &'static str) -> Div {
     div()
-        .text_xs()
+        .text_sm()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(t.text_muted)
         .child(title)
@@ -247,7 +247,7 @@ pub fn setting_row(
                 )
                 .child(
                     div()
-                        .text_xs()
+                        .text_sm()
                         .text_color(t.text_muted)
                         .child(description.into()),
                 ),
@@ -269,7 +269,7 @@ pub fn chip(
         .flex()
         .items_center()
         .rounded(px(5.0))
-        .text_xs()
+        .text_sm()
         .cursor_pointer()
         .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
         .when(!on, |d| {
@@ -405,7 +405,7 @@ impl Render for DragGhost {
             .border_1()
             .border_color(t.border)
             .shadow_lg()
-            .text_xs()
+            .text_sm()
             .font_weight(FontWeight::SEMIBOLD)
             .child(self.label.clone())
     }
@@ -439,4 +439,13 @@ mod tests {
             "Maximize (Shift+Esc)"
         );
     }
+}
+
+/// Modals ease in (fade plus a small rise) the first frames they're shown; closing is instant
+pub fn fade_in(id: &'static str, el: impl IntoElement + 'static) -> impl IntoElement {
+    div().absolute().inset_0().child(el).with_animation(
+        id,
+        Animation::new(std::time::Duration::from_millis(140)).with_easing(ease_out_quint()),
+        |d, t| d.opacity(t).top(px(4.0 * (1.0 - t))),
+    )
 }

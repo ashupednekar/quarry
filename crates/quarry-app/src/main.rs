@@ -18,6 +18,7 @@ mod er_view;
 mod execution;
 mod export_dialog;
 mod files;
+mod filter_builder;
 mod grid;
 mod history;
 mod import_wizard;
@@ -44,6 +45,7 @@ mod theme;
 mod toolbar_menus;
 mod ui;
 mod usages;
+mod vim;
 mod window_chrome;
 
 use add_conn_modal::AddConnModal;
@@ -199,6 +201,7 @@ struct QuarryWindow {
     export: export_dialog::ExportState,
     import: import_wizard::ImportState,
     params: Option<params_dialog::ParamsDialog>,
+    filter_builder: Option<filter_builder::FilterBuilderDialog>,
     /// Open grid context menu: (position, menu, dismiss subscription)
     grid_menu: Option<(
         Point<Pixels>,
@@ -225,6 +228,18 @@ struct QuarryWindow {
     pub diagram_layout: std::cell::RefCell<Option<crate::er_view::DiagramLayoutCache>>,
     /// A query tab's connection being reopened; the tab keeps it instead of following the active one meanwhile
     connecting_for_tab: Option<String>,
+    /// Profiles mid-connect: a double-click mustn't open two sessions
+    connecting: std::collections::HashSet<String>,
+    /// The table tab a single sidebar click opened; the next single click replaces it
+    preview_tab: Option<String>,
+    /// Vim: the first key of a pair (gg, dd, dw…), and Visual mode's fixed end and moving end
+    vim_pending: Option<char>,
+    /// Which Settings section is showing
+    settings_section: usize,
+    /// ⌘ scroll travel not yet turned into an editor size step
+    zoom_scroll: f32,
+    vim_anchor: usize,
+    vim_head: usize,
     /// Table tabs from last session, waiting for their connection (connection id, table)
     pending_table_tabs: Vec<(String, files::SavedTable)>,
     /// Results fill the query tab, editor hidden
@@ -257,7 +272,7 @@ impl QuarryWindow {
         // Empty by default: a blank name is filled from the address (host:port/db), never a stale "Local SQLite"
         let conn_name_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Instance name, e.g. docker-postgres (optional)")
+                .placeholder("Optional")
         });
         let conn_path_input = cx.new(|cx| InputState::new(window, cx).default_value(":memory:"));
         let onboard_input = cx.new(|cx| {
@@ -354,6 +369,7 @@ impl QuarryWindow {
             export,
             import,
             params: None,
+            filter_builder: None,
             grid_menu: None,
             synced_tab: None,
             tab_mru: Vec::new(),
@@ -368,6 +384,13 @@ impl QuarryWindow {
             diagram_view: Default::default(),
             diagram_layout: Default::default(),
             connecting_for_tab: None,
+            connecting: Default::default(),
+            preview_tab: None,
+            vim_pending: None,
+            settings_section: 0,
+            zoom_scroll: 0.0,
+            vim_anchor: 0,
+            vim_head: 0,
             pending_table_tabs: Vec::new(),
             results_expanded: false,
             tab_switcher: None,
@@ -625,6 +648,8 @@ impl QuarryWindow {
             |this, window, cx| this.commit_pending_changes(window, cx),
             |this, _, cx| this.open_export(cx),
             |this, target, window, cx| this.follow_foreign_key(target, window, cx),
+            |this, clause, window, cx| this.apply_filter_clause(&clause, window, cx),
+            |this, col, window, cx| this.open_filter_builder(col, window, cx),
         ));
         match tab {
             // Config files (settings, keymap) are plain editors: nothing to run
@@ -660,6 +685,9 @@ impl QuarryWindow {
                 let switches_schema = self.state.dialect().switches_schema();
                 let schema_label = switches_schema
                     .then(|| schema.clone().unwrap_or_else(|| "default schema".into()));
+                let block = self.settings.vim_mode
+                    && self.settings.vim_block_cursor
+                    && *vim_mode != state::VimMode::Insert;
                 let editor = QueryEditor::render(
                     editor,
                     *is_running,
@@ -669,6 +697,7 @@ impl QuarryWindow {
                     *row_limit,
                     self.state.dialect().split_rules(),
                     self.settings.vim_mode.then_some(*vim_mode),
+                    block.then(|| self.settings.mono_size()),
                     &self.theme,
                     cx,
                 );
@@ -700,20 +729,20 @@ impl QuarryWindow {
                     .border_color(t.border)
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(t.text_secondary)
                             .child("Results"),
                     )
                     .map(|h| match (error_message, *is_running) {
                         (_, true) => {
-                            h.child(div().text_xs().text_color(t.text_muted).child("Running…"))
+                            h.child(div().text_sm().text_color(t.text_muted).child("Running…"))
                         }
                         (Some(err), _) => h.child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(t.danger)
                                 .truncate()
                                 .child(err.clone()),
@@ -724,7 +753,7 @@ impl QuarryWindow {
                                 .map(|p| plan_view::summary(p))
                                 .or_else(|| summary.clone())
                                 .unwrap_or_default();
-                            h.child(div().text_xs().text_color(t.text_muted).child(text))
+                            h.child(div().text_sm().text_color(t.text_muted).child(text))
                         }
                     })
                     .child(div().flex_1())
@@ -743,7 +772,7 @@ impl QuarryWindow {
                                 "Hide editor"
                             })
                             .ghost()
-                            .xsmall()
+                            .small()
                             .tooltip(if self.results_expanded {
                                 "Bring the editor back above the results"
                             } else {
@@ -761,7 +790,7 @@ impl QuarryWindow {
                             .icon(IconName::Download)
                             .label("Export")
                             .ghost()
-                            .xsmall()
+                            .small()
                             .tooltip(ui::format_keys("Export (⇧⌘E)"))
                             .on_click(cx.listener(|this, _, _, cx| this.open_export(cx))),
                     );
@@ -830,20 +859,32 @@ impl QuarryWindow {
                                 },
                             ))
                             .child(
-                                div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(t.text_muted)
-                                    .child("WHERE"),
+                                Icon::new(IconName::ListFilter)
+                                    .small()
+                                    .text_color(t.text_muted),
                             )
-                            .child(div().flex_1().child(Input::new(filter).appearance(false)))
+                            .child(
+                                div().flex_1().child(Input::new(filter).appearance(false)),
+                            )
+                            .child(
+                                zbutton("open-filter-builder-btn")
+                                    .pad_xs()
+                                    .icon(IconName::ListFilter)
+                                    .label("Filter Builder")
+                                    .ghost()
+                                    .small()
+                                    .tooltip(crate::ui::format_keys("Visual filter condition builder (⌥F)"))
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.open_filter_builder(None, window, cx);
+                                    })),
+                            )
                             .when(!filter.read(cx).value().is_empty(), |d| {
                                 d.child(
                                     zbutton("filter-clear-btn")
                                         .pad_xs()
                                         .label("Clear")
                                         .ghost()
-                                        .xsmall()
+                                        .small()
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.clear_filter(window, cx)
                                         })),
@@ -880,7 +921,7 @@ impl QuarryWindow {
                 )
                 .child(
                     div()
-                        .text_xs()
+                        .text_sm()
                         .text_color(t.text_muted)
                         .child(ui::format_keys(hint)),
                 )
@@ -953,7 +994,7 @@ impl QuarryWindow {
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_sm()
                                     .text_color(t.text_muted)
                                     .child("Pick a table from the sidebar, or start here"),
                             ),
@@ -967,7 +1008,7 @@ impl QuarryWindow {
                                     div()
                                         .px_3()
                                         .pb_1()
-                                        .text_xs()
+                                        .text_sm()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(t.text_muted)
                                         .child("Recent"),
@@ -1015,17 +1056,17 @@ impl QuarryWindow {
             .filter(|s| quarry_core::session::is_mutation(s))
             .count();
         Some(
-            modal_backdrop("prod-backdrop", dismiss_on_click, cx)
+            crate::ui::fade_in("prod-backdrop-fade", modal_backdrop("prod-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("prod-card", 460.0, t)
                         .p_4()
                         .gap_3()
                         .child(div().text_sm().font_weight(FontWeight::SEMIBOLD).text_color(t.text_primary).child(format!("Change data on {name} (PROD)?")))
-                        .child(div().text_xs().text_color(t.text_secondary).child(format!(
+                        .child(div().text_sm().text_color(t.text_secondary).child(format!(
                             "{count} of these statements change data or schema. Turn this check off with \"confirm_on_prod\" in settings."
                         )))
                         .children(statements.iter().take(5).map(|s| {
-                            div().text_xs().font_family(cx.theme().mono_font_family.clone()).text_color(t.text_muted).truncate().child(s.clone())
+                            div().text_sm().font_family(cx.theme().mono_font_family.clone()).text_color(t.text_muted).truncate().child(s.clone())
                         }))
                         .child(
                             h_flex()
@@ -1041,7 +1082,7 @@ impl QuarryWindow {
                                     }
                                 }))),
                         ),
-                )
+                ))
                 .into_any_element(),
         )
     }
@@ -1157,7 +1198,7 @@ impl QuarryWindow {
         let t = &self.theme;
         let count = changes.len();
         Some(
-            modal_backdrop("close-confirm-backdrop", dismiss_on_click, cx)
+            crate::ui::fade_in("close-confirm-backdrop-fade", modal_backdrop("close-confirm-backdrop", dismiss_on_click, cx)
                 .child(
                     modal_card("close-confirm-card", 460.0, t)
                         .p_4()
@@ -1171,7 +1212,7 @@ impl QuarryWindow {
                         )
                         .child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(t.text_secondary)
                                 .child(if count == 1 {
                                     "You have unsaved changes that will be lost if you close the window:"
@@ -1187,7 +1228,7 @@ impl QuarryWindow {
                                         .gap_2()
                                         .items_center()
                                         .child(div().size(px(4.0)).rounded_full().bg(t.text_muted))
-                                        .child(div().text_xs().text_color(t.text_primary).truncate().child(item))
+                                        .child(div().text_sm().text_color(t.text_primary).truncate().child(item))
                                 })),
                         )
                         .child(
@@ -1218,7 +1259,7 @@ impl QuarryWindow {
                                         })),
                                 ),
                         ),
-                )
+                ))
                 .into_any_element(),
         )
     }
@@ -1235,14 +1276,13 @@ impl QuarryWindow {
                 v_flex()
                     .w(px(520.0))
                     .gap_3()
-                    .child(Icon::new(IconName::Database).text_color(t.text_muted))
                     .child(div().text_lg().text_color(t.text_primary).child("Connect a database"))
                     .child(Input::new(&self.onboard_input))
                     .child(
                         div()
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
-                            .child("postgres://user@host:5432/db  ·  ~/data/app.sqlite  ·  :memory:  ·  or drop a SQLite file here"),
+                            .child("A URL like postgres://user@host/db, a file path, or drop a .sqlite file here"),
                     )
                     .child(
                         h_flex()
@@ -1351,7 +1391,7 @@ impl QuarryWindow {
                     tab_size: self.settings.tab_size.max(1),
                     hard_tabs: false,
                 })
-                .placeholder(ui::format_keys("Write SQL here. ⌘↵ runs the selection or the statement at the cursor; ⌥↵ shows actions."))
+                .placeholder(ui::format_keys("Write SQL…  ⌘↵ to run"))
                 .default_value(sql.to_string())
         });
         let completions = std::rc::Rc::new(completion::SchemaCompletions::new(
@@ -1448,7 +1488,7 @@ impl QuarryWindow {
             return;
         }
         let filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("WHERE condition, e.g. id > 1"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter rows, e.g. id > 1"));
         // Re-render as it's typed in, so Clear shows up once there's something to clear
         cx.observe(&filter, |_, _, cx| cx.notify()).detach();
         let Some(session) = self.state.session.clone() else {
@@ -1600,6 +1640,7 @@ impl QuarryWindow {
     ) {
         let focus = grid.update(cx, |t, cx| {
             t.set_selected_cell(row, col, cx);
+            t.delegate_mut().selected_cell = Some((row, col));
             t.focus_handle(cx)
         });
         let menu = gpui::component::menu::PopupMenu::build(window, cx, |menu, _, cx| {
@@ -1641,13 +1682,26 @@ impl QuarryWindow {
                 }
                 // The value editor follows the selection
                 TableEvent::SelectCell(row, col) => grid.update(cx, |t, cx| {
-                    t.delegate_mut().selected_cell = Some((row, col));
+                    let rs = t.delegate_mut();
+                    if rs.is_dragging {
+                        // Dragging in progress, keep selected_range intact!
+                    } else if let Some(ref range) = rs.selected_range {
+                        if !range.is_single_cell() && range.contains(row, col) {
+                            // Multi-cell range selected, keep it!
+                        } else {
+                            rs.selected_cell = Some((row, col));
+                            rs.selected_range = Some(grid::CellRange::single(row, col));
+                        }
+                    } else {
+                        rs.selected_cell = Some((row, col));
+                        rs.selected_range = Some(grid::CellRange::single(row, col));
+                    }
                     if t.delegate().inspector_open() {
                         t.delegate_mut().inspect(row, col, window, cx);
                     }
                 }),
                 TableEvent::ClearSelection => grid.update(cx, |t, _| {
-                    t.delegate_mut().selected_cell = None;
+                    t.delegate_mut().clear_selection_range();
                 }),
                 _ => {}
             }
@@ -1850,190 +1904,263 @@ impl QuarryWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let active_idx = self.state.active_tab_index;
-        let Some(Tab::Query { vim_mode, .. }) = self.state.tabs.get_mut(active_idx) else {
+        use gpui::component::input as act;
+        use state::VimMode;
+        let Some(Tab::Query {
+            vim_mode, editor, ..
+        }) = self.state.active_tab()
+        else {
             return false;
         };
-        let current_mode = *vim_mode;
+        let (mode, editor) = (*vim_mode, editor.clone());
         let ks = &event.keystroke;
+        let m = &ks.modifiers;
+        let escape = ks.key == "escape" || (m.control && (ks.key == "[" || ks.key == "c"));
 
-        match current_mode {
-            state::VimMode::Insert => {
-                if ks.key == "escape" || (ks.modifiers.control && (ks.key == "[" || ks.key == "c"))
-                {
-                    *vim_mode = state::VimMode::Normal;
-                    cx.notify();
+        if mode == VimMode::Insert {
+            if escape {
+                // Leaving insert steps back onto the last typed character, as Vim does
+                window.dispatch_action(Box::new(act::MoveLeft), cx);
+                self.set_vim_mode(VimMode::Normal, cx);
+                return true;
+            }
+            return false;
+        }
+        if m.platform || m.alt {
+            return false;
+        }
+        let (text, cursor) = {
+            let st = editor.read(cx);
+            (st.value().to_string(), st.cursor())
+        };
+        // Undo / redo restore their text selected; Vim leaves just the cursor at its start.
+        // Deferred, because the dispatched action itself only runs after this handler
+        let collapse_after =
+            |editor: &Entity<EditorState>, window: &mut Window, cx: &mut Context<Self>| {
+                let editor = editor.clone();
+                window.defer(cx, move |_, cx| {
+                    editor.update(cx, |st, cx| {
+                        let start = st.selected_range().start;
+                        st.set_selected_range(start..start, cx)
+                    });
+                });
+            };
+        let select = |range: std::ops::Range<usize>, cx: &mut Context<Self>| {
+            editor.update(cx, |st, cx| st.set_selected_range(range, cx));
+        };
+        if escape {
+            self.vim_pending = None;
+            if mode == VimMode::Visual {
+                select(self.vim_head..self.vim_head, cx);
+                self.set_vim_mode(VimMode::Normal, cx);
+            }
+            return true;
+        }
+        if m.control {
+            match ks.key.as_str() {
+                "r" => {
+                    window.dispatch_action(Box::new(act::Redo), cx);
+                    collapse_after(&editor, window, cx);
+                }
+                "d" => window.dispatch_action(Box::new(act::MovePageDown), cx),
+                "u" => window.dispatch_action(Box::new(act::MovePageUp), cx),
+                _ => return false,
+            }
+            return true;
+        }
+        // Typed form: shift-4 is "$", shift-a is "A"
+        let key = ks.key_char.clone().unwrap_or_else(|| ks.key.clone());
+        let key = key.as_str();
+
+        if mode == VimMode::Visual {
+            let head = self.vim_head;
+            if let Some(to) = vim::motion(&text, head, key) {
+                self.vim_head = to;
+                let r = vim::op_range(self.vim_anchor, to);
+                select(r.start..vim::char_after(&text, r.end), cx);
+                return true;
+            }
+            match key {
+                "y" => {
+                    window.dispatch_action(Box::new(act::Copy), cx);
+                    let start = self.vim_anchor.min(head);
+                    select(start..start, cx);
+                }
+                "d" | "x" => window.dispatch_action(Box::new(act::Cut), cx),
+                "c" => {
+                    window.dispatch_action(Box::new(act::Cut), cx);
+                    self.set_vim_mode(VimMode::Insert, cx);
                     return true;
                 }
+                "v" => select(head..head, cx),
+                _ => return ks.key_char.is_some(),
+            }
+            self.set_vim_mode(VimMode::Normal, cx);
+            return true;
+        }
+
+        // Normal mode: a pending g / d / y / c takes this key as its second half
+        if let Some(op) = self.vim_pending.take() {
+            let range = match (op, key) {
+                ('g', "g") => {
+                    select(0..0, cx);
+                    return true;
+                }
+                (_, k) if k.len() == 1 && k.starts_with(op) => {
+                    let line = vim::line_range(&text, cursor);
+                    if op == 'c' {
+                        // cc keeps the (now empty) line to type on
+                        let t = text[line.clone()].trim_matches('\n');
+                        let at = line.start + text[line.clone()].find(t).unwrap_or(0);
+                        at..at + t.len()
+                    } else {
+                        line
+                    }
+                }
+                (_, k) => match vim::motion(&text, cursor, k) {
+                    // e lands on the word's last character, which the operator includes
+                    Some(to) if k == "e" => cursor..vim::char_after(&text, to),
+                    Some(to) => vim::op_range(cursor, to),
+                    None => return true,
+                },
+            };
+            self.vim_operate(op, range, &text, &editor, window, cx);
+            return true;
+        }
+        if let Some(to) = vim::motion(&text, cursor, key).filter(|_| key != "g") {
+            select(to..to, cx);
+            return true;
+        }
+        let line_end = vim::motion(&text, cursor, "$").unwrap_or(cursor);
+        match key {
+            "g" | "d" | "y" | "c" => self.vim_pending = key.chars().next(),
+            "i" => self.set_vim_mode(VimMode::Insert, cx),
+            "a" => {
+                let to = vim::char_after(&text, cursor).min(line_end);
+                select(to..to, cx);
+                self.set_vim_mode(VimMode::Insert, cx);
+            }
+            "I" | "A" => {
+                let to = vim::motion(&text, cursor, if key == "I" { "^" } else { "$" });
+                let to = to.unwrap_or(cursor);
+                select(to..to, cx);
+                self.set_vim_mode(VimMode::Insert, cx);
+            }
+            "o" | "O" => {
+                let to = vim::motion(&text, cursor, if key == "o" { "$" } else { "0" });
+                let to = to.unwrap_or(cursor);
+                select(to..to, cx);
+                window.dispatch_action(
+                    Box::new(act::Enter {
+                        secondary: false,
+                        shift: false,
+                    }),
+                    cx,
+                );
+                if key == "O" {
+                    window.dispatch_action(Box::new(act::MoveUp), cx);
+                }
+                self.set_vim_mode(VimMode::Insert, cx);
+            }
+            "v" => {
+                (self.vim_anchor, self.vim_head) = (cursor, cursor);
+                select(cursor..vim::char_after(&text, cursor).min(line_end), cx);
+                self.set_vim_mode(VimMode::Visual, cx);
+            }
+            "x" => {
+                let r = cursor..vim::char_after(&text, cursor).min(line_end);
+                self.vim_operate('d', r, &text, &editor, window, cx);
+            }
+            "D" | "C" => {
+                let op = if key == "D" { 'd' } else { 'c' };
+                self.vim_operate(op, cursor..line_end, &text, &editor, window, cx);
+            }
+            "p" | "P" => window.dispatch_action(Box::new(act::Paste), cx),
+            "u" => {
+                window.dispatch_action(Box::new(act::Undo), cx);
+                collapse_after(&editor, window, cx);
+            }
+            // Other printable keys do nothing in normal mode rather than typing
+            _ => return ks.key_char.is_some(),
+        }
+        true
+    }
+
+    /// d / y / c over a range: d and c cut (so p pastes it back), y copies
+    fn vim_operate(
+        &mut self,
+        op: char,
+        range: std::ops::Range<usize>,
+        text: &str,
+        editor: &Entity<EditorState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let start = range.start;
+        if op == 'y' {
+            cx.write_to_clipboard(ClipboardItem::new_string(text[range].to_string()));
+            editor.update(cx, |st, cx| st.set_selected_range(start..start, cx));
+            return;
+        }
+        editor.update(cx, |st, cx| st.set_selected_range(range.clone(), cx));
+        if !range.is_empty() {
+            window.dispatch_action(Box::new(gpui::component::input::Cut), cx);
+        }
+        if op == 'c' {
+            self.set_vim_mode(state::VimMode::Insert, cx);
+        }
+    }
+
+    /// One size step per ~40px of ⌘ scroll, so a trackpad flick doesn't jump to the limit
+    fn zoom_editor_by_scroll(&mut self, e: &ScrollWheelEvent, cx: &mut Context<Self>) {
+        self.zoom_scroll += f32::from(e.delta.pixel_delta(px(16.0)).y);
+        let steps = (self.zoom_scroll / 40.0).trunc();
+        if steps == 0.0 {
+            return;
+        }
+        self.zoom_scroll -= steps * 40.0;
+        let size = (self.settings.mono_size() + steps).clamp(
+            settings::Settings::MIN_FONT_SIZE,
+            settings::Settings::MAX_FONT_SIZE,
+        );
+        self.change_setting(|s| s.mono_font_size = size, cx);
+    }
+
+    /// Escape (arriving as Dismiss) leaves Insert or Visual for Normal; false lets Normal's Escape dismiss as usual
+    pub(crate) fn vim_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(Tab::Query {
+            vim_mode, editor, ..
+        }) = self.state.active_tab()
+        else {
+            return false;
+        };
+        let editor = editor.clone();
+        match *vim_mode {
+            state::VimMode::Normal => {
+                self.vim_pending = None;
                 false
             }
-            state::VimMode::Visual => {
-                if ks.key == "escape" {
-                    *vim_mode = state::VimMode::Normal;
-                    cx.notify();
-                    return true;
-                }
-                if ks.key == "y" {
-                    window.dispatch_action(Box::new(gpui::component::input::Copy), cx);
-                    *vim_mode = state::VimMode::Normal;
-                    cx.notify();
-                    return true;
-                }
-                if ks.key == "d" || ks.key == "x" {
-                    window.dispatch_action(Box::new(gpui::component::input::Cut), cx);
-                    *vim_mode = state::VimMode::Normal;
-                    cx.notify();
-                    return true;
-                }
-                if ks.key == "c" {
-                    window.dispatch_action(Box::new(gpui::component::input::Cut), cx);
-                    *vim_mode = state::VimMode::Insert;
-                    cx.notify();
-                    return true;
-                }
-                if ks.key == "v" {
-                    *vim_mode = state::VimMode::Normal;
-                    cx.notify();
-                    return true;
-                }
+            state::VimMode::Insert => {
+                // Leaving insert steps back onto the last typed character, as Vim does
+                window.dispatch_action(Box::new(gpui::component::input::MoveLeft), cx);
+                self.set_vim_mode(state::VimMode::Normal, cx);
                 true
             }
-            state::VimMode::Normal => {
-                if ks.modifiers.platform || ks.modifiers.alt {
-                    return false;
-                }
-                if ks.modifiers.control {
-                    if ks.key == "r" {
-                        window.dispatch_action(Box::new(gpui::component::input::Redo), cx);
-                        return true;
-                    }
-                    if ks.key == "[" || ks.key == "c" {
-                        return true;
-                    }
-                    return false;
-                }
-
-                let key_str = ks.key.as_str();
-                let is_shift = ks.modifiers.shift;
-
-                if key_str == "A" || (is_shift && key_str == "a") {
-                    window.dispatch_action(Box::new(gpui::component::input::MoveToEndOfLine), cx);
-                    *vim_mode = state::VimMode::Insert;
-                    cx.notify();
-                    return true;
-                }
-                if key_str == "I" || (is_shift && key_str == "i") {
-                    window.dispatch_action(Box::new(gpui::component::input::MoveToStartOfLine), cx);
-                    *vim_mode = state::VimMode::Insert;
-                    cx.notify();
-                    return true;
-                }
-                if key_str == "O" || (is_shift && key_str == "o") {
-                    window.dispatch_action(Box::new(gpui::component::input::MoveToStartOfLine), cx);
-                    window.dispatch_action(
-                        Box::new(gpui::component::input::Enter {
-                            secondary: false,
-                            shift: false,
-                        }),
-                        cx,
-                    );
-                    window.dispatch_action(Box::new(gpui::component::input::MoveUp), cx);
-                    *vim_mode = state::VimMode::Insert;
-                    cx.notify();
-                    return true;
-                }
-                if key_str == "G" || (is_shift && key_str == "g") {
-                    window.dispatch_action(Box::new(gpui::component::input::MoveToEnd), cx);
-                    return true;
-                }
-                if key_str == "$" || (is_shift && key_str == "4") {
-                    window.dispatch_action(Box::new(gpui::component::input::MoveToEndOfLine), cx);
-                    return true;
-                }
-
-                match key_str {
-                    "i" => {
-                        *vim_mode = state::VimMode::Insert;
-                        cx.notify();
-                        true
-                    }
-                    "a" => {
-                        window.dispatch_action(Box::new(gpui::component::input::MoveRight), cx);
-                        *vim_mode = state::VimMode::Insert;
-                        cx.notify();
-                        true
-                    }
-                    "o" => {
-                        window
-                            .dispatch_action(Box::new(gpui::component::input::MoveToEndOfLine), cx);
-                        window.dispatch_action(
-                            Box::new(gpui::component::input::Enter {
-                                secondary: false,
-                                shift: false,
-                            }),
-                            cx,
-                        );
-                        *vim_mode = state::VimMode::Insert;
-                        cx.notify();
-                        true
-                    }
-                    "v" => {
-                        *vim_mode = state::VimMode::Visual;
-                        cx.notify();
-                        true
-                    }
-                    "h" => {
-                        window.dispatch_action(Box::new(gpui::component::input::MoveLeft), cx);
-                        true
-                    }
-                    "l" => {
-                        window.dispatch_action(Box::new(gpui::component::input::MoveRight), cx);
-                        true
-                    }
-                    "j" => {
-                        window.dispatch_action(Box::new(gpui::component::input::MoveDown), cx);
-                        true
-                    }
-                    "k" => {
-                        window.dispatch_action(Box::new(gpui::component::input::MoveUp), cx);
-                        true
-                    }
-                    "w" => {
-                        window
-                            .dispatch_action(Box::new(gpui::component::input::MoveToNextWord), cx);
-                        true
-                    }
-                    "b" => {
-                        window.dispatch_action(
-                            Box::new(gpui::component::input::MoveToPreviousWord),
-                            cx,
-                        );
-                        true
-                    }
-                    "0" => {
-                        window.dispatch_action(
-                            Box::new(gpui::component::input::MoveToStartOfLine),
-                            cx,
-                        );
-                        true
-                    }
-                    "x" => {
-                        window.dispatch_action(Box::new(gpui::component::input::Delete), cx);
-                        true
-                    }
-                    "u" => {
-                        window.dispatch_action(Box::new(gpui::component::input::Undo), cx);
-                        true
-                    }
-                    "p" => {
-                        window.dispatch_action(Box::new(gpui::component::input::Paste), cx);
-                        true
-                    }
-                    "escape" => true,
-                    _ => ks.key_char.is_some(),
-                }
+            state::VimMode::Visual => {
+                let head = self.vim_head;
+                editor.update(cx, |st, cx| st.set_selected_range(head..head, cx));
+                self.set_vim_mode(state::VimMode::Normal, cx);
+                true
             }
         }
+    }
+
+    fn set_vim_mode(&mut self, mode: state::VimMode, cx: &mut Context<Self>) {
+        self.vim_pending = None;
+        if let Some(Tab::Query { vim_mode, .. }) = self.state.active_tab_mut() {
+            *vim_mode = mode;
+        }
+        cx.notify();
     }
 }
 
@@ -2052,6 +2179,7 @@ impl Render for QuarryWindow {
         let export_dialog = self.render_export_dialog(cx);
         let import_wizard = self.render_import_wizard(cx);
         let params_dialog = self.render_params_dialog(cx);
+        let filter_builder = self.render_filter_builder_modal(cx);
         let peek = self.render_peek(cx);
         let prod_confirm = self.render_prod_confirm(cx);
         let close_confirm = self.render_close_confirm(cx);
@@ -2177,6 +2305,9 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(|this, _: &ExplainAnalyze, window, cx| {
                 this.start_run(RunMode::ExplainAnalyze, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &grid::OpenFilterBuilder, window, cx| {
+                this.open_filter_builder(None, window, cx);
+            }))
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
             .on_action(cx.listener(Self::select_next_occurrence))
@@ -2230,6 +2361,12 @@ impl Render for QuarryWindow {
                 &self.state,
                 current_session.as_ref(),
                 current_conn.as_ref(),
+                match self.state.active_tab() {
+                    Some(state::Tab::Query { vim_mode, .. }) if self.settings.vim_mode => {
+                        Some(*vim_mode)
+                    }
+                    _ => None,
+                },
                 &self.theme,
                 cx,
             ))
@@ -2240,6 +2377,7 @@ impl Render for QuarryWindow {
             .children(export_dialog)
             .children(import_wizard)
             .children(params_dialog)
+            .children(filter_builder)
             .children(peek)
             .children(prod_confirm)
             .children(settings_modal)
@@ -2257,7 +2395,7 @@ impl Render for QuarryWindow {
                 this.child(
                     div()
                         .absolute()
-                        .bottom(px(36.0))
+                        .bottom(px(64.0))
                         .right(px(16.0))
                         .max_w(px(480.0))
                         .px_3()
@@ -2267,11 +2405,34 @@ impl Render for QuarryWindow {
                         .border_1()
                         .border_color(if error { t.danger } else { t.border })
                         .shadow_lg()
-                        .text_xs()
-                        .text_color(if error { t.danger } else { t.text_primary })
+                        .text_sm()
+                        .text_color(t.text_primary)
                         .flex()
-                        .gap_3()
-                        .child(msg)
+                        .items_start()
+                        .gap_2()
+                        .when(error, |d| {
+                            d.child(
+                                gpui::component::Icon::new(IconName::CircleX)
+                                    .text_color(t.danger)
+                                    .flex_shrink_0()
+                                    .mt(px(2.0)),
+                            )
+                        })
+                        .child({
+                            // Errors arrive as "hint\nraw driver text"; show the raw part quieter
+                            let (head, detail) = match msg.split_once('\n') {
+                                Some((h, d)) => (h.to_string(), Some(d.to_string())),
+                                None => (msg, None),
+                            };
+                            v_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_0p5()
+                                .child(head)
+                                .when_some(detail, |d, raw| {
+                                    d.child(div().text_xs().text_color(t.text_muted).child(raw))
+                                })
+                        })
                         .when_some(self.toast_reveal.clone(), |this, path| {
                             this.child(
                                 div()

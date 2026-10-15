@@ -52,6 +52,41 @@ impl Kind {
     }
 }
 
+/// A command's own icon, so the list scans by shape rather than one repeated glyph
+fn command_icon(id: &str) -> Option<IconName> {
+    let name = id.strip_prefix("action:")?;
+    Some(match name {
+        "new_query" => IconName::Plus,
+        "compare_schema" => IconName::Merge,
+        "open_file" | "keymap" => IconName::FolderOpen,
+        "save_file" => IconName::Save,
+        "reopen_tab" => IconName::Undo2,
+        "format" => IconName::Wand,
+        "explain" | "explain_analyze" => IconName::Workflow,
+        "review" | "commit_tx" => IconName::CircleCheck,
+        "rollback_tx" => IconName::Undo2,
+        "toggle_tx" => IconName::Lock,
+        "export" | "dump" => IconName::Download,
+        "import" => IconName::ArrowDown,
+        "add_conn" | "demo" => IconName::Database,
+        "pin" => IconName::Pin,
+        "close_all" => IconName::X,
+        "settings" | "theme" => IconName::Settings2,
+        "report_issue" => IconName::Github,
+        "view_last_crash" => IconName::TriangleAlert,
+        "increase_font" | "decrease_font" | "reset_font" => IconName::Search,
+        n if n.contains("split") || n.contains("pane") => IconName::Columns2,
+        n if n.contains("sidebar")
+            || n.contains("bottom")
+            || n.contains("layout")
+            || n == "maximize" =>
+        {
+            IconName::PanelRight
+        }
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct CommandItem {
     pub id: String,
@@ -67,37 +102,21 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:new_query", "New Query", "⌘N"),
     ("action:compare_schema", "Compare Schema With…", ""),
     ("action:open_file", "Open File…", "⌘O"),
-    ("action:maximize", "Maximize Editor (toggle)", "⇧⎋"),
+    ("action:maximize", "Maximize Editor", "⇧⎋"),
     ("action:save_file", "Save Query", "⌘S"),
     ("action:reopen_tab", "Reopen Closed Tab", "⇧⌘T"),
     ("action:split", "Toggle Split View", "⌘\\"),
     (
         "action:toggle_split_direction",
-        "Toggle Split Orientation (Vertical / Horizontal)",
+        "Flip Split Orientation",
         "⌥⌘\\",
     ),
     ("action:focus_other_pane", "Focus Other Split Pane", "⌥⌘→"),
     ("action:swap_split_panes", "Swap Split Panes", ""),
-    (
-        "action:move_pane_left",
-        "Move Active Split Pane to Left",
-        "⌥⌘[",
-    ),
-    (
-        "action:move_pane_right",
-        "Move Active Split Pane to Right",
-        "⌥⌘]",
-    ),
-    (
-        "action:move_pane_up",
-        "Move Active Split Pane to Top",
-        "⌥⇧⌘[",
-    ),
-    (
-        "action:move_pane_down",
-        "Move Active Split Pane to Bottom",
-        "⌥⇧⌘]",
-    ),
+    ("action:move_pane_left", "Move Pane Left", "⌥⌘["),
+    ("action:move_pane_right", "Move Pane Right", "⌥⌘]"),
+    ("action:move_pane_up", "Move Pane Up", "⌥⇧⌘["),
+    ("action:move_pane_down", "Move Pane Down", "⌥⇧⌘]"),
     ("action:close_all", "Close All Tabs", ""),
     ("action:pin", "Pin / Unpin Current Tab", ""),
     ("action:format", "Format SQL", "⇧⌥F"),
@@ -109,7 +128,7 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:dump", "Dump Database to SQL…", ""),
     ("action:add_conn", "New Connection…", "⇧⌘N"),
     ("action:demo", "Open Demo Database", ""),
-    ("action:toggle_tx", "Toggle Manual Commit Mode", ""),
+    ("action:toggle_tx", "Toggle Manual Commit", ""),
     ("action:commit_tx", "Commit Transaction", ""),
     ("action:rollback_tx", "Roll Back Transaction", ""),
     ("action:toggle_sidebar", "Toggle Sidebar", "⌘B"),
@@ -124,13 +143,9 @@ const COMMANDS: &[(&str, &str, &str)] = &[
     ("action:move_bottom_right", "Move Bottom Panel to Right", ""),
     ("action:reset_layout", "Reset Layout", ""),
     ("action:theme", "Toggle Light/Dark Theme", ""),
-    ("action:increase_font", "Zoom In (Increase Font Size)", "⌘+"),
-    (
-        "action:decrease_font",
-        "Zoom Out (Decrease Font Size)",
-        "⌘-",
-    ),
-    ("action:reset_font", "Reset Zoom (Actual Size)", "⌘0"),
+    ("action:increase_font", "Zoom In", "⌘+"),
+    ("action:decrease_font", "Zoom Out", "⌘-"),
+    ("action:reset_font", "Actual Size", "⌘0"),
     ("action:settings", "Settings…", "⌘,"),
     ("action:keymap", "Open Keymap", ""),
     ("action:report_issue", "Report Issue on GitHub…", ""),
@@ -569,7 +584,7 @@ impl CommandBar {
                 .items_center()
                 .rounded(px(4.0))
                 .bg(theme.bg_surface)
-                .text_xs()
+                .text_sm()
                 .text_color(theme.text_muted)
                 .child(crate::ui::format_keys(k))
         };
@@ -599,7 +614,7 @@ impl CommandBar {
                         .px_3()
                         .pt(px(if idx == 0 { 4.0 } else { 12.0 }))
                         .pb_1()
-                        .text_xs()
+                        .text_sm()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(theme.text_muted)
                         .child(group),
@@ -622,7 +637,7 @@ impl CommandBar {
                         this.handle_command_action(item_id.clone(), window, cx)
                     }))
                     .child(
-                        Icon::new(item.kind.icon())
+                        Icon::new(command_icon(&item.id).unwrap_or(item.kind.icon()))
                             .small()
                             .text_color(if is_selected {
                                 theme.accent
@@ -642,7 +657,7 @@ impl CommandBar {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_xs()
+                            .text_sm()
                             .text_color(theme.text_muted)
                             .truncate()
                             .child(item.detail.clone()),
@@ -653,67 +668,70 @@ impl CommandBar {
             );
         }
 
-        modal_backdrop(
-            "command-bar-backdrop",
-            cx.listener(move |this, _, window, cx| this.dismiss(&crate::Dismiss, window, cx)),
-            cx,
-        )
-        .child(
-            modal_card("command-bar-card", 640.0, theme)
-                .key_context("CommandBar")
-                .max_h(px(520.0))
-                .overflow_hidden()
-                .child(
-                    h_flex()
-                        .h(px(52.0))
-                        .px_4()
-                        .gap_3()
-                        .items_center()
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .child(Icon::new(IconName::Search).text_color(theme.text_muted))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_base()
-                                .child(Input::new(input).appearance(false)),
-                        ),
-                )
-                .child(list.flex_1().min_h_0())
-                .child(
-                    h_flex()
-                        .h(px(36.0))
-                        .px_4()
-                        .gap_4()
-                        .items_center()
-                        .border_t_1()
-                        .border_color(theme.border)
-                        .text_xs()
-                        .text_color(theme.text_muted)
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .child(kbd("↑↓"))
-                                .child("navigate"),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .child(kbd("↵"))
-                                .child("open"),
-                        )
-                        .child(
-                            h_flex()
-                                .gap_1p5()
-                                .items_center()
-                                .child(kbd("esc"))
-                                .child("close"),
-                        )
-                        .child(div().flex_1())
-                        .child("> commands · / tables · or type SQL"),
-                ),
+        crate::ui::fade_in(
+            "command-bar-backdrop-fade",
+            modal_backdrop(
+                "command-bar-backdrop",
+                cx.listener(move |this, _, window, cx| this.dismiss(&crate::Dismiss, window, cx)),
+                cx,
+            )
+            .child(
+                modal_card("command-bar-card", 640.0, theme)
+                    .key_context("CommandBar")
+                    .max_h(px(520.0))
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .h(px(52.0))
+                            .px_4()
+                            .gap_3()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(Icon::new(IconName::Search).text_color(theme.text_muted))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_base()
+                                    .child(Input::new(input).appearance(false)),
+                            ),
+                    )
+                    .child(list.flex_1().min_h_0())
+                    .child(
+                        h_flex()
+                            .h(px(36.0))
+                            .px_4()
+                            .gap_4()
+                            .items_center()
+                            .border_t_1()
+                            .border_color(theme.border)
+                            .text_sm()
+                            .text_color(theme.text_muted)
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(kbd("↑↓"))
+                                    .child("navigate"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(kbd("↵"))
+                                    .child("open"),
+                            )
+                            .child(
+                                h_flex()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .child(kbd("esc"))
+                                    .child("close"),
+                            )
+                            .child(div().flex_1())
+                            .child("> commands · / tables · or type SQL"),
+                    ),
+            ),
         )
         .into_any_element()
     }

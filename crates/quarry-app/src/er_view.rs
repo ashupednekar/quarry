@@ -189,7 +189,7 @@ impl QuarryWindow {
         let Some(center) = self.state.catalog.find_table(Some(schema), table) else {
             return div()
                 .p_4()
-                .text_xs()
+                .text_sm()
                 .text_color(t.text_muted)
                 .child("Not in the schema; refresh it from the connection's menu")
                 .into_any_element();
@@ -496,7 +496,7 @@ impl QuarryWindow {
                     .h(sz(ROW_H))
                     .px_3()
                     .gap_2()
-                    .text_xs()
+                    .text_sm()
                     .when(hot, |d| d.bg(crate::Theme::tint(t.accent, 0.15)))
                     // Zoomed far out the rows are too small to point at: skip their handlers
                     .when(interactive, |d| {
@@ -550,7 +550,7 @@ impl QuarryWindow {
                             .max_w(sz(90.0))
                             .truncate()
                             .text_color(t.text_muted)
-                            .child(c.raw_type_name.to_lowercase()),
+                            .child(short_type(&c.raw_type_name)),
                     )
             });
             let s_card = s.clone();
@@ -663,7 +663,7 @@ impl QuarryWindow {
                     .left(sz(PAD + (level - min_level) as f32 * (CARD_W + GAP_X)))
                     .top(sz(PAD - 6.0))
                     .w(sz(CARD_W))
-                    .text_xs()
+                    .text_sm()
                     .child(
                         div()
                             .font_weight(FontWeight::SEMIBOLD)
@@ -684,7 +684,7 @@ impl QuarryWindow {
             .border_1()
             .border_color(t.border)
             .bg(t.bg_panel)
-            .text_xs()
+            .text_sm()
             .child(
                 div()
                     .px_1p5()
@@ -731,7 +731,7 @@ impl QuarryWindow {
             .flex_1()
             .min_w_0()
             .gap_3()
-            .text_xs()
+            .text_sm()
             .text_color(t.text_muted)
             .child(div().text_color(t.text_secondary).child(format!(
                 "{} tables · {} foreign keys",
@@ -752,9 +752,18 @@ impl QuarryWindow {
                     .child(badge("FK", t.accent))
                     .child("foreign key"),
             )
-            .child(div().truncate().child(crate::ui::format_keys(
-                "Hover a column to trace its joins · drag cards or canvas to move · double-click card to snap back · pinch or ⌘ scroll to zoom",
-            )));
+            // How to drive it, on demand rather than as a line that truncates
+            .child({
+                let tips: SharedString = crate::ui::format_keys(
+                    "Hover a column to trace its joins\nDrag cards or the canvas to move\nDouble-click a card to snap it back\nPinch or ⌘ scroll to zoom",
+                )
+                .into();
+                div()
+                    .id("diagram-tips")
+                    .hover(|s| s.text_color(t.text_secondary))
+                    .tooltip(move |window, cx| Tooltip::new(tips.clone()).build(window, cx))
+                    .child("Tips")
+            });
         let content = size(width, height);
         let zoom_button = |id: &'static str, label: &'static str, tip: &'static str| {
             div()
@@ -777,7 +786,7 @@ impl QuarryWindow {
             .border_1()
             .border_color(t.border)
             .bg(t.bg_panel)
-            .text_xs()
+            .text_sm()
             .child(
                 zoom_button("er-zoom-out", "−", "Zoom out").on_click(cx.listener(
                     |this, _, _, cx| {
@@ -831,9 +840,10 @@ impl QuarryWindow {
         let view = self.diagram_view.clone();
         let measure = canvas(
             move |b, window, _| {
-                // A resized view shows other cards
+                // A resized view shows other cards. refresh() is ignored mid-draw, so ask on the
+                // next frame; otherwise the first open centres on a zero-width view and stays there
                 if view.replace(b).size != b.size {
-                    window.refresh();
+                    window.on_next_frame(|window, _| window.refresh());
                 }
             },
             |_, _, _, _| {},
@@ -1072,9 +1082,36 @@ impl Element for Scaled {
     }
 }
 
+/// Cards are narrow: `character varying(255)` reads as `varchar(255)`
+fn short_type(raw: &str) -> String {
+    let t = raw.to_lowercase();
+    for (long, short) in [
+        ("character varying", "varchar"),
+        ("timestamp with time zone", "timestamptz"),
+        ("timestamp without time zone", "timestamp"),
+        ("time with time zone", "timetz"),
+        ("time without time zone", "time"),
+        ("double precision", "float8"),
+        ("character", "char"),
+    ] {
+        if let Some(rest) = t.strip_prefix(long) {
+            return format!("{short}{rest}");
+        }
+    }
+    t
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{diagram, join_sql, Edge};
+    use super::{diagram, join_sql, short_type, Edge};
+
+    #[test]
+    fn short_type_names() {
+        assert_eq!(short_type("character varying(255)"), "varchar(255)");
+        assert_eq!(short_type("timestamp with time zone"), "timestamptz");
+        assert_eq!(short_type("character(2)"), "char(2)");
+        assert_eq!(short_type("INTEGER"), "integer");
+    }
     use gpui::{point, Point};
     use quarry_core::schema::{
         ColumnSchema, ColumnType, ForeignKeyRef, SchemaCatalog, TableSchema,

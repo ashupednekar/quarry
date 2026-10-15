@@ -70,7 +70,7 @@ impl AddConnModal {
                         .child(div().flex_1().h(px(1.0)).bg(t.border))
                         .child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(t.text_muted)
                                 .child("or enter details"),
                         )
@@ -185,23 +185,29 @@ impl AddConnModal {
                     })),
             ));
 
-        let tabs =
-            h_flex()
-                .px_6()
-                .gap_6()
-                .border_b_1()
-                .border_color(t.border)
-                .flex_shrink_0()
-                .children(["General", "SSH", "Advanced"].into_iter().enumerate().map(
+        // Like a Settings page: the database as the title, its option groups as a segmented control
+        let tabs = h_flex()
+            .justify_between()
+            .items_center()
+            .flex_shrink_0()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(driver.name()),
+            )
+            .child(
+                segmented(t).children(["General", "SSH", "Advanced"].into_iter().enumerate().map(
                     |(i, label)| {
-                        underline_tab(t, ("conn-tab", i), label, tab as usize == i).on_click(
-                            cx.listener(move |this, _, _, cx| {
+                        chip(t, ("conn-tab", i), label, tab as usize == i).on_click(cx.listener(
+                            move |this, _, _, cx| {
                                 this.state.add_conn_tab = i as u8;
                                 cx.notify()
-                            }),
-                        )
+                            },
+                        ))
                     },
-                ));
+                )),
+            );
 
         // Test result sits next to the button that produced it
         let needs_client = state
@@ -246,7 +252,7 @@ impl AddConnModal {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_xs()
+                            .text_sm()
                             .text_color(if is_error { t.danger } else { t.text_secondary })
                             .child(msg),
                     )
@@ -277,7 +283,7 @@ impl AddConnModal {
                     .border_t_1()
                     .border_color(t.border)
                     .child(Icon::new(IconName::CircleAlert).xsmall().text_color(t.warning))
-                    .child(div().flex_1().min_w_0().text_xs().text_color(t.text_secondary).child(format!("Oracle connections need Oracle's client library (Instant Client {}).", pkg.version)))
+                    .child(div().flex_1().min_w_0().text_sm().text_color(t.text_secondary).child(format!("Oracle connections need Oracle's client library (Instant Client {}).", pkg.version)))
                     .child(zbutton("btn-oracle-licence").pad_sm().label("Licence").ghost().small().on_click(|_, _, cx| cx.open_url(quarry_core::oracle::client::LICENCE_URL)))
                     .child(
                         zbutton("btn-get-oracle-client").pad_sm().label(format!("Download ({} MB)", pkg.size_mb)).small().on_click(cx.listener(move |this, _, window, cx| this.download_oracle_client(window, cx))),
@@ -332,34 +338,23 @@ impl AddConnModal {
         let left_pane =
             v_flex()
                 .id("add-conn-db-list")
-                .w(px(168.0))
+                .w(px(180.0))
                 .flex_shrink_0()
                 .h_full()
                 .border_r_1()
                 .border_color(t.border)
-                .bg(t.bg_sidebar)
-                .py_3()
-                .px_2()
-                .gap_1()
+                .bg(t.bg_panel)
+                .p_2()
+                .gap_0p5()
                 .overflow_y_scroll()
-                .child(
-                    div()
-                        .px_2()
-                        .pt_1()
-                        .pb_2()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(t.text_muted)
-                        .child("DATABASES"),
-                )
                 .children(quarry_core::drivers().iter().enumerate().map(|(i, d)| {
                     let id = d.id();
                     let is_selected = id == driver.id();
                     h_flex()
                         .id(("engine", i))
-                        .h(px(36.0))
+                        .h(px(32.0))
                         .px_2p5()
-                        .gap_2p5()
+                        .gap_2()
                         .items_center()
                         .rounded(px(6.0))
                         .cursor_pointer()
@@ -367,7 +362,7 @@ impl AddConnModal {
                         .when(!is_selected, |s| s.hover(|h| h.bg(t.bg_hover)))
                         .child(crate::db_icons::database_icon_sized(
                             id,
-                            px(18.0),
+                            px(16.0),
                             if is_selected {
                                 t.accent
                             } else {
@@ -378,11 +373,6 @@ impl AddConnModal {
                             div()
                                 .flex_1()
                                 .text_sm()
-                                .font_weight(if is_selected {
-                                    FontWeight::MEDIUM
-                                } else {
-                                    FontWeight::NORMAL
-                                })
                                 .text_color(if is_selected {
                                     t.text_primary
                                 } else {
@@ -396,19 +386,22 @@ impl AddConnModal {
                 }));
 
         let right_pane = v_flex()
+            .id("add-conn-options-scroll")
             .flex_1()
             .min_w_0()
             .h_full()
-            .bg(t.bg_panel)
+            .overflow_y_scroll()
+            .p_6()
+            .gap_4()
             .child(tabs)
+            // The fields on one rounded surface, as Settings groups its rows
             .child(
-                v_flex()
-                    .id("add-conn-options-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_5()
-                    .py_4()
+                div()
+                    .p_4()
+                    .rounded(px(8.0))
+                    .bg(t.bg_app)
+                    .border_1()
+                    .border_color(t.border)
                     .child(match tab {
                         1 => ssh,
                         2 => advanced,
@@ -416,51 +409,52 @@ impl AddConnModal {
                     }),
             );
 
-        modal_backdrop(
-            "add-conn-backdrop",
-            cx.listener(move |this, _, _, cx| {
-                this.state.add_conn_modal_open = false;
-                cx.notify()
-            }),
-            cx,
-        )
-        .child(
-            modal_card("add-conn-modal-card", 680.0, t)
-                // Enter in any field connects, like the primary button
-                .on_action(cx.listener(
-                    move |this, _: &gpui::component::input::Enter, window, cx| {
-                        this.connect_add_conn_modal(window, cx)
-                    },
-                ))
-                .overflow_hidden()
-                .child(modal_header(
-                    t,
-                    if editing {
-                        "Edit connection"
-                    } else {
-                        "New connection"
-                    },
-                    Some(if editing {
-                        "Changes reconnect this instance".into()
-                    } else {
-                        format!("{} · enter details or paste a URL", driver.name()).into()
-                    }),
-                    cx.listener(move |this, _, _, cx| {
-                        this.state.add_conn_modal_open = false;
-                        cx.notify()
-                    }),
-                ))
-                .child(
-                    h_flex()
-                        .id("add-conn-two-pane")
-                        .h(px(430.0))
-                        .overflow_hidden()
-                        .child(left_pane)
-                        .child(right_pane),
-                )
-                .children(feedback)
-                .children(client_offer)
-                .child(footer),
+        crate::ui::fade_in(
+            "add-conn-backdrop-fade",
+            modal_backdrop(
+                "add-conn-backdrop",
+                cx.listener(move |this, _, _, cx| {
+                    this.state.add_conn_modal_open = false;
+                    cx.notify()
+                }),
+                cx,
+            )
+            .child(
+                modal_card("add-conn-modal-card", 820.0, t)
+                    // Enter in any field connects, like the primary button
+                    .on_action(cx.listener(
+                        move |this, _: &gpui::component::input::Enter, window, cx| {
+                            this.connect_add_conn_modal(window, cx)
+                        },
+                    ))
+                    .overflow_hidden()
+                    .child(modal_header(
+                        t,
+                        if editing {
+                            "Edit connection"
+                        } else {
+                            "New connection"
+                        },
+                        editing.then(|| "Changes reconnect this instance".into()),
+                        cx.listener(move |this, _, _, cx| {
+                            this.state.add_conn_modal_open = false;
+                            cx.notify()
+                        }),
+                    ))
+                    .child(
+                        h_flex()
+                            .id("add-conn-two-pane")
+                            .h(px(480.0))
+                            .overflow_hidden()
+                            .border_t_1()
+                            .border_color(t.border)
+                            .child(left_pane)
+                            .child(right_pane),
+                    )
+                    .children(feedback)
+                    .children(client_offer)
+                    .child(footer),
+            ),
         )
         .into_any_element()
     }
@@ -507,7 +501,7 @@ fn field_rows(
                     h_flex()
                         .gap_1p5()
                         .items_center()
-                        .text_xs()
+                        .text_sm()
                         .text_color(t.text_muted)
                         .child(Icon::new(IconName::Lock).xsmall())
                         .child("Password is stored in the keychain"),

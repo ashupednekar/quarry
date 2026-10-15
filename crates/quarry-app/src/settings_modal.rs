@@ -7,8 +7,9 @@
 use crate::settings::{self, Settings};
 use crate::ui::*;
 use crate::QuarryWindow;
+use gpui::assets::IconName;
 use gpui::component::switch::Switch;
-use gpui::component::Sizable;
+use gpui::component::{Icon, Sizable};
 use gpui::*;
 
 impl QuarryWindow {
@@ -76,33 +77,24 @@ impl QuarryWindow {
             .find(|n| n.eq_ignore_ascii_case(s.theme.trim()))
             .cloned()
             .unwrap_or_else(|| s.theme.clone());
-        let appearance = v_flex()
-            .child(section_title(&t, "Appearance"))
-            // Themes can be many (user files), so they get the full width under the label
-            .child(
-                v_flex()
-                    .py_2()
-                    .gap_2()
-                    .child(
-                        v_flex()
-                            .gap_0p5()
-                            .child(div().text_sm().text_color(t.text_primary).child("Theme"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(t.text_muted)
-                                    .child("Built-ins, or drop a .json into the themes folder"),
-                            ),
-                    )
-                    .child(choices(
-                        &t,
-                        "theme",
-                        themes,
-                        &current_theme,
-                        |s, v| s.theme = v,
-                        cx,
-                    )),
-            );
+        const THEME_HINT: &str = "Built-ins, or drop a .json into the themes folder";
+        let few_themes = themes.len() <= crate::theme::BUILT_IN.len() + 1;
+        let theme_choices = choices(&t, "theme", themes, &current_theme, |s, v| s.theme = v, cx);
+        // Built-ins sit on the right like every other row; many user themes get the full width
+        let theme_row = if few_themes {
+            setting_row(&t, "Theme", THEME_HINT, theme_choices)
+        } else {
+            v_flex()
+                .py_3()
+                .gap_2()
+                .child(
+                    v_flex()
+                        .gap_0p5()
+                        .child(div().text_sm().text_color(t.text_primary).child("Theme"))
+                        .child(div().text_sm().text_color(t.text_muted).child(THEME_HINT)),
+                )
+                .child(theme_choices)
+        };
 
         let current_ui_font = if s.ui_font_family.eq_ignore_ascii_case("Satoshi") {
             String::new()
@@ -122,8 +114,9 @@ impl QuarryWindow {
             ui_font_options.push((current_ui_font.clone(), current_ui_font.clone()));
         }
 
-        let appearance = appearance
-            .child(setting_row(
+        let appearance = vec![
+            theme_row,
+            setting_row(
                 &t,
                 "Interface font",
                 "Application typography",
@@ -135,8 +128,8 @@ impl QuarryWindow {
                     |s, v| s.ui_font_family = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Interface size",
                 "Labels, menus and panes",
@@ -150,11 +143,11 @@ impl QuarryWindow {
                     |s, v| s.font_size = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Editor & data size",
-                "SQL and grid cells, in JetBrainsMono Nerd Font",
+                crate::ui::format_keys("SQL and grid cells. Auto is a step above the interface; ⌘ scroll in the editor adjusts it"),
                 choices(
                     &t,
                     "mono-size",
@@ -165,17 +158,35 @@ impl QuarryWindow {
                         (14.0, "14".into()),
                         (15.0, "15".into()),
                         (16.0, "16".into()),
+                        (18.0, "18".into()),
                     ]
                     .to_vec(),
                     &s.mono_font_size,
                     |s, v| s.mono_font_size = v,
                     cx,
                 ),
-            ));
+            ),
+        ];
 
-        let editor = v_flex()
-            .child(section_title(&t, "Editor"))
-            .child(setting_row(
+        let editor = vec![
+            setting_row(
+                &t,
+                "Vim mode",
+                "Normal, Insert and Visual modes with motions and operators (dd, cw, yy…)",
+                toggle("vim", s.vim_mode, |s, v| s.vim_mode = v, cx),
+            ),
+            setting_row(
+                &t,
+                "Block cursor",
+                "In Vim's Normal and Visual modes; Insert keeps the bar",
+                toggle(
+                    "vim-block",
+                    s.vim_block_cursor,
+                    |s, v| s.vim_block_cursor = v,
+                    cx,
+                ),
+            ),
+            setting_row(
                 &t,
                 "Tab size",
                 "Spaces per indent",
@@ -187,14 +198,14 @@ impl QuarryWindow {
                     |s, v| s.tab_size = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Soft wrap",
                 "Wrap long lines instead of scrolling sideways",
                 toggle("soft-wrap", s.soft_wrap, |s, v| s.soft_wrap = v, cx),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Line numbers",
                 "In the gutter",
@@ -204,8 +215,8 @@ impl QuarryWindow {
                     |s, v| s.line_numbers = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Highlight current statement",
                 crate::ui::format_keys("Tint what ⌘↵ will run"),
@@ -215,8 +226,8 @@ impl QuarryWindow {
                     |s, v| s.highlight_current_statement = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Autocomplete",
                 "Tables, columns and joins as you type",
@@ -226,11 +237,11 @@ impl QuarryWindow {
                     |s, v| s.autocomplete = v,
                     cx,
                 ),
-            ));
+            ),
+        ];
 
-        let grid = v_flex()
-            .child(section_title(&t, "Data grid"))
-            .child(setting_row(
+        let grid = vec![
+            setting_row(
                 &t,
                 "Rows per page",
                 "Fetched at a time in table tabs",
@@ -244,8 +255,8 @@ impl QuarryWindow {
                     |s, v| s.rows_per_page = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Show NULL as",
                 "How empty values read in cells",
@@ -259,8 +270,8 @@ impl QuarryWindow {
                     |s, v| s.null_display = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Max column width",
                 "Longer values are cut off; the value editor shows all of it",
@@ -274,17 +285,17 @@ impl QuarryWindow {
                     |s, v| s.max_column_width = v,
                     cx,
                 ),
-            ));
+            ),
+        ];
 
-        let safety = v_flex()
-            .child(section_title(&t, "Safety & connections"))
-            .child(setting_row(
+        let safety = vec![
+            setting_row(
                 &t,
                 "Confirm on PROD",
                 "Ask before statements that change data on PROD connections",
                 toggle("prod", s.confirm_on_prod, |s, v| s.confirm_on_prod = v, cx),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Transactions",
                 "For new connections: commit each statement, or commit yourself",
@@ -299,8 +310,8 @@ impl QuarryWindow {
                     |s, v| s.default_transaction_mode = v,
                     cx,
                 ),
-            ))
-            .child(setting_row(
+            ),
+            setting_row(
                 &t,
                 "Statement timeout",
                 "Default for connections that don't set one",
@@ -317,7 +328,72 @@ impl QuarryWindow {
                     |s, v| s.default_statement_timeout_secs = v,
                     cx,
                 ),
-            ));
+            ),
+        ];
+
+        // System Settings style: sections on the left, the picked one's rows on the right
+        let sections = [
+            ("Appearance", IconName::Eye, appearance),
+            ("Editor", IconName::SquareTerminal, editor),
+            ("Data grid", IconName::Table, grid),
+            ("Safety", IconName::Lock, safety),
+        ];
+        let current = self.settings_section.min(sections.len() - 1);
+        let nav = v_flex()
+            .w(px(180.0))
+            .flex_none()
+            .p_2()
+            .gap_0p5()
+            .bg(t.bg_panel)
+            .border_r_1()
+            .border_color(t.border)
+            .children(sections.iter().enumerate().map(|(i, (name, icon, _))| {
+                let on = i == current;
+                h_flex()
+                    .id(("settings-nav", i))
+                    .h(px(32.0))
+                    .px_2p5()
+                    .gap_2()
+                    .items_center()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .text_sm()
+                    .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
+                    .when(!on, |d| {
+                        d.text_color(t.text_secondary).hover(|s| s.bg(t.bg_hover))
+                    })
+                    .child(Icon::new(*icon).small().text_color(if on {
+                        t.accent
+                    } else {
+                        t.text_muted
+                    }))
+                    .child(*name)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.settings_section = i;
+                        cx.notify();
+                    }))
+            }));
+        let (title, _, rows) = sections.into_iter().nth(current).unwrap();
+        let page = v_flex()
+            .gap_4()
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            // Rows on one rounded surface, hairlines between them
+            .child(
+                v_flex()
+                    .px_4()
+                    .rounded(px(8.0))
+                    .bg(t.bg_app)
+                    .border_1()
+                    .border_color(t.border)
+                    .children(rows.into_iter().enumerate().map(|(i, row)| {
+                        row.when(i > 0, |d| d.border_t_1().border_color(t.border))
+                    })),
+            );
 
         let footer = modal_footer(&t)
             .justify_between()
@@ -327,7 +403,7 @@ impl QuarryWindow {
                     .child(
                         div()
                             .id("open-settings-json")
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .cursor_pointer()
                             .hover(|s| s.text_color(t.text_primary))
@@ -340,7 +416,7 @@ impl QuarryWindow {
                     .child(
                         div()
                             .id("open-themes")
-                            .text_xs()
+                            .text_sm()
                             .text_color(t.text_muted)
                             .cursor_pointer()
                             .hover(|s| s.text_color(t.text_primary))
@@ -357,35 +433,34 @@ impl QuarryWindow {
             )
             .child(
                 div()
-                    .text_xs()
+                    .text_sm()
                     .text_color(t.text_muted)
                     .child("Saved as you go"),
             );
 
         Some(
-            modal_backdrop("settings-backdrop", dismiss_on_click, cx)
-                .child(
-                    modal_card("settings-card", 640.0, &t)
-                        .max_h(px(640.0))
+            crate::ui::fade_in(
+                "settings-backdrop-fade",
+                modal_backdrop("settings-backdrop", dismiss_on_click, cx).child(
+                    modal_card("settings-card", 820.0, &t)
+                        .h(px(560.0))
+                        .max_h_full()
                         .overflow_hidden()
-                        .child(modal_header(
-                            &t,
-                            "Settings",
-                            Some(crate::ui::format_keys("Quarry · ⌘,").into()),
-                            dismiss_on_click,
-                        ))
+                        .child(modal_header(&t, "Settings", None, dismiss_on_click))
                         .child(
-                            modal_body("settings-body")
+                            h_flex()
                                 .flex_1()
-                                .gap_6()
-                                .child(appearance)
-                                .child(editor)
-                                .child(grid)
-                                .child(safety),
+                                .min_h_0()
+                                .items_stretch()
+                                .border_t_1()
+                                .border_color(t.border)
+                                .child(nav)
+                                .child(modal_body("settings-body").flex_1().child(page)),
                         )
                         .child(footer),
-                )
-                .into_any_element(),
+                ),
+            )
+            .into_any_element(),
         )
     }
 }

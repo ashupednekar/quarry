@@ -68,7 +68,8 @@ impl QuarryWindow {
         self.set_conn_driver(self.state.add_conn_driver, window, cx);
         self.set_conn_inputs(Some(""), "", window, cx);
         self.state.add_conn_modal_open = true;
-        self.conn_name_input.update(cx, |i, cx| i.focus(window, cx));
+        // The URL / file comes first in the form; the name is optional
+        self.conn_path_input.update(cx, |i, cx| i.focus(window, cx));
         cx.notify();
     }
 
@@ -340,6 +341,10 @@ impl QuarryWindow {
             profile.statement_timeout_secs = Some(self.settings.default_statement_timeout_secs);
         }
         let name = profile.name.clone();
+        let id = profile.id.clone();
+        if !self.connecting.insert(id.clone()) {
+            return;
+        }
         self.state.messages.push(format!("Connecting to {}…", name));
         cx.notify();
         let log = self.state.activity_log.clone();
@@ -353,6 +358,7 @@ impl QuarryWindow {
             },
             move |this, res, window, cx| match res {
                 Ok((profile, session, catalog, tunnel)) => {
+                    this.connecting.remove(&id);
                     this.toast(format!("Connected to {}", profile.name), false, cx);
                     session
                         .tx()
@@ -364,6 +370,7 @@ impl QuarryWindow {
                     this.refocus_root(window, cx);
                 }
                 Err(e) => {
+                    this.connecting.remove(&id);
                     this.toast(format!("Could not connect to {}: {}", name, e), true, cx);
                     this.connecting_for_tab = None;
                     this.state.add_conn_feedback = Some((e, true));

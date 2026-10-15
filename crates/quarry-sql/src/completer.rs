@@ -129,6 +129,14 @@ impl TableRef<'_> {
     }
 }
 
+/// A common table expression (CTE) defined in a statement with its projected output columns
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CteSchema {
+    pub name: String,
+    pub columns: Vec<(String, String)>,
+}
+
+
 /// Identifier-ish tokens (`a.b`, `"x"`), commas and parens, with byte ranges; skips strings and comments
 fn tokens(sql: &str) -> Vec<(&str, std::ops::Range<usize>)> {
     let b = sql.as_bytes();
@@ -233,6 +241,20 @@ pub fn table_refs<'a>(stmt: &str, catalog: &'a SchemaCatalog) -> Vec<TableRef<'a
                 break;
             }
             i += 1;
+            // `FROM generate_series(1, 9) g` calls a function; `INTO t (cols)` is still a table
+            let is_call = !is_kw(t, "into") && toks.get(i).is_some_and(|(p, _)| *p == "(");
+            if is_call {
+                let mut depth = 0;
+                while let Some((p, _)) = toks.get(i) {
+                    i += 1;
+                    match *p {
+                        "(" => depth += 1,
+                        ")" if depth == 1 => break,
+                        ")" => depth -= 1,
+                        _ => {}
+                    }
+                }
+            }
             let mut alias = None;
             if toks.get(i).is_some_and(|(a, _)| is_kw(a, "as")) {
                 i += 1;
@@ -244,12 +266,14 @@ pub fn table_refs<'a>(stmt: &str, catalog: &'a SchemaCatalog) -> Vec<TableRef<'a
                 }
             }
             let name = name.replace('"', "");
-            refs.push(TableRef {
-                table: lookup(&name, catalog),
-                name,
-                range,
-                alias,
-            });
+            if !is_call {
+                refs.push(TableRef {
+                    table: lookup(&name, catalog),
+                    name,
+                    range,
+                    alias,
+                });
+            }
             if toks.get(i).is_some_and(|(c, _)| *c == ",") {
                 i += 1;
             } else {
@@ -258,6 +282,338 @@ pub fn table_refs<'a>(stmt: &str, catalog: &'a SchemaCatalog) -> Vec<TableRef<'a
         }
     }
     refs
+}
+
+/// Generate a concise, idiomatic SQL table alias (e.g. `order_items` -> `oi`, `users` -> `u`,
+/// `customer_account_transactions` -> `cat`). Avoids reserved SQL keywords and collisions with existing aliases.
+pub fn smart_alias(table_name: &str, existing: &[&str]) -> String {
+    let clean = table_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(table_name)
+        .replace(['"', '`', '[', ']'], "");
+    let clean = clean.trim();
+    if clean.is_empty() {
+        return "t".to_string();
+    }
+
+    let base = if clean.contains('_') || clean.contains('-') {
+        let parts: Vec<&str> = clean
+            .split(|c| c == '_' || c == '-')
+            .filter(|p| !p.is_empty())
+            .collect();
+        let initials: String = parts
+            .iter()
+            .filter_map(|p| p.chars().next().map(|c| c.to_ascii_lowercase()))
+            .collect();
+        if initials.is_empty() {
+            "t".to_string()
+        } else {
+            initials
+        }
+    } else {
+        let mut uppers = Vec::new();
+        let chars: Vec<char> = clean.chars().collect();
+        for (idx, &c) in chars.iter().enumerate() {
+            if c.is_uppercase()
+                && (idx == 0
+                    || !chars[idx - 1].is_uppercase()
+                    || (idx + 1 < chars.len() && chars[idx + 1].is_lowercase()))
+            {
+                uppers.push(c.to_ascii_lowercase());
+            }
+        }
+        if uppers.len() >= 2 {
+            uppers.into_iter().collect()
+        } else {
+            chars
+                .first()
+                .map(|c| c.to_ascii_lowercase().to_string())
+                .unwrap_or_else(|| "t".to_string())
+        }
+    };
+
+    let safe_base = match base.as_str() {
+        "as" | "on" | "in" | "is" | "or" | "to" | "by" | "if" | "do" => format!("{base}_"),
+        _ => base,
+    };
+
+    if !existing.iter().any(|e| e.eq_ignore_ascii_case(&safe_base)) {
+        return safe_base;
+    }
+
+    let mut num = 2;
+    loop {
+        let candidate = format!("{safe_base}{num}");
+        if !existing.iter().any(|e| e.eq_ignore_ascii_case(&candidate)) {
+            return candidate;
+        }
+        num += 1;
+    }
+}
+
+/// Output columns of a SELECT statement: `SELECT a, b AS c FROM t` → `a`, `c`.
+/// `*` and `t.*` expand to the inner tables' columns (including CTE columns).
+pub fn extract_select_columns(
+    query: &str,
+    catalog: &SchemaCatalog,
+    known_ctes: &[CteSchema],
+) -> Vec<(String, String)> {
+    let it = tokens(query);
+    let (mut depth, mut items, mut cur, mut in_list) = (0, Vec::new(), Vec::new(), false);
+    for (t, range) in &it {
+        match *t {
+            "(" => depth += 1,
+            ")" => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && is_kw(t, "select") {
+            in_list = true;
+            continue;
+        }
+        if depth == 0
+            && (is_kw(t, "from")
+                || is_kw(t, "where")
+                || is_kw(t, "union")
+                || is_kw(t, "limit")
+                || is_kw(t, "group")
+                || is_kw(t, "order"))
+        {
+            break;
+        }
+        if !in_list {
+            continue;
+        }
+        if depth == 0 && *t == "," {
+            items.push(std::mem::take(&mut cur));
+        } else {
+            cur.push((*t, range.clone()));
+        }
+    }
+    items.push(cur);
+    if !in_list {
+        return Vec::new();
+    }
+    let refs = table_refs(query, catalog);
+    let mut out = Vec::new();
+    for item in items {
+        let words: Vec<&str> = item
+            .iter()
+            .map(|(t, _)| *t)
+            .filter(|t| !matches!(*t, "(" | ")"))
+            .collect();
+        let star_of = match words.last() {
+            None => Some(None), // `*` (not a token)
+            Some(w) if w.ends_with('.') => Some(Some(w.trim_end_matches('.'))), // `t.*`
+            _ => None,
+        };
+        if let Some(q) = star_of {
+            for r in refs
+                .iter()
+                .filter(|r| q.is_none_or(|q| r.qualifier().eq_ignore_ascii_case(q)))
+            {
+                if let Some(t) = r.table {
+                    for c in &t.columns {
+                        out.push((c.name.clone(), c.raw_type_name.to_lowercase()));
+                    }
+                } else if let Some(cte) =
+                    known_ctes.iter().find(|c| c.name.eq_ignore_ascii_case(&r.name))
+                {
+                    for (c_name, c_type) in &cte.columns {
+                        out.push((c_name.clone(), c_type.clone()));
+                    }
+                }
+            }
+            continue;
+        }
+        let (name, source_col) = match words.iter().position(|w| is_kw(w, "as")) {
+            Some(i) => (
+                words.get(i + 1).copied(),
+                words.get(i.saturating_sub(1)).copied(),
+            ),
+            None if item.iter().any(|(t, _)| *t == "(") => (words.first().copied(), None),
+            None => (words.last().copied(), words.last().copied()),
+        };
+        if let Some(n) = name {
+            let col_name = n.rsplit('.').next().unwrap_or(n).replace('"', "");
+            let detail = if let Some(src) = source_col {
+                find_column_in_refs(src, &refs, catalog)
+                    .map(|c| c.raw_type_name.to_lowercase())
+                    .unwrap_or_else(|| "column".into())
+            } else {
+                "column".into()
+            };
+            out.push((col_name, detail));
+        }
+    }
+    out
+}
+
+/// Extract all CTEs defined in the query with their projected columns:
+/// `WITH cte_name AS (...)` or `WITH cte_name (col1, col2) AS (...)`
+pub fn extract_ctes(stmt: &str, catalog: &SchemaCatalog) -> Vec<CteSchema> {
+    let toks = tokens(stmt);
+    let with_idx = match toks.iter().position(|(t, _)| is_kw(t, "with")) {
+        Some(idx) => idx,
+        None => return Vec::new(),
+    };
+
+    let mut ctes = Vec::new();
+    let mut i = with_idx + 1;
+
+    if toks.get(i).is_some_and(|(t, _)| is_kw(t, "recursive")) {
+        i += 1;
+    }
+
+    while i < toks.len() {
+        let (cte_name_tok, _) = match toks.get(i) {
+            Some((tok, range)) => (*tok, range.clone()),
+            None => break,
+        };
+        if is_kw(cte_name_tok, "select")
+            || is_kw(cte_name_tok, "insert")
+            || is_kw(cte_name_tok, "update")
+            || is_kw(cte_name_tok, "delete")
+        {
+            break;
+        }
+
+        let cte_name = cte_name_tok.replace('"', "");
+        i += 1;
+
+        // Optional explicit column list: `(c1, c2, ...)`
+        let mut explicit_cols = Vec::new();
+        if toks.get(i).is_some_and(|(t, _)| *t == "(") {
+            i += 1;
+            while i < toks.len() {
+                let (t, _) = &toks[i];
+                if *t == ")" {
+                    i += 1;
+                    break;
+                }
+                if *t != "," {
+                    explicit_cols.push(t.replace('"', ""));
+                }
+                i += 1;
+            }
+        }
+
+        if toks.get(i).is_some_and(|(t, _)| is_kw(t, "as")) {
+            i += 1;
+        } else {
+            break;
+        }
+
+        if toks.get(i).is_some_and(|(t, _)| is_kw(t, "not"))
+            && toks.get(i + 1).is_some_and(|(t, _)| is_kw(t, "materialized"))
+        {
+            i += 2;
+        } else if toks.get(i).is_some_and(|(t, _)| is_kw(t, "materialized")) {
+            i += 1;
+        }
+
+        if !toks.get(i).is_some_and(|(t, _)| *t == "(") {
+            break;
+        }
+        let open_pos = toks[i].1.end;
+        i += 1;
+
+        let mut depth = 1;
+        let mut close_pos = None;
+        while i < toks.len() {
+            let (t, range) = &toks[i];
+            if *t == "(" {
+                depth += 1;
+            } else if *t == ")" {
+                depth -= 1;
+                if depth == 0 {
+                    close_pos = Some(range.start);
+                    i += 1;
+                    break;
+                }
+            }
+
+            i += 1;
+        }
+
+        let cols = if !explicit_cols.is_empty() {
+            explicit_cols
+                .into_iter()
+                .map(|col| (col, "cte column".into()))
+                .collect()
+        } else if let Some(cp) = close_pos {
+            let inner_sql = &stmt[open_pos..cp];
+            extract_select_columns(inner_sql, catalog, &ctes)
+        } else {
+            Vec::new()
+        };
+
+        ctes.push(CteSchema {
+            name: cte_name,
+            columns: cols,
+        });
+
+        if toks.get(i).is_some_and(|(t, _)| *t == ",") {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+
+    ctes
+}
+
+/// Resolve a qualifier (e.g. `cte_name.` or `alias.`) to a CTE schema
+pub fn resolve_cte<'a>(
+    qualifier: &str,
+    refs: &[TableRef],
+    ctes: &'a [CteSchema],
+) -> Option<&'a CteSchema> {
+    if let Some(cte) = ctes.iter().find(|c| c.name.eq_ignore_ascii_case(qualifier)) {
+        return Some(cte);
+    }
+    for r in refs {
+        if r.qualifier().eq_ignore_ascii_case(qualifier) {
+            if let Some(cte) = ctes.iter().find(|c| c.name.eq_ignore_ascii_case(&r.name)) {
+                return Some(cte);
+            }
+        }
+    }
+    None
+}
+
+/// Detect if the cursor is directly positioned after a table name in a FROM or JOIN clause
+fn detect_table_for_alias(before: &[&str]) -> Option<String> {
+    let opens_table = |tok: &str| {
+        is_kw(tok, "from")
+            || is_kw(tok, "join")
+            || is_kw(tok, "update")
+            || is_kw(tok, "into")
+            || tok == ","
+    };
+    if before.len() >= 2 {
+        let last = before[before.len() - 1];
+        let prev = before[before.len() - 2];
+        if opens_table(prev)
+            && !matches!(last, "," | "(" | ")" | ";")
+            && !RESERVED.iter().any(|r| is_kw(last, r))
+        {
+            return Some(last.to_string());
+        }
+    }
+    if before.len() >= 3 {
+        let last = before[before.len() - 1];
+        let prev = before[before.len() - 2];
+        let prev2 = before[before.len() - 3];
+        if is_kw(last, "as")
+            && opens_table(prev2)
+            && !matches!(prev, "," | "(" | ")" | ";")
+            && !RESERVED.iter().any(|r| is_kw(prev, r))
+        {
+            return Some(prev.to_string());
+        }
+    }
+    None
 }
 
 /// Output columns of a subquery in FROM, by its alias: `FROM (SELECT a, b AS c FROM t) x` → `x` has `a`, `c`.
@@ -290,74 +646,14 @@ pub fn subquery_columns(
         false
     })?;
     let inner = &stmt[toks[open].1.end..toks[close].1.start];
-    let it = tokens(inner);
-    // The select list: between SELECT and FROM at depth 0, split on depth-0 commas
-    let (mut depth, mut items, mut cur, mut in_list) = (0, Vec::new(), Vec::new(), false);
-    for (t, range) in &it {
-        match *t {
-            "(" => depth += 1,
-            ")" => depth -= 1,
-            _ => {}
-        }
-        if depth == 0 && is_kw(t, "select") {
-            in_list = true;
-            continue;
-        }
-        if depth == 0 && is_kw(t, "from") {
-            break;
-        }
-        if !in_list {
-            continue;
-        }
-        if depth == 0 && *t == "," {
-            items.push(std::mem::take(&mut cur));
-        } else {
-            cur.push((*t, range.clone()));
-        }
+    let cols = extract_select_columns(inner, catalog, &[]);
+    if cols.is_empty() {
+        None
+    } else {
+        Some(cols)
     }
-    items.push(cur);
-    if !in_list {
-        return None;
-    }
-    let refs = table_refs(inner, catalog);
-    let mut out = Vec::new();
-    for item in items {
-        let words: Vec<&str> = item
-            .iter()
-            .map(|(t, _)| *t)
-            .filter(|t| !matches!(*t, "(" | ")"))
-            .collect();
-        let star_of = match words.last() {
-            None => Some(None), // `*` (not a token)
-            Some(w) if w.ends_with('.') => Some(Some(w.trim_end_matches('.'))), // `t.*`
-            _ => None,
-        };
-        if let Some(q) = star_of {
-            for r in refs
-                .iter()
-                .filter(|r| q.is_none_or(|q| r.qualifier().eq_ignore_ascii_case(q)))
-            {
-                for c in r.table.into_iter().flat_map(|t| &t.columns) {
-                    out.push((c.name.clone(), c.raw_type_name.to_lowercase()));
-                }
-            }
-            continue;
-        }
-        let name = match words.iter().position(|w| is_kw(w, "as")) {
-            Some(i) => words.get(i + 1).copied(),
-            // A call without an alias is named after the function, as Postgres does
-            None if item.iter().any(|(t, _)| *t == "(") => words.first().copied(),
-            None => words.last().copied(),
-        };
-        if let Some(n) = name {
-            out.push((
-                n.rsplit('.').next().unwrap_or(n).replace('"', ""),
-                "subquery".into(),
-            ));
-        }
-    }
-    Some(out)
 }
+
 
 /// The table an identifier qualifier means in this statement: an alias, a table name, or `schema.table`
 pub fn resolve_qualifier<'a>(
@@ -890,6 +1186,30 @@ impl SchemaCompleter {
         // Keywords only by prefix: fuzzy keyword hits are noise
         let kw_starts = |s: &str| s.to_lowercase().starts_with(&p);
         let refs = table_refs(stmt, catalog);
+        let ctes = extract_ctes(stmt, catalog);
+        let before: Vec<_> = tokens(&stmt[..at - prefix.len()])
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let last = before.last().copied().unwrap_or("");
+        let table_for_alias = detect_table_for_alias(&before);
+
+        let existing_aliases: Vec<&str> = if let Some(ref tbl) = table_for_alias {
+            let mut found_current = false;
+            refs.iter()
+                .rev()
+                .filter_map(|r| {
+                    if !found_current && r.name.eq_ignore_ascii_case(tbl) {
+                        found_current = true;
+                        None
+                    } else {
+                        r.alias.as_deref()
+                    }
+                })
+                .collect()
+        } else {
+            refs.iter().filter_map(|r| r.alias.as_deref()).collect()
+        };
         let mut out = Vec::new();
         let column = |c: &quarry_core::ColumnSchema, detail: String| CompletionCandidate {
             label: c.name.clone(),
@@ -897,7 +1217,7 @@ impl SchemaCompleter {
             detail: Some(detail),
         };
 
-        // 1. `x.` — columns of the aliased/named table, or tables of a schema
+        // 1. `x.` — columns of the aliased/named table, CTE, or tables of a schema
         if let Some(q) = Self::extract_qualifier(stmt, at) {
             if let Some(t) = resolve_qualifier(&q, &refs, catalog) {
                 return t
@@ -908,6 +1228,18 @@ impl SchemaCompleter {
                         let type_str = c.raw_type_name.to_lowercase();
                         let pk = if c.is_primary_key { " · PK" } else { "" };
                         column(c, format!("{type_str}{pk}"))
+                    })
+                    .collect();
+            }
+            if let Some(cte) = resolve_cte(&q, &refs, &ctes) {
+                return cte
+                    .columns
+                    .iter()
+                    .filter(|(col_name, _)| starts(col_name))
+                    .map(|(col_name, detail)| CompletionCandidate {
+                        label: col_name.clone(),
+                        kind: CompletionKind::Column,
+                        detail: Some(detail.clone()),
                     })
                     .collect();
             }
@@ -923,7 +1255,10 @@ impl SchemaCompleter {
                     .collect();
             }
             let is_schema = catalog.schemas.iter().any(|s| s.eq_ignore_ascii_case(&q))
-                || catalog.tables.iter().any(|t| t.schema_name.eq_ignore_ascii_case(&q));
+                || catalog
+                    .tables
+                    .iter()
+                    .any(|t| t.schema_name.eq_ignore_ascii_case(&q));
             if is_schema {
                 return catalog
                     .tables
@@ -943,11 +1278,6 @@ impl SchemaCompleter {
         }
 
         // Which clause is the cursor in? Tables after FROM/JOIN/UPDATE/INTO (or a comma in that list)
-        let before: Vec<_> = tokens(&stmt[..at - prefix.len()])
-            .into_iter()
-            .map(|(t, _)| t)
-            .collect();
-        let last = before.last().copied().unwrap_or("");
         let in_from_list = last == ","
             && before
                 .iter()
@@ -959,7 +1289,29 @@ impl SchemaCompleter {
             .any(|k| is_kw(last, k))
             || in_from_list;
 
+        // 1b. Check if the cursor is in table alias position (immediately following a table name in FROM / JOIN)
+        if let Some(ref tbl) = table_for_alias {
+            let alias = smart_alias(tbl, &existing_aliases);
+            if starts(&alias) {
+                out.push(CompletionCandidate {
+                    label: alias,
+                    kind: CompletionKind::Keyword,
+                    detail: Some(format!("alias for `{tbl}`")),
+                });
+            }
+        }
+
         if wants_table {
+            // Suggest CTEs
+            for cte in &ctes {
+                if starts(&cte.name) {
+                    out.push(CompletionCandidate {
+                        label: cte.name.clone(),
+                        kind: CompletionKind::Table,
+                        detail: Some(format!("CTE ({} cols)", cte.columns.len())),
+                    });
+                }
+            }
             // 2a. After JOIN: whole `t ON t.a = x.b` clauses from foreign keys, both directions
             if is_kw(last, "join") {
                 for r in refs
@@ -995,22 +1347,18 @@ impl SchemaCompleter {
                     }
                 }
             }
-            out.extend(
-                catalog
-                    .tables
-                    .iter()
-                    .filter(|t| starts(&t.table_name))
-                    .map(|t| CompletionCandidate {
-                        label: t.table_name.clone(),
-                        kind: CompletionKind::Table,
-                        detail: Some(format!(
-                            "{} · {} ({} cols)",
-                            t.schema_name,
-                            if t.is_view { "view" } else { "table" },
-                            t.columns.len()
-                        )),
-                    }),
-            );
+            for t in catalog.tables.iter().filter(|t| starts(&t.table_name)) {
+                out.push(CompletionCandidate {
+                    label: t.table_name.clone(),
+                    kind: CompletionKind::Table,
+                    detail: Some(format!(
+                        "{} · {} ({} cols)",
+                        t.schema_name,
+                        if t.is_view { "view" } else { "table" },
+                        t.columns.len()
+                    )),
+                });
+            }
             out.extend(
                 catalog
                     .schemas
@@ -1076,7 +1424,7 @@ impl SchemaCompleter {
             }
         }
 
-        // 2c. Elsewhere: columns of the tables in scope first, then keywords, tables, and other columns
+        // 2c. Elsewhere: columns of the tables/CTEs in scope first, then keywords, tables, and other columns
         for r in &refs {
             if let Some(t) = r.table {
                 for c in t.columns.iter().filter(|c| starts(&c.name)) {
@@ -1084,12 +1432,18 @@ impl SchemaCompleter {
                         let pk = if c.is_primary_key { " · PK" } else { "" };
                         out.push(column(
                             c,
-                            format!(
-                                "{} · {}{pk}",
-                                r.qualifier(),
-                                c.raw_type_name.to_lowercase()
-                            ),
+                            format!("{} · {}{pk}", r.qualifier(), c.raw_type_name.to_lowercase()),
                         ));
+                    }
+                }
+            } else if let Some(cte) = ctes.iter().find(|c| c.name.eq_ignore_ascii_case(&r.name)) {
+                for (col_name, detail) in &cte.columns {
+                    if starts(col_name) && !out.iter().any(|o| o.label == *col_name) {
+                        out.push(CompletionCandidate {
+                            label: col_name.clone(),
+                            kind: CompletionKind::Column,
+                            detail: Some(format!("{} · {detail}", r.qualifier())),
+                        });
                     }
                 }
             }
@@ -1121,7 +1475,7 @@ impl SchemaCompleter {
                 }),
         );
         // Columns from anywhere only while nothing is in scope yet (`SELECT em|` before FROM is typed)
-        if refs.iter().all(|r| r.table.is_none()) {
+        if refs.iter().all(|r| r.table.is_none() && !ctes.iter().any(|c| c.name.eq_ignore_ascii_case(&r.name))) {
             for t in &catalog.tables {
                 for c in t.columns.iter().filter(|c| starts(&c.name)) {
                     if !out
@@ -1131,11 +1485,7 @@ impl SchemaCompleter {
                         let pk = if c.is_primary_key { " · PK" } else { "" };
                         out.push(column(
                             c,
-                            format!(
-                                "{} · {}{pk}",
-                                t.table_name,
-                                c.raw_type_name.to_lowercase()
-                            ),
+                            format!("{} · {}{pk}", t.table_name, c.raw_type_name.to_lowercase()),
                         ));
                     }
                 }
@@ -1218,11 +1568,8 @@ pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, 
         let text = &sql[stmt.start..stmt.end];
         let toks = tokens(text);
         // `WITH x AS (...)` names a table only this statement has
-        let ctes: Vec<String> = toks
-            .windows(2)
-            .filter(|w| is_kw(w[1].0, "as") && toks.iter().any(|t| is_kw(t.0, "with")))
-            .map(|w| w[0].0.to_lowercase())
-            .collect();
+        let ctes = extract_ctes(text, catalog);
+        let cte_names: Vec<String> = ctes.iter().map(|c| c.name.to_lowercase()).collect();
         let refs = table_refs(text, catalog);
         // `schema.table` in a schema that isn't loaded yet isn't unknown, just not known yet
         let pending = |r: &TableRef| {
@@ -1232,7 +1579,7 @@ pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, 
         };
         for r in refs
             .iter()
-            .filter(|r| r.table.is_none() && !ctes.contains(&r.name.to_lowercase()) && !pending(r))
+            .filter(|r| r.table.is_none() && !cte_names.contains(&r.name.to_lowercase()) && !pending(r))
         {
             out.push((
                 stmt.start + r.range.start..stmt.start + r.range.end,
@@ -1453,13 +1800,22 @@ mod tests {
         // schema. lists its tables
         assert_eq!(labels("select * from public.|"), ["customers", "orders"]);
         assert_eq!(labels("select * from public.o|"), ["orders"]);
-        assert_eq!(labels("select * from \"public\".|"), ["customers", "orders"]);
+        assert_eq!(
+            labels("select * from \"public\".|"),
+            ["customers", "orders"]
+        );
         assert_eq!(labels("select * from \"public\".o|"), ["orders"]);
         // table. lists its columns
         assert_eq!(labels("select customers.|"), ["id", "email"]);
         assert_eq!(labels("select \"customers\".|"), ["id", "email"]);
-        assert_eq!(labels("select * from customers where customers.|"), ["id", "email"]);
-        assert_eq!(labels("select * from customers c where c.|"), ["id", "email"]);
+        assert_eq!(
+            labels("select * from customers where customers.|"),
+            ["id", "email"]
+        );
+        assert_eq!(
+            labels("select * from customers c where c.|"),
+            ["id", "email"]
+        );
         assert_eq!(labels("select public.customers.|"), ["id", "email"]);
         assert_eq!(labels("select \"public\".\"customers\".|"), ["id", "email"]);
         // schema. lists tables even if catalog.schemas is empty
@@ -1492,7 +1848,10 @@ mod tests {
                 ("o.nope", "`orders` has no column `nope`".to_string())
             ]
         );
-        assert!(lint("select * from anything", &SchemaCatalog::default()).is_empty());
+        assert!(lint("select * from anything", &SchemaCatalog::default()).is_empty()); // Set-returning functions aren't tables; INSERT's column list still is one
+        assert!(lint("select g from generate_series(1, 9) g, orders o", &shop()).is_empty());
+        let sql = "insert into ghosts (a) values (1)";
+        assert_eq!(lint(sql, &shop()).len(), 1);
     }
 
     #[test]
@@ -1602,7 +1961,65 @@ mod tests {
             Some("id DESC".to_string())
         );
     }
+
+    #[test]
+    fn test_smart_alias_generation() {
+        assert_eq!(smart_alias("order_items", &[]), "oi");
+        assert_eq!(smart_alias("customer_account_transactions", &[]), "cat");
+        assert_eq!(smart_alias("users", &[]), "u");
+        assert_eq!(smart_alias("OrderItems", &[]), "oi");
+        assert_eq!(smart_alias("public.order_items", &[]), "oi");
+        assert_eq!(smart_alias("\"order_items\"", &[]), "oi");
+        assert_eq!(smart_alias("account_statement", &[]), "as_");
+        assert_eq!(smart_alias("users", &["u"]), "u2");
+        assert_eq!(smart_alias("users", &["u", "u2"]), "u3");
+    }
+
+    #[test]
+    fn test_smart_alias_completion_in_from_and_join() {
+        // Table alias suggested after table name in FROM
+        assert_eq!(labels("select * from customers |")[0], "c");
+        assert_eq!(labels("select * from customers c|")[0], "c");
+        assert_eq!(labels("select * from customers AS |")[0], "c");
+        assert_eq!(labels("select * from orders |")[0], "o");
+        // Colliding alias increments suffix
+        assert_eq!(labels("select * from customers c join customers |")[0], "c2");
+    }
+
+    #[test]
+    fn test_cte_column_propagation() {
+        // Qualified CTE columns
+        assert_eq!(
+            labels("with my_cte as (select id, email from customers) select my_cte.| from my_cte"),
+            ["id", "email"]
+        );
+        // Aliased CTE columns
+        assert_eq!(
+            labels("with my_cte as (select id, email from customers) select c.| from my_cte c"),
+            ["id", "email"]
+        );
+        // Unqualified CTE column completion
+        assert_eq!(
+            labels("with my_cte as (select id, email from customers) select em| from my_cte"),
+            ["email"]
+        );
+        // Explicit column list in CTE definition
+        assert_eq!(
+            labels("with my_cte (uid, umail) as (select id, email from customers) select c.| from my_cte c"),
+            ["uid", "umail"]
+        );
+        // Chained CTEs
+        assert_eq!(
+            labels("with cte1 as (select id, email from customers), cte2 as (select email from cte1) select c2.| from cte2 c2"),
+            ["email"]
+        );
+        // CTE suggested in FROM
+        assert!(labels("with my_cte as (select id from customers) select * from my_|").contains(&"my_cte".to_string()));
+        // Smart alias generated for CTE
+        assert_eq!(labels("with my_cte as (select id from customers) select * from my_cte |")[0], "mc");
+    }
 }
+
 
 #[cfg(test)]
 mod usage_tests {

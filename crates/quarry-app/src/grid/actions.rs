@@ -22,6 +22,12 @@ pub fn grid_menu(menu: PopupMenu, rs: &ResultSet) -> PopupMenu {
         .menu("Copy All as JSON", Box::new(CopyAllJson))
         .menu("Copy All as SQL INSERT", Box::new(CopyAllInsert))
         .separator()
+        .when(rs.source.is_some(), |m| {
+            m.menu("Filter by Value", Box::new(FilterByValue))
+                .menu("Filter Excluding Value", Box::new(FilterExcludeValue))
+                .menu("Filter Builder...", Box::new(OpenFilterBuilder))
+                .separator()
+        })
         .menu("Hide Column", Box::new(HideColumn))
         .when(rs.order.is_some(), |m| {
             m.menu("Show All Columns", Box::new(ShowAllColumns))
@@ -29,6 +35,7 @@ pub fn grid_menu(menu: PopupMenu, rs: &ResultSet) -> PopupMenu {
         .when(has_fks, |m| {
             m.menu("Go to Referenced Row", Box::new(FollowForeignKey))
         })
+        .menu("Transposed Row View", Box::new(ToggleTransposedView))
         .menu("Open in Value Editor", Box::new(ToggleValueEditor));
     if rs.read_only_reason().is_some() {
         return menu;
@@ -88,14 +95,86 @@ pub fn apply_row_action(
                 clipboard = copy_format.and_then(|(f, d)| rs.copy_text(Some(row), f, d));
                 None
             }
-            Some((row, col)) if any.is::<CopyValue>() => {
-                clipboard = rs.cell_value(row, rs.actual(col)).0.map(|v| {
-                    if v.is_null() {
-                        String::new()
-                    } else {
-                        v.to_display_string()
+            _ if any.is::<CopyValue>() => {
+                clipboard = if let Some(range) = rs.selected_range.as_ref().filter(|r| !r.is_single_cell()) {
+                    Some(rs.copy_range_tsv(range))
+                } else if let Some((row, col)) = target {
+                    rs.cell_value(row, rs.actual(col)).0.map(|v| {
+                        if v.is_null() {
+                            String::new()
+                        } else {
+                            v.to_display_string()
+                        }
+                    })
+                } else {
+                    None
+                };
+                None
+            }
+            _ if any.is::<SelectRangeUp>() => {
+                let total_rows = rs.rows_count(cx);
+                if total_rows > 0 {
+                    let mut range = rs.selected_range.unwrap_or_else(|| {
+                        let (r, c) = rs.selected_cell.unwrap_or((0, 0));
+                        CellRange::single(r, c)
+                    });
+                    if range.focus_row > 0 {
+                        range.focus_row -= 1;
+                        let focus = (range.focus_row, range.focus_col);
+                        rs.selected_range = Some(range);
+                        rs.selected_cell = Some(focus);
+                        table.scroll_to_row(focus.0, cx);
                     }
-                });
+                }
+                None
+            }
+            _ if any.is::<SelectRangeDown>() => {
+                let total_rows = rs.rows_count(cx);
+                if total_rows > 0 {
+                    let mut range = rs.selected_range.unwrap_or_else(|| {
+                        let (r, c) = rs.selected_cell.unwrap_or((0, 0));
+                        CellRange::single(r, c)
+                    });
+                    if range.focus_row + 1 < total_rows {
+                        range.focus_row += 1;
+                        let focus = (range.focus_row, range.focus_col);
+                        rs.selected_range = Some(range);
+                        rs.selected_cell = Some(focus);
+                        table.scroll_to_row(focus.0, cx);
+                    }
+                }
+                None
+            }
+            _ if any.is::<SelectRangeLeft>() => {
+                let visible_cols = rs.visible().len();
+                if visible_cols > 0 {
+                    let mut range = rs.selected_range.unwrap_or_else(|| {
+                        let (r, c) = rs.selected_cell.unwrap_or((0, 0));
+                        CellRange::single(r, c)
+                    });
+                    if range.focus_col > 0 {
+                        range.focus_col -= 1;
+                        let focus = (range.focus_row, range.focus_col);
+                        rs.selected_range = Some(range);
+                        rs.selected_cell = Some(focus);
+                    }
+                }
+                None
+            }
+            _ if any.is::<SelectRangeRight>() => {
+                let visible_cols = rs.visible().len();
+                if visible_cols > 0 {
+                    let mut range = rs.selected_range.unwrap_or_else(|| {
+                        let (r, c) = rs.selected_cell.unwrap_or((0, 0));
+                        CellRange::single(r, c)
+                    });
+                    if range.focus_col + 1 < visible_cols {
+                        range.focus_col += 1;
+                        let focus = (range.focus_row, range.focus_col);
+                        rs.selected_range = Some(range);
+                        rs.selected_cell = Some(focus);
+                    }
+                }
                 None
             }
             Some((_, col)) if any.is::<HideColumn>() => {
@@ -128,6 +207,18 @@ pub fn apply_row_action(
             Some((row, col)) if any.is::<SetNull>() => {
                 rs.finish_edit(false, cx);
                 rs.set_null(row, col);
+                None
+            }
+            _ if any.is::<ToggleTransposedView>() => {
+                rs.toggle_transposed_view(window, cx);
+                None
+            }
+            _ if any.is::<TransposedNextRow>() => {
+                rs.transposed_next_row();
+                None
+            }
+            _ if any.is::<TransposedPrevRow>() => {
+                rs.transposed_prev_row();
                 None
             }
             _ => None,

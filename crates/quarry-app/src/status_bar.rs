@@ -5,6 +5,7 @@ use crate::state::{AppState, ConnectionProfile, Environment};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::{CommitTx, QuarryWindow, RollbackTx, ToggleBottomPanel, ToggleSidebar, ToggleTxMode};
+use gpui::component::ActiveTheme;
 use gpui::*;
 use quarry_core::DatabaseSession;
 use std::sync::Arc;
@@ -16,6 +17,7 @@ impl StatusBar {
         state: &AppState,
         session: Option<&Arc<dyn DatabaseSession>>,
         connection: Option<&ConnectionProfile>,
+        vim_mode: Option<crate::state::VimMode>,
         theme: &Theme,
         cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
@@ -26,7 +28,7 @@ impl StatusBar {
                 .id(id)
                 .px_1p5()
                 .rounded(px(3.0))
-                .text_xs()
+                .text_sm()
                 .text_color(color)
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover))
@@ -61,11 +63,16 @@ impl StatusBar {
             .map(crate::connections::display_address)
             .filter(|a| *a != conn_name);
         let env_tag = connection.map(|c| c.env).unwrap_or(Environment::Local);
-        // Flow C: "PROD · READ-ONLY" is impossible to miss
+        // Flow C: "Production · Read-only" is impossible to miss
         let env_label = match (env_tag, session.is_some_and(|s| s.is_read_only())) {
-            (env, true) => format!("{} · READ-ONLY", env.label()),
-            (env, false) => env.label().to_string(),
+            (env, true) => format!("{} · Read-only", env.name()),
+            (env, false) => env.name().to_string(),
         };
+        // The name is in the title bar and editor toolbar; here it's the hover detail
+        let conn_tip: Option<SharedString> = connection.map(|_| match &address {
+            Some(a) => format!("{conn_name} · {a}").into(),
+            None => conn_name.clone().into(),
+        });
 
         let env_color = match env_tag {
             Environment::Local => theme.success,
@@ -87,6 +94,18 @@ impl StatusBar {
                 h_flex()
                     .gap_3()
                     .items_center()
+                    // Vim mode sits where Vim puts it: bottom left
+                    .children(vim_mode.map(|mode| {
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(match mode {
+                                crate::state::VimMode::Normal => theme.accent,
+                                crate::state::VimMode::Insert => theme.success,
+                                crate::state::VimMode::Visual => theme.warning,
+                            })
+                            .child(mode.label())
+                    }))
                     // Transaction mode (E9): click to switch; an open transaction shows Commit / Rollback
                     .when(session.is_some(), |this| {
                         this.child(
@@ -109,7 +128,7 @@ impl StatusBar {
                     .when(in_tx, |this| {
                         this.child(
                             div()
-                                .text_xs()
+                                .text_sm()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.warning)
                                 .child("● Transaction open"),
@@ -127,48 +146,58 @@ impl StatusBar {
                             )),
                         )
                     })
-                    .child(
-                        // Active connection badge
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .child(div().w(px(5.0)).h(px(5.0)).rounded(px(2.5)).bg(env_color))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_secondary)
-                                    .child(conn_name),
-                            )
-                            .when_some(address, |d, a| {
-                                d.child(div().text_xs().text_color(theme.text_muted).child(a))
-                            }),
-                    )
-                    .when(connection.is_some(), |this| {
-                        this.child(
-                            // Environment Pill
-                            div()
+                    // Environment: a quiet dot locally, a tinted pill where mistakes cost more
+                    .child(match conn_tip {
+                        Some(tip) => {
+                            let loud = env_tag != Environment::Local;
+                            h_flex()
+                                .id("statusbar-conn")
+                                .gap_1p5()
+                                .items_center()
                                 .px_1p5()
-                                .py(px(0.5))
-                                .rounded(px(3.0))
-                                .bg(theme.bg_surface)
-                                .text_xs()
-                                .font_weight(FontWeight::BOLD)
-                                .text_color(env_color)
-                                .child(env_label),
-                        )
+                                .rounded(px(4.0))
+                                .when(loud, |d| {
+                                    d.bg(Theme::tint(env_color, 0.14))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .tooltip(move |window, cx| {
+                                    gpui::component::tooltip::Tooltip::new(tip.clone())
+                                        .build(window, cx)
+                                })
+                                .child(div().size(px(6.0)).rounded_full().bg(env_color))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(if loud {
+                                            env_color
+                                        } else {
+                                            theme.text_secondary
+                                        })
+                                        .child(env_label),
+                                )
+                        }
+                        None => h_flex().id("statusbar-conn").child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child(conn_name),
+                        ),
                     }),
             )
             .child(
-                // Center items: Row count & execution time
-                h_flex().gap_2().items_center().children(
-                    stats.map(|s| div().text_xs().text_color(theme.text_secondary).child(s)),
-                ),
-            )
-            .child(
-                // Right items: quiet toggles (also on ⌘B / ⌘J and in ⌘K)
+                // Right items: result stats, then quiet toggles (also on ⌘B / ⌘J and in ⌘K)
                 h_flex()
                     .gap_1()
                     .items_center()
+                    // Mono digits: the timing changes every run and mustn't jiggle
+                    .children(stats.map(|s| {
+                        div()
+                            .mr_3()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(theme.text_muted)
+                            .child(s)
+                    }))
                     .child(
                         link(
                             "statusbar-toggle-sidebar",

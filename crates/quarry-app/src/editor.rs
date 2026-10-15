@@ -8,7 +8,7 @@ use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Editor, EditorState};
-use gpui::component::{Icon, Sizable};
+use gpui::component::{ActiveTheme, Icon, Sizable};
 use gpui::*;
 
 pub struct QueryEditor;
@@ -29,6 +29,8 @@ impl QueryEditor {
         // How the connection's dialect splits statements, for the ▶ buttons
         rules: quarry_sql::SplitRules,
         vim_mode: Option<crate::state::VimMode>,
+        // Font size for a block cursor painted over the caret (Vim's Normal / Visual modes)
+        block_cursor: Option<f32>,
         theme: &Theme,
         cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
@@ -41,7 +43,7 @@ impl QueryEditor {
                 .items_center()
                 .rounded(px(4.0))
                 .cursor_pointer()
-                .text_xs()
+                .text_sm()
                 .text_color(if on {
                     theme.text_secondary
                 } else {
@@ -77,20 +79,23 @@ impl QueryEditor {
                     div()
                         .max_w(px(160.0))
                         .truncate()
-                        .text_xs()
+                        .text_sm()
                         .text_color(theme.text_secondary)
                         .child(name.to_string()),
                 )
-                .child(
-                    div()
-                        .text_xs()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(env_color(env, theme))
-                        .child(env.label()),
-                ),
+                // The dot says local; staging and production also say so in words
+                .when(env != Environment::Local, |d| {
+                    d.child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(env_color(env, theme))
+                            .child(env.name()),
+                    )
+                }),
             None => h_flex().child(
                 div()
-                    .text_xs()
+                    .text_sm()
                     .text_color(theme.text_muted)
                     .child("Choose a connection"),
             ),
@@ -143,24 +148,7 @@ impl QueryEditor {
                             .child(conn_label)
                             .children(schema_picker.map(|p| p.flex_shrink_0()))
                             .child(limit_picker.flex_shrink_0())
-                            .children(vim_mode.map(|mode| {
-                                div()
-                                    .id("vim-mode-badge")
-                                    .px_2()
-                                    .h(px(22.0))
-                                    .rounded(px(3.0))
-                                    .flex()
-                                    .items_center()
-                                    .bg(theme.bg_hover)
-                                    .text_xs()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(match mode {
-                                        crate::state::VimMode::Normal => theme.accent,
-                                        crate::state::VimMode::Insert => theme.success,
-                                        crate::state::VimMode::Visual => theme.warning,
-                                    })
-                                    .child(mode.label())
-                            })),
+
                     )
                     .child(
                         h_flex()
@@ -196,10 +184,10 @@ impl QueryEditor {
                                     .icon(IconName::Play)
                                     .label(if is_running { "Running…" } else { "Run" })
                                     .tooltip(crate::ui::format_keys(
-                                        "Run the selection, or the statement at the cursor (⌘↵)",
+                                        "Run the selection, or the statement at the cursor (⌘↵) · ⌥↵ for actions",
                                     ))
                                     .primary()
-                                    .xsmall()
+                                    .small()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.refresh_active_tab(window, cx)
                                     })),
@@ -213,8 +201,40 @@ impl QueryEditor {
                     .min_h_0()
                     .pl(px(RUN_COL_W))
                     .bg(theme.bg_app)
+                    // ⌘ scroll sizes the editor text (the interface keeps its own size). Caught in the
+                    // capture phase: the editor would otherwise scroll and swallow it first
+                    .child({
+                        let this = cx.entity().downgrade();
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                let this = this.clone();
+                                window.on_mouse_event(move |e: &ScrollWheelEvent, phase, _, cx| {
+                                    if phase == DispatchPhase::Capture
+                                        && e.modifiers.platform
+                                        && bounds.contains(&e.position)
+                                    {
+                                        cx.stop_propagation();
+                                        this.update(cx, |this, cx| this.zoom_editor_by_scroll(e, cx))
+                                            .ok();
+                                    }
+                                });
+                            },
+                        )
+                        .absolute()
+                        .size_full()
+                    })
+                    // Escape is bound app-wide to Dismiss, so it arrives as that action, not a key
                     .when(vim_mode.is_some(), |d| {
-                        d.on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        d.capture_action(cx.listener(|this, _: &crate::Dismiss, window, cx| {
+                            if this.vim_escape(window, cx) {
+                                cx.stop_propagation();
+                            }
+                        }))
+                    })
+                    // Capture phase: the editor binds keys itself and would act on them first
+                    .when(vim_mode.is_some(), |d| {
+                        d.capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                             if this.handle_vim_key(event, window, cx) {
                                 cx.stop_propagation();
                             }
@@ -240,7 +260,43 @@ impl QueryEditor {
                             }
                         }
                     })
-                    .child(Editor::new(editor).h_full().bordered(false)),
+                    .child(Editor::new(editor).h_full().bordered(false))
+                    // The editor only draws a bar; the block goes on top, at the caret it laid out
+                    .when_some(block_cursor, |d, w| {
+                        let editor = editor.clone();
+                        let color = Theme::tint(theme.accent, 0.5);
+                        let app_bg: Hsla = theme.bg_app.into();
+                        d.child(
+                            canvas(
+                                |_, _, _| {},
+                                move |_, _, window, cx| {
+                                    let st = editor.read(cx);
+                                    if !st.focus_handle(cx).is_focused(window) {
+                                        return;
+                                    }
+                                    if let Some((caret, _)) = st.cursor_layout() {
+                                        // One cell of the editor's actual mono font, whatever the user picked
+                                        let ts = window.text_system();
+                                        let font_id = ts.resolve_font(&font(cx.theme().mono_font_family.clone()));
+                                        let w = ts.advance(font_id, px(w), 'm').map(|a| a.width).unwrap_or(px(w * 0.6));
+                                        // The editor still paints its blinking bar here: cover it with what's beneath
+                                        let kit = cx.theme();
+                                        window.paint_quad(fill(
+                                            caret,
+                                            kit.highlight_theme.style.editor_background.unwrap_or(app_bg),
+                                        ));
+                                        if let Some(line) = kit.highlight_theme.style.editor_active_line {
+                                            window.paint_quad(fill(caret, line));
+                                        }
+                                        let size = size(w, caret.size.height);
+                                        window.paint_quad(fill(Bounds::new(caret.origin, size), color));
+                                    }
+                                },
+                            )
+                            .absolute()
+                            .size_full(),
+                        )
+                    }),
             )
             .children(run_gutter_buttons(
                 editor, is_running, soft_wrap, rules, theme, cx,
@@ -348,7 +404,7 @@ fn toolbar_button(
         .icon(icon)
         .label(label)
         .ghost()
-        .xsmall()
+        .small()
         .tooltip(crate::ui::format_keys(tip))
         .on_click(move |_, window, cx| window.dispatch_action(action.boxed_clone(), cx))
 }

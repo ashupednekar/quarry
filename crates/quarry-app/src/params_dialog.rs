@@ -82,8 +82,9 @@ impl QuarryWindow {
         let dialog = self.params.as_ref()?;
         let t = &self.theme;
         Some(
-            modal_backdrop("params-card-backdrop", dismiss_on_click, cx)
-                .child(
+            crate::ui::fade_in(
+                "params-card-backdrop-fade",
+                modal_backdrop("params-card-backdrop", dismiss_on_click, cx).child(
                     modal_card("params-card", 460.0, t)
                         .overflow_hidden()
                         .child(modal_header(
@@ -105,7 +106,7 @@ impl QuarryWindow {
                                             .w(px(120.0))
                                             .flex_shrink_0()
                                             .truncate()
-                                            .text_xs()
+                                            .text_sm()
                                             .font_family(cx.theme().mono_font_family.clone())
                                             .text_color(t.text_secondary)
                                             .child(name.clone()),
@@ -138,8 +139,9 @@ impl QuarryWindow {
                                         })),
                                 ),
                         ),
-                )
-                .into_any_element(),
+                ),
+            )
+            .into_any_element(),
         )
     }
 }
