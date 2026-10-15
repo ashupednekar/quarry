@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Schema diff: the statements that make `target` match `source`, for review. Nothing here runs SQL.
 //! Covers tables and columns (type, nullability, default); drops are written commented out.

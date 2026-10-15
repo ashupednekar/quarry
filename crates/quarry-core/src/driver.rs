@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! The driver registry. A driver turns a connection string into a session and describes the
 //! connect form, so the app never names a database. Adding one: implement `Driver`, add it to

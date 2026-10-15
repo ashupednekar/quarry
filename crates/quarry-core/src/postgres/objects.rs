@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Functions, procedures, sequences, triggers and types for the sidebar, and their definitions
 

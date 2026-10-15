@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! A table and the tables around it, N foreign-key hops out: what it references to the left, what
 //! references it to the right. Every column is shown and each key is drawn column to column.

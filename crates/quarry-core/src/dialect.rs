@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! The SQL a database speaks. The app builds every statement through a session's dialect, so a
 //! new driver overrides only what differs from the ANSI defaults here.

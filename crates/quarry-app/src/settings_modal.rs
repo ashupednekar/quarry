@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Settings (⌘,): the everyday options as one quiet list. Every change saves to settings.json,
 //! so hand edits and the modal never disagree.

@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Krishna"]
-repository = "https://github.com/krishna/quarry"
+repository = "https://github.com/thekodeking/quarry"
 
 [workspace.dependencies]
 quarry-core = { path = "crates/quarry-core" }

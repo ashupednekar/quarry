@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! ⌃Tab switcher: hold ⌃, press Tab to walk tabs in most-recently-used order, let go of ⌃ to switch.
 

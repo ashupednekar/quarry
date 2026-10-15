@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Oracle Instant Client on demand: one pinned, checksummed Basic Lite build per platform,
 //! downloaded only when the user asks and unpacked into Quarry's data folder.

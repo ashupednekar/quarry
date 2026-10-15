@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! EXPLAIN as a tree: one row per step, a bar for its share of the time (or cost), and
 //! estimated vs actual rows flagged when they're far apart

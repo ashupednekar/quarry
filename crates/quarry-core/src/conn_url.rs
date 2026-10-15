@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! `scheme://user:password@host:port/database?options` connection URLs, shared by the drivers
 //! that use them (Postgres, MySQL). Field order everywhere: host, port, user, password, database.

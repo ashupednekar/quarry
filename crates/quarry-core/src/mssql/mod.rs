@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! SQL Server through tiberius (TDS 7.3, so SQL Server 2008 and newer). Schemas are the ones in
 //! the connected database (dbo, …); switching databases is a new connection.

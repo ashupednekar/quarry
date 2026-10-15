@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
+// Release builds on Windows are a GUI app: no console window alongside it
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 #![recursion_limit = "2048"]
 
@@ -2339,7 +2341,7 @@ impl Render for QuarryWindow {
                 this.move_pane_down(cx);
             }))
             .on_action(|_: &ReportIssue, _, cx| {
-                cx.open_url("https://github.com/krishna/quarry/issues/new");
+                cx.open_url("https://github.com/thekodeking/quarry/issues/new");
             })
             .on_action(cx.listener(|this, _: &ViewLastCrash, _, cx| {
                 this.view_last_crash(cx);

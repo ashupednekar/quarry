@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use quarry_core::schema::{ColumnSchema, ColumnType, SchemaCatalog, TableSchema};

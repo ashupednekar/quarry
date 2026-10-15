@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Crash reporting and panic handling.
 //!
@@ -192,7 +192,7 @@ pub fn format_github_issue_url(report: &CrashReport) -> String {
     );
 
     format!(
-        "https://github.com/krishna/quarry/issues/new?title={}&body={}",
+        "https://github.com/thekodeking/quarry/issues/new?title={}&body={}",
         urlencode(&title),
         urlencode(&body),
     )
@@ -244,7 +244,7 @@ mod tests {
         assert!(md.contains("Opened tab"));
 
         let url = format_github_issue_url(&report);
-        assert!(url.starts_with("https://github.com/krishna/quarry/issues/new?title="));
+        assert!(url.starts_with("https://github.com/thekodeking/quarry/issues/new?title="));
         assert!(url.contains("assertion%20failed"));
     }
 

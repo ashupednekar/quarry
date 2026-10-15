@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Oracle through rust-oracle (ODPI-C). Needs Oracle Instant Client at connect time, found via
 //! ORACLE_CLIENT_LIB_DIR, the usual install folders or Quarry's own download (see `client`). The client blocks, so every call runs on the blocking pool. Schemas are users.

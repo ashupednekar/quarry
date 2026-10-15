@@ -22,14 +22,33 @@ make test    # workspace tests
 make lint    # fmt check + clippy
 ```
 
+## Install
+
+**Linux and Windows:** download the `.deb`, `.AppImage` or Windows installer (`.exe`) from [Releases](https://github.com/thekodeking/quarry/releases).
+
+**macOS:** there are no prebuilt Mac builds (they'd need an Apple signing identity), so build it yourself. It takes a few minutes:
+
+```sh
+# Needs Xcode command line tools (xcode-select --install) and Rust (https://rustup.rs)
+git clone https://github.com/thekodeking/quarry && cd quarry
+cargo install cargo-packager --locked
+cd crates/quarry-app && cargo packager --release -f app
+cp -R ../../dist/Quarry.app /Applications/
+```
+
+A build made on your own Mac isn't quarantined, so it opens without a Gatekeeper warning.
+
 ## Packaging
 
 Uses [cargo-packager](https://github.com/crabnebula-dev/cargo-packager). Output lands in `dist/`.
 
 ```sh
 cargo install cargo-packager --locked
+cd crates/quarry-app
 cargo packager --release -f app   # or dmg, deb, appimage, nsis
 ```
+
+Releases: push a `v*` tag (matching the version in `Cargo.toml`) and the Release workflow builds the Linux and Windows packages and publishes them.
 
 ## Architecture
 

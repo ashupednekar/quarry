@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Overlay dismissal, menu navigation and the command bar's actions
 
@@ -256,7 +256,7 @@ impl QuarryWindow {
         } else if action_id == "action:reset_layout" {
             self.reset_layout(window, cx);
         } else if action_id == "action:report_issue" {
-            cx.open_url("https://github.com/krishna/quarry/issues/new");
+            cx.open_url("https://github.com/thekodeking/quarry/issues/new");
         } else if action_id == "action:view_last_crash" {
             self.view_last_crash(cx);
         }

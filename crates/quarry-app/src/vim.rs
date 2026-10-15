@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Vim motions over the editor's text: plain functions of (text, byte offset), so they're testable
 //! apart from the editor. The key handling that uses them lives in `QuarryWindow::handle_vim_key`.
