@@ -15,6 +15,8 @@ env:
 jobs:
   package:
     name: Package (${{ matrix.os }})
+    # Waits for a required reviewer on the "release" environment (repo Settings → Environments)
+    environment: release
     strategy:
       fail-fast: false
       matrix:
