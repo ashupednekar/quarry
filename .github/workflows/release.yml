@@ -11,6 +11,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Granular compiler cache for external dependencies
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  # Prevent rustc stack overflow on deep GPUI macro/builder recursion
+  RUST_MIN_STACK: "67108864"
 
 jobs:
   package:
@@ -29,21 +34,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux build dependencies
+      - name: Linux build dependencies & mold linker
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config clang libasound2-dev libdbus-1-dev libfontconfig1-dev \
+            pkg-config clang mold libasound2-dev libdbus-1-dev libfontconfig1-dev \
             libfreetype6-dev libvulkan-dev libwayland-dev libx11-xcb-dev \
             libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev libfuse2
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - run: cargo install cargo-packager --locked
-      - run: cargo packager --release -f ${{ matrix.formats }}
+      # Sets up sccache compiler cache backed by GitHub Actions cache
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Caches ~/.cargo registry and target/ across releases with a shared release key
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "quarry-release-${{ matrix.os }}"
+
+      # Install pre-compiled cargo-packager binary instead of compiling from source (saves 2-4 mins)
+      - name: Install cargo-packager
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager
+
+      - name: Build & package application
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C link-arg=-fuse-ld=mold' || '' }}
+        run: cargo packager --release -f ${{ matrix.formats }}
         working-directory: crates/quarry-app
+
+      - name: Print sccache stats
+        run: sccache --show-stats
 
       - uses: actions/upload-artifact@v4
         with:

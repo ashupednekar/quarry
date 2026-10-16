@@ -62,6 +62,11 @@ manual_let_else = "warn"
 [profile.dev.package."*"]
 opt-level = 2
 
+# Unit tests don't render 60fps UI frames; opt-level 1 compiles much faster and doesn't bloat debuginfo
+[profile.test.package."*"]
+opt-level = 1
+debug = 0
+
 [profile.release]
 opt-level = 3
 lto = "thin"

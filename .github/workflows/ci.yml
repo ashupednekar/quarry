@@ -3,7 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -11,6 +19,16 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Turn off incremental compilation in CI to avoid large, brittle cache files
+  CARGO_INCREMENTAL: "0"
+  # Strip debuginfo in CI (reduces target/ size from ~9.4GB to <1GB, preventing cache evictions)
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  # Enable sccache integration with GitHub Actions Cache
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
+  # Prevent rustc stack overflow on deep GPUI macro/builder recursion
+  RUST_MIN_STACK: "67108864"
 
 jobs:
   test:
@@ -19,15 +37,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux build dependencies
+      - name: Linux build dependencies & mold linker
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            pkg-config clang libasound2-dev libdbus-1-dev libfontconfig1-dev \
+            pkg-config clang mold libasound2-dev libdbus-1-dev libfontconfig1-dev \
             libfreetype6-dev libvulkan-dev libwayland-dev libx11-xcb-dev \
             libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - run: cargo test --workspace --locked
+      # Granular compiler cache for crates like gpui
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # Workspace & cargo registry cache across branches
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "quarry-test"
+
+      - name: Run cargo test
+        env:
+          RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+        run: cargo test --workspace --locked
+
+      - name: Print sccache stats
+        run: sccache --show-stats
