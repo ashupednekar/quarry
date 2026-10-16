@@ -3,7 +3,7 @@
 // Release builds on Windows are a GUI app: no console window alongside it
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-#![recursion_limit = "2048"]
+#![recursion_limit = "4096"]
 
 mod add_conn_modal;
 mod bottom_panel;
