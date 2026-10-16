@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,12 @@ impl ColumnType {
             ColumnType::Text
         } else if upper.contains("BOOL") {
             ColumnType::Boolean
-        } else if upper.contains("FLOAT") || upper.contains("DOUBLE") || upper.contains("REAL") || upper.contains("NUMERIC") || upper.contains("DECIMAL") {
+        } else if upper.contains("FLOAT")
+            || upper.contains("DOUBLE")
+            || upper.contains("REAL")
+            || upper.contains("NUMERIC")
+            || upper.contains("DECIMAL")
+        {
             ColumnType::Float
         } else if upper.contains("TIME") || upper.contains("DATE") {
             if upper.contains("DATE") && !upper.contains("TIME") {
@@ -86,16 +91,26 @@ impl TableSchema {
         !self.primary_keys.is_empty()
     }
 
-    /// `CREATE TABLE` rebuilt from the catalog, for databases that don't store their DDL (Postgres).
+    /// `CREATE TABLE` rebuilt from the catalog, for databases that don't store their DDL.
     /// Covers columns, defaults, the primary key and foreign keys; not checks, uniques or comments.
-    pub fn create_sql(&self) -> String {
-        use crate::edits::{qualified_name, quote_ident};
-        let list = |cols: &[String]| cols.iter().map(|c| quote_ident(c)).collect::<Vec<_>>().join(", ");
+    pub fn create_sql(&self, d: &dyn crate::Dialect) -> String {
+        let quote_ident = |s: &str| d.quote_ident(s);
+        let qualified_name = |s: &str, t: &str| d.qualified(s, t);
+        let list = |cols: &[String]| {
+            cols.iter()
+                .map(|c| quote_ident(c))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let mut lines: Vec<String> = self
             .columns
             .iter()
             .map(|c| {
-                let mut l = format!("  {} {}", quote_ident(&c.name), c.raw_type_name.to_lowercase());
+                let mut l = format!(
+                    "  {} {}",
+                    quote_ident(&c.name),
+                    c.raw_type_name.to_lowercase()
+                );
                 if !c.is_nullable {
                     l.push_str(" NOT NULL");
                 }
@@ -109,7 +124,11 @@ impl TableSchema {
             lines.push(format!("  PRIMARY KEY ({})", list(&self.primary_keys)));
         }
         for fk in &self.foreign_keys {
-            let schema = if fk.to_schema.is_empty() { &self.schema_name } else { &fk.to_schema };
+            let schema = if fk.to_schema.is_empty() {
+                &self.schema_name
+            } else {
+                &fk.to_schema
+            };
             lines.push(format!(
                 "  FOREIGN KEY ({}) REFERENCES {} ({})",
                 quote_ident(&fk.from_column),
@@ -117,21 +136,154 @@ impl TableSchema {
                 quote_ident(&fk.to_column)
             ));
         }
-        format!("CREATE TABLE {} (\n{}\n);", qualified_name(&self.schema_name, &self.table_name), lines.join(",\n"))
+        format!(
+            "CREATE TABLE {} (\n{}\n);",
+            qualified_name(&self.schema_name, &self.table_name),
+            lines.join(",\n")
+        )
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexInfo {
+    pub name: String,
+    pub unique: bool,
+    /// Column list (or expressions) as one display string
+    pub columns: String,
+}
+
+/// Rows of (name, unique, columns) as indexes; `unique` may come back as a bool or 0/1
+pub fn index_rows(r: &crate::session::QueryResult) -> Vec<IndexInfo> {
+    let truthy = |v: &crate::DbValue| matches!(v.to_display_string().as_str(), "1" | "t" | "true");
+    r.rows
+        .iter()
+        .map(|r| IndexInfo {
+            name: r[0].to_display_string(),
+            unique: truthy(&r[1]),
+            columns: r[2].to_display_string(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectKind {
+    Function,
+    Procedure,
+    Sequence,
+    Trigger,
+    /// Enums and other user-defined types
+    Type,
+}
+
+impl ObjectKind {
+    pub const ALL: [ObjectKind; 5] = [
+        ObjectKind::Function,
+        ObjectKind::Procedure,
+        ObjectKind::Sequence,
+        ObjectKind::Trigger,
+        ObjectKind::Type,
+    ];
+
+    pub fn plural(self) -> &'static str {
+        match self {
+            ObjectKind::Function => "Functions",
+            ObjectKind::Procedure => "Procedures",
+            ObjectKind::Sequence => "Sequences",
+            ObjectKind::Trigger => "Triggers",
+            ObjectKind::Type => "Types",
+        }
+    }
+}
+
+/// A schema object other than a table or view, listed lazily when its schema is expanded
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaObject {
+    pub kind: ObjectKind,
+    pub name: String,
+    /// Shown beside the name: arguments, the table a trigger is on, enum labels
+    pub detail: String,
+    /// Driver-specific handle for `object_ddl` (a Postgres oid); empty when the name is enough
+    pub id: String,
+}
+
+/// What the Structure and DDL views show beyond the catalog
+#[derive(Debug, Clone, Default)]
+pub struct TableInfo {
+    pub ddl: String,
+    pub indexes: Vec<IndexInfo>,
+    /// Column name → comment; the table's own comment under ""
+    pub comments: Vec<(String, String)>,
+    /// (name, definition or timing)
+    pub triggers: Vec<(String, String)>,
+    /// (label, value): row estimate, sizes, engine… whatever the database knows cheaply
+    pub stats: Vec<(String, String)>,
+}
+
+/// Two-column rows as (key, value) pairs
+pub fn pair_rows(r: &crate::session::QueryResult) -> Vec<(String, String)> {
+    r.rows
+        .iter()
+        .map(|r| (r[0].to_display_string(), r[1].to_display_string()))
+        .collect()
+}
+
+/// A one-row result as (column name, value) pairs, skipping NULLs
+pub fn labelled_row(r: &crate::session::QueryResult) -> Vec<(String, String)> {
+    let Some(row) = r.rows.first() else {
+        return Vec::new();
+    };
+    r.columns
+        .iter()
+        .zip(row)
+        .filter(|(_, v)| !v.is_null())
+        .map(|(c, v)| (c.clone(), v.to_display_string()))
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaCatalog {
     pub schemas: Vec<String>,
     pub tables: Vec<TableSchema>,
+    /// Where unqualified names resolve (Postgres: current_schema(), SQLite: main)
+    #[serde(default)]
+    pub default_schema: Option<String>,
+    /// Schemas whose tables aren't loaded yet (big databases load them when opened). Empty: all loaded.
+    #[serde(default)]
+    pub unloaded: Vec<String>,
 }
 
+/// Above this many schemas, connecting loads only the default one; the rest load when opened
+pub const EAGER_SCHEMAS: usize = 8;
+
 impl SchemaCatalog {
+    pub fn is_loaded(&self, schema: &str) -> bool {
+        !self.unloaded.iter().any(|s| s.eq_ignore_ascii_case(schema))
+    }
+
+    /// A catalog holding only the default schema's tables: every other schema is marked unloaded
+    pub fn lazy(mut self) -> Self {
+        self.unloaded = self
+            .schemas
+            .iter()
+            .filter(|s| self.default_schema.as_ref() != Some(*s))
+            .cloned()
+            .collect();
+        self
+    }
+
+    /// Puts a schema's freshly loaded tables in place of whatever was there
+    pub fn add_schema(&mut self, schema: &str, tables: Vec<TableSchema>) {
+        self.unloaded.retain(|s| !s.eq_ignore_ascii_case(schema));
+        self.tables
+            .retain(|t| !t.schema_name.eq_ignore_ascii_case(schema));
+        self.tables.extend(tables);
+    }
+
     pub fn find_table(&self, schema: Option<&str>, table_name: &str) -> Option<&TableSchema> {
         self.tables.iter().find(|t| {
             if let Some(s) = schema {
-                t.schema_name.eq_ignore_ascii_case(s) && t.table_name.eq_ignore_ascii_case(table_name)
+                t.schema_name.eq_ignore_ascii_case(s)
+                    && t.table_name.eq_ignore_ascii_case(table_name)
             } else {
                 t.table_name.eq_ignore_ascii_case(table_name)
             }
@@ -160,10 +312,15 @@ mod tests {
             is_view: false,
             columns: vec![col("id", false, None), col("customer_id", true, Some("0"))],
             primary_keys: vec!["id".into()],
-            foreign_keys: vec![ForeignKeyRef { from_column: "customer_id".into(), to_schema: String::new(), to_table: "customers".into(), to_column: "id".into() }],
+            foreign_keys: vec![ForeignKeyRef {
+                from_column: "customer_id".into(),
+                to_schema: String::new(),
+                to_table: "customers".into(),
+                to_column: "id".into(),
+            }],
         };
         assert_eq!(
-            t.create_sql(),
+            t.create_sql(&crate::dialect::Postgres),
             "CREATE TABLE \"public\".\"orders\" (\n  \"id\" integer NOT NULL,\n  \"customer_id\" integer DEFAULT 0,\n  PRIMARY KEY (\"id\"),\n  FOREIGN KEY (\"customer_id\") REFERENCES \"public\".\"customers\" (\"id\")\n);"
         );
     }

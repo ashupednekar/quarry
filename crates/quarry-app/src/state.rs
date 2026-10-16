@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+use crate::grid::ResultSet;
 use chrono::{DateTime, Utc};
 use gpui::component::input::{EditorState, InputState};
-use crate::grid::ResultSet;
 use gpui::component::table::TableState;
 use gpui::Entity;
-use quarry_core::postgres::PostgresSession;
 use quarry_core::schema::{SchemaCatalog, TableSchema};
 use quarry_core::session::DatabaseSession;
 use quarry_core::{ActivityLog, LoggedSession};
-use quarry_core::sqlite::SqliteSession;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,29 +28,66 @@ impl Environment {
             Environment::Prod => "PROD",
         }
     }
-}
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ConnectionTargetKind {
-    SqliteMemory,
-    SqliteFile,
-    Postgres,
+    /// For calm UI text: "Local", "Staging", "Production"
+    pub fn name(&self) -> &'static str {
+        match self {
+            Environment::Local => "Local",
+            Environment::Staging => "Staging",
+            Environment::Prod => "Production",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConnectionProfile {
     pub id: String,
     pub name: String,
-    pub kind: ConnectionTargetKind,
+    /// Driver id (`quarry_core::drivers()`). Older files stored `"kind": "Postgres"` etc.
+    #[serde(alias = "kind", deserialize_with = "driver_id")]
+    pub driver: String,
+    /// The connection string, without its password (that's in the keychain)
     pub path_or_url: String,
     pub env: Environment,
     pub read_only: bool,
-    /// Reach the database through an SSH tunnel (Postgres)
+    /// Reach the database through an SSH tunnel (drivers with a host and port)
     #[serde(default)]
     pub ssh: Option<crate::ssh::SshConfig>,
-    /// Cancel statements running longer than this (Q10). Postgres: statement_timeout; SQLite: lock wait.
+    /// Cancel statements running longer than this (Q10), via the dialect's statement timeout
     #[serde(default)]
     pub statement_timeout_secs: Option<u64>,
+}
+
+impl ConnectionProfile {
+    pub fn driver(&self) -> Option<&'static dyn quarry_core::Driver> {
+        quarry_core::driver(&self.driver)
+    }
+
+    /// A new profile for a pasted connection string, if a driver recognizes it
+    pub fn from_address(text: &str) -> Option<Self> {
+        let text = text.trim();
+        let driver = quarry_core::detect(text)?;
+        Some(ConnectionProfile {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: driver.display_address(text),
+            driver: driver.id().to_string(),
+            path_or_url: text.to_string(),
+            env: Environment::Local,
+            read_only: false,
+            ssh: None,
+            statement_timeout_secs: None,
+        })
+    }
+}
+
+/// Reads a driver id, mapping the old `kind` values
+fn driver_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let id = <String as serde::Deserialize>::deserialize(d)?;
+    Ok(match id.as_str() {
+        "Postgres" => "postgres".into(),
+        "SqliteFile" | "SqliteMemory" => "sqlite".into(),
+        _ => id,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -65,6 +100,24 @@ pub struct QueryHistoryItem {
     pub execution_time: Duration,
     pub rows_affected: u64,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VimMode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+}
+
+impl VimMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            VimMode::Normal => "-- NORMAL --",
+            VimMode::Insert => "-- INSERT --",
+            VimMode::Visual => "-- VISUAL --",
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -87,6 +140,10 @@ pub enum Tab {
         row_limit: Option<u32>,
         is_running: bool,
         error_message: Option<String>,
+        /// The last run was an EXPLAIN the dialect could read: shown as a tree instead of the grid
+        plan: Option<std::rc::Rc<quarry_core::plan::Plan>>,
+        /// Modal editing mode when vim_mode setting is active
+        vim_mode: VimMode,
     },
     Table {
         id: String,
@@ -97,7 +154,7 @@ pub enum Tab {
         /// The connection this tab was opened on (tabs keep their own connection)
         connection: Option<ConnectionProfile>,
         view: crate::table_detail::TableView,
-        detail: Option<Result<crate::table_detail::TableDetail, String>>,
+        detail: Option<Result<Box<crate::table_detail::TableDetail>, String>>,
     },
 }
 
@@ -134,7 +191,6 @@ pub enum BottomPanelTab {
 
 #[allow(dead_code)]
 pub struct AppState {
-    pub workspace_name: String,
     pub active_connection: Option<ConnectionProfile>,
     /// A saved query being renamed in the sidebar, and the name box
     pub renaming_query: Option<(std::path::PathBuf, Entity<InputState>)>,
@@ -149,10 +205,22 @@ pub struct AppState {
     pub catalog: SchemaCatalog,
     /// The same catalog, shared with the editors' autocomplete
     pub completion_catalog: crate::completion::SharedCatalog,
+    /// Identifier usage frequencies from query history, used as completion tiebreakers
+    pub completion_usage: crate::completion::SharedUsage,
+    /// Past executed query strings, used for predictive ghost text autosuggestions
+    pub completion_history: crate::completion::SharedHistory,
+    /// The active session's dialect, read by editor code actions
+    pub completion_dialect: crate::completion::SharedDialect,
     /// Bumped on every catalog change; editors are re-linted when it moves past `linted_gen`
     pub catalog_gen: u64,
     pub linted_gen: u64,
+    /// Functions, sequences, triggers, types per expanded schema; `None` while loading. Reset with the catalog.
+    pub schema_objects: HashMap<String, Option<Vec<quarry_core::schema::SchemaObject>>>,
+    /// Open object groups in the sidebar, as "schema/Functions"
+    pub expanded_object_groups: HashSet<String>,
     pub expanded_schemas: HashSet<String>,
+    /// "connection id/schema" being loaded for a big database's lazy catalog
+    pub loading_schemas: HashSet<String>,
     /// Connections folded shut in the sidebar (clicking an open connection folds it)
     pub collapsed_connections: std::collections::HashSet<String>,
     pub sidebar_visible: bool,
@@ -173,14 +241,22 @@ pub struct AppState {
 
     // Modals
     pub command_bar_open: bool,
+    /// Find Usages results; the palette lists these instead of its usual items while set
+    pub usages: Option<crate::usages::Usages>,
+    /// Connection picked in "Compare Schema With…"; handled on the next render, which has a window
+    pub pending_compare: Option<String>,
     pub command_bar_selected_index: usize,
 
     pub review_modal_open: bool,
     pub review_modal_sql: Vec<String>,
     pub review_modal_table: String,
+    /// What the statements do, shown as a per-row diff; `review_modal_show_sql` flips to the SQL
+    pub review_modal_changes: quarry_core::edits::PendingChanges,
+    pub review_modal_show_sql: bool,
 
     pub add_conn_modal_open: bool,
-    pub add_conn_kind: ConnectionTargetKind,
+    /// Driver id picked in the add-connection form
+    pub add_conn_driver: &'static str,
     pub add_conn_env: Environment,
     pub add_conn_read_only: bool,
     pub add_conn_ssh: bool,
@@ -191,8 +267,6 @@ pub struct AppState {
     pub add_conn_tab: u8,
     /// Sidebar / bottom panel visibility from before ⇧⎋ maximised the editor
     pub maximized: Option<(bool, bool)>,
-
-
 
     pub toast_message: Option<(String, bool)>,
 }
@@ -205,19 +279,42 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let history = crate::history::load();
+        let completion_usage: crate::completion::SharedUsage = Default::default();
+        {
+            let mut map = std::collections::HashMap::new();
+            for item in &history {
+                for word in item.sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !word.is_empty() {
+                        *map.entry(word.to_lowercase()).or_default() += 1;
+                    }
+                }
+            }
+            *completion_usage.borrow_mut() = map;
+        }
+
+        let completion_history: crate::completion::SharedHistory = Default::default();
+        *completion_history.borrow_mut() =
+            history.iter().rev().map(|item| item.sql.clone()).collect();
+
         let mut state = Self {
-            workspace_name: "quarry".to_string(),
             active_connection: None,
             renaming_query: None,
             saved_connections: crate::connections::load(),
             session: None,
             open_sessions: HashMap::new(),
+            loading_schemas: HashSet::new(),
             activity_log: ActivityLog::default(),
             tunnels: HashMap::new(),
             catalog: SchemaCatalog::default(),
             completion_catalog: Default::default(),
+            completion_usage,
+            completion_history,
+            completion_dialect: std::rc::Rc::new(std::cell::Cell::new(&quarry_core::dialect::Ansi)),
             catalog_gen: 0,
             linted_gen: 0,
+            schema_objects: HashMap::new(),
+            expanded_object_groups: HashSet::new(),
             expanded_schemas: HashSet::new(),
             collapsed_connections: Default::default(),
             sidebar_visible: true,
@@ -229,18 +326,22 @@ impl AppState {
 
             bottom_panel_open: false,
             bottom_panel_tab: BottomPanelTab::Messages,
-            history: crate::history::load(),
+            history,
             messages: Vec::new(),
 
             command_bar_open: false,
+            usages: None,
+            pending_compare: None,
             command_bar_selected_index: 0,
 
             review_modal_open: false,
             review_modal_sql: Vec::new(),
             review_modal_table: String::new(),
+            review_modal_changes: Default::default(),
+            review_modal_show_sql: false,
 
             add_conn_modal_open: false,
-            add_conn_kind: ConnectionTargetKind::SqliteMemory,
+            add_conn_driver: "postgres",
             add_conn_env: Environment::Local,
             add_conn_read_only: false,
             add_conn_ssh: false,
@@ -248,8 +349,6 @@ impl AppState {
             add_conn_tab: 0,
             editing_conn: None,
             add_conn_feedback: None,
-
-
 
             toast_message: None,
         };
@@ -259,91 +358,21 @@ impl AppState {
         state
     }
 
-    /// Automatically sets up an in-memory SQLite database on first launch with sample tables
-    pub async fn init_demo_playground(&mut self) {
-        let profile = ConnectionProfile {
-            id: "local-sqlite".to_string(),
-            name: "local-sqlite".to_string(),
-            kind: ConnectionTargetKind::SqliteMemory,
-            path_or_url: ":memory:".to_string(),
-            env: Environment::Local,
-            read_only: false,
-            ssh: None,
-            statement_timeout_secs: None,
-        };
-
-        self.saved_connections.insert(0, profile.clone());
-
-        if let Ok(raw) = SqliteSession::open_in_memory() {
-            let session: Arc<dyn DatabaseSession> =
-                Arc::new(LoggedSession::new(Arc::new(raw), profile.name.clone(), self.activity_log.clone()));
-            let seed_sql = r#"
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    email TEXT NOT NULL UNIQUE,
-                    name TEXT NOT NULL,
-                    role TEXT DEFAULT 'developer',
-                    active BOOLEAN DEFAULT 1,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                CREATE TABLE products (
-                    id INTEGER PRIMARY KEY,
-                    sku TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    price REAL NOT NULL,
-                    stock INTEGER DEFAULT 0
-                );
-
-                CREATE TABLE orders (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES users(id),
-                    total REAL NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-
-                INSERT INTO users (id, email, name, role, active) VALUES
-                    (1, 'alice@company.com', 'Alice Smith', 'admin', 1),
-                    (2, 'bob@company.com', 'Bob Jones', 'developer', 1),
-                    (3, 'carol@staging.io', 'Carol White', 'analyst', 0);
-
-                INSERT INTO products (id, sku, name, price, stock) VALUES
-                    (1, 'PRD-001', 'Ergonomic Keyboard', 149.99, 45),
-                    (2, 'PRD-002', 'Ultra-wide Monitor', 499.00, 12),
-                    (3, 'PRD-003', 'Standing Desk', 620.50, 8);
-
-                INSERT INTO orders (id, user_id, total, status) VALUES
-                    (101, 1, 149.99, 'completed'),
-                    (102, 2, 1119.50, 'processing'),
-                    (103, 1, 499.00, 'pending');
-            "#;
-
-            for stmt in quarry_sql::split_statements(seed_sql) {
-                if let Err(e) = session.execute(&stmt.sql).await {
-                    self.messages.push(format!("Seed failed: {}", e));
-                }
-            }
-            if let Ok(cat) = session.introspect().await {
-                self.set_catalog(cat);
-            }
-
-            self.open_sessions.insert(profile.id.clone(), (session.clone(), self.catalog.clone()));
-            self.session = Some(session);
-            self.active_connection = Some(profile);
-
-            self.messages.push("Connected to local SQLite playground. Seeded users, products, orders.".to_string());
-        }
-    }
 
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active_tab_index)
     }
 
+    pub fn active_tab_mut(&mut self) -> Option<&mut Tab> {
+        self.tabs.get_mut(self.active_tab_index)
+    }
+
     /// ⇧⎋: hide the sidebar and bottom panel, or bring them back as they were
     pub fn toggle_maximize(&mut self) {
         match self.maximized.take() {
-            Some((sidebar, panel)) => (self.sidebar_visible, self.bottom_panel_open) = (sidebar, panel),
+            Some((sidebar, panel)) => {
+                (self.sidebar_visible, self.bottom_panel_open) = (sidebar, panel)
+            }
             None => {
                 self.maximized = Some((self.sidebar_visible, self.bottom_panel_open));
                 (self.sidebar_visible, self.bottom_panel_open) = (false, false);
@@ -356,7 +385,7 @@ impl AppState {
         self.open_sessions.remove(id);
         self.tunnels.remove(id);
         if self.active_connection.as_ref().is_some_and(|c| c.id == id) {
-            self.session = None;
+            self.set_session(None);
             self.active_connection = None;
             self.set_catalog(SchemaCatalog::default());
         }
@@ -368,25 +397,40 @@ impl AppState {
         self.saved_connections.retain(|c| c.id != id);
         crate::connections::forget_secret(id);
         if let Err(e) = crate::connections::save(&self.saved_connections) {
-            self.messages.push(format!("Could not save connections: {}", e));
+            self.messages
+                .push(format!("Could not save connections: {}", e));
         }
     }
 
     /// Makes an already-open connection active again. Returns false if it isn't open.
     pub fn activate_open_session(&mut self, id: &str) -> bool {
-        let Some((session, catalog)) = self.open_sessions.get(id).cloned() else { return false };
-        let Some(profile) = self.saved_connections.iter().find(|c| c.id == id).cloned() else { return false };
-        self.session = Some(session);
+        let Some((session, catalog)) = self.open_sessions.get(id).cloned() else {
+            return false;
+        };
+        let Some(profile) = self.saved_connections.iter().find(|c| c.id == id).cloned() else {
+            return false;
+        };
+        self.set_session(Some(session));
         self.set_catalog(catalog);
         self.active_connection = Some(profile);
         true
     }
 
     /// Records an editor-run statement in history (memory + disk)
-    pub fn record_history(&mut self, sql: String, execution_time: Duration, rows_affected: u64, error: Option<String>) {
+    pub fn record_history(
+        &mut self,
+        sql: String,
+        execution_time: Duration,
+        rows_affected: u64,
+        error: Option<String>,
+    ) {
         let item = QueryHistoryItem {
             id: uuid::Uuid::new_v4().to_string(),
-            connection: self.active_connection.as_ref().map(|c| c.name.clone()).unwrap_or_default(),
+            connection: self
+                .active_connection
+                .as_ref()
+                .map(|c| c.name.clone())
+                .unwrap_or_default(),
             sql,
             timestamp: Utc::now(),
             execution_time,
@@ -394,23 +438,87 @@ impl AppState {
             error,
         };
         crate::history::append(&item);
+        // Boost usage count for words in this query
+        {
+            let mut usage = self.completion_usage.borrow_mut();
+            for word in item.sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                if !word.is_empty() {
+                    *usage.entry(word.to_lowercase()).or_default() += 1;
+                }
+            }
+        }
+        // Add to predictive completion history
+        {
+            let mut hist = self.completion_history.borrow_mut();
+            hist.insert(0, item.sql.clone());
+            hist.truncate(500);
+        }
         self.history.push(item);
+    }
+
+    pub fn set_session(&mut self, session: Option<Arc<dyn DatabaseSession>>) {
+        self.completion_dialect.set(
+            session
+                .as_ref()
+                .map_or(&quarry_core::dialect::Ansi, |s| s.dialect()),
+        );
+        self.session = session;
+    }
+
+    /// The SQL dialect of the active connection (ANSI when disconnected)
+    pub fn dialect(&self) -> &'static dyn quarry_core::Dialect {
+        self.completion_dialect.get()
+    }
+
+    /// `SELECT * FROM <table>` limited to `rows`, in the active connection's dialect
+    pub fn select_rows_sql(&self, schema: &str, table: &str, rows: u64) -> String {
+        let d = self.dialect();
+        d.limit(
+            &format!("SELECT * FROM {}", d.qualified(schema, table)),
+            rows,
+            0,
+        )
     }
 
     pub fn set_catalog(&mut self, catalog: SchemaCatalog) {
         *self.completion_catalog.borrow_mut() = catalog.clone();
         self.catalog = catalog;
         self.catalog_gen += 1;
+        self.schema_objects.clear();
+        self.rebuild_usage();
+    }
+
+    pub fn rebuild_usage(&self) {
+        let mut map = std::collections::HashMap::new();
+        let conn_name = self
+            .active_connection
+            .as_ref()
+            .map(|c| c.name.as_str())
+            .unwrap_or("");
+        for item in &self.history {
+            if conn_name.is_empty() || item.connection == conn_name {
+                for word in item.sql.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !word.is_empty() {
+                        *map.entry(word.to_lowercase()).or_default() += 1;
+                    }
+                }
+            }
+        }
+        *self.completion_usage.borrow_mut() = map;
     }
 
     pub fn note_recent_table(&mut self, schema: &str, table: &str) {
-        self.recent_tables.retain(|(s, t)| !(s == schema && t == table));
-        self.recent_tables.insert(0, (schema.to_string(), table.to_string()));
+        self.recent_tables
+            .retain(|(s, t)| !(s == schema && t == table));
+        self.recent_tables
+            .insert(0, (schema.to_string(), table.to_string()));
         self.recent_tables.truncate(8);
     }
 
     pub fn find_tab(&self, table_name: &str) -> Option<usize> {
-        self.tabs.iter().position(|t| matches!(t, Tab::Table { table_name: n, .. } if n == table_name))
+        self.tabs
+            .iter()
+            .position(|t| matches!(t, Tab::Table { table_name: n, .. } if n == table_name))
     }
 
     /// Removes a tab (the last one too, which leaves the empty state) and returns it
@@ -440,29 +548,46 @@ impl AppState {
         tunnel: Option<crate::ssh::Tunnel>,
     ) {
         let mut profile = profile;
-        let bare = |p: &ConnectionProfile| crate::connections::split_password(&p.path_or_url).0;
+        let bare = |p: &ConnectionProfile| {
+            p.driver().map_or_else(
+                || p.path_or_url.clone(),
+                |d| d.take_secret(&p.path_or_url).0,
+            )
+        };
         // Same address as a saved connection: reuse it (name, environment, read-only) instead of duplicating
-        if let Some(existing) = self.saved_connections.iter().find(|c| c.kind == profile.kind && bare(c) == bare(&profile)) {
-            profile = ConnectionProfile { path_or_url: profile.path_or_url, ..existing.clone() };
+        if let Some(existing) = self
+            .saved_connections
+            .iter()
+            .find(|c| c.driver == profile.driver && bare(c) == bare(&profile))
+        {
+            profile = ConnectionProfile {
+                path_or_url: profile.path_or_url,
+                ..existing.clone()
+            };
         }
-        self.open_sessions.insert(profile.id.clone(), (session.clone(), catalog.clone()));
+        self.open_sessions
+            .insert(profile.id.clone(), (session.clone(), catalog.clone()));
         if let Some(t) = tunnel {
             self.tunnels.insert(profile.id.clone(), t);
         }
-        self.session = Some(session);
+        self.set_session(Some(session));
         self.set_catalog(catalog);
         if !self.saved_connections.iter().any(|c| c.id == profile.id) {
             self.saved_connections.push(profile.clone());
             if let Err(e) = crate::connections::save(&self.saved_connections) {
-                self.messages.push(format!("Could not save connection: {}", e));
+                self.messages
+                    .push(format!("Could not save connection: {}", e));
             }
         }
         self.active_connection = Some(profile);
     }
 
-#[allow(dead_code)]
+    #[allow(dead_code)]
     pub fn find_table_schema(&self, table_name: &str) -> Option<&TableSchema> {
-        self.catalog.tables.iter().find(|t| t.table_name == table_name)
+        self.catalog
+            .tables
+            .iter()
+            .find(|t| t.table_name == table_name)
     }
 }
 
@@ -470,37 +595,66 @@ impl AppState {
 pub async fn open_session(
     profile: &ConnectionProfile,
     log: ActivityLog,
-) -> Result<(Arc<dyn DatabaseSession>, SchemaCatalog, Option<crate::ssh::Tunnel>), String> {
+) -> Result<
+    (
+        Arc<dyn DatabaseSession>,
+        SchemaCatalog,
+        Option<crate::ssh::Tunnel>,
+    ),
+    String,
+> {
+    let driver = profile.driver().ok_or_else(|| {
+        format!(
+            "This build of Quarry doesn't include the {} driver",
+            profile.driver
+        )
+    })?;
+    let addr = driver.display_address(&profile.path_or_url);
+    tracing::info!(
+        "Connecting to [{}] ({}) via {}...",
+        profile.name,
+        addr,
+        driver.name()
+    );
+    let mut conn = crate::connections::with_secret(profile);
     let mut tunnel = None;
-    let session: Arc<dyn DatabaseSession> = match profile.kind {
-        ConnectionTargetKind::SqliteMemory => Arc::new(SqliteSession::open_in_memory().map_err(|e| e.to_string())?),
-        ConnectionTargetKind::SqliteFile => {
-            Arc::new(SqliteSession::open_file(&profile.path_or_url, profile.read_only).map_err(|e| e.to_string())?)
-        }
-        ConnectionTargetKind::Postgres => {
-            let mut url = crate::connections::with_secret(profile);
-            if let Some(ssh) = &profile.ssh {
-                let (host, port) = crate::ssh::target(&url);
-                let cfg = ssh.clone();
-                let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
-                    .await
-                    .map_err(|e| e.to_string())??;
-                url = crate::ssh::retarget(&url, t.local_port);
-                tunnel = Some(t);
-            }
-            Arc::new(PostgresSession::connect(&url, profile.read_only).await.map_err(|e| e.to_string())?)
-        }
-    };
-    let session: Arc<dyn DatabaseSession> = Arc::new(LoggedSession::new(session, profile.name.clone(), log));
-    if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
-        let sql = match profile.kind {
-            ConnectionTargetKind::Postgres => format!("SET statement_timeout = {}", secs * 1000),
-            // SQLite can't time out a single statement; the closest is how long to wait on a lock
-            _ => format!("PRAGMA busy_timeout = {}", secs * 1000),
-        };
-        session.execute(&sql).await.map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
+    if let Some(ssh) = &profile.ssh {
+        let (host, port) = driver
+            .tunnel_target(&conn)
+            .ok_or_else(|| format!("{} connections can't use an SSH tunnel", driver.name()))?;
+        let cfg = ssh.clone();
+        let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
+            .await
+            .map_err(|e| e.to_string())??;
+        conn = driver.through_tunnel(&conn, t.local_port);
+        tunnel = Some(t);
     }
-    let catalog = session.introspect().await.map_err(|e| format!("Introspection error: {}", e))?;
+    let session = driver
+        .connect(&conn, profile.read_only)
+        .await
+        .map_err(|e| {
+            tracing::error!("Connection to [{}] failed: {e}", profile.name);
+            e.to_string()
+        })?;
+    let session: Arc<dyn DatabaseSession> =
+        Arc::new(LoggedSession::new(session, profile.name.clone(), log));
+    if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
+        if let Some(sql) = session.dialect().statement_timeout(secs) {
+            session
+                .execute(&sql)
+                .await
+                .map_err(|e| format!("Couldn't set the statement timeout: {e}"))?;
+        }
+    }
+    let catalog = session
+        .load_catalog()
+        .await
+        .map_err(|e| format!("Introspection error: {}", e))?;
+    tracing::info!(
+        "Connected to [{}] (loaded {} tables)",
+        profile.name,
+        catalog.tables.len()
+    );
     Ok((session, catalog, tunnel))
 }
 

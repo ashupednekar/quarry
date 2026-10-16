@@ -11,7 +11,7 @@ version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 authors = ["Krishna"]
-repository = "https://github.com/krishna/quarry"
+repository = "https://github.com/thekodeking/quarry"
 
 [workspace.dependencies]
 quarry-core = { path = "crates/quarry-core" }
@@ -23,14 +23,52 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 async-trait = "0.1"
+futures-util = "0.3"
+# Rustls TLS for Postgres and MySQL
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
+tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring", "webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+webpki-roots = "1.0"
+tiberius = { version = "0.13", default-features = false, features = ["tds73", "chrono"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+# Loads Oracle Instant Client at connect time; builds without it
+oracle = "0.6"
+sha2 = "0.10"
 anyhow = "1.0"
 thiserror = "2.0"
 # gpui-kit re-exports gpui (gpui-pre) plus platform + components; aliased so `use gpui::*` stays
 gpui = { package = "gpui-kit", version = "=0.7.1", features = ["tree-sitter-sql"] }
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.11", features = ["v4"] }
 crossbeam-channel = "0.5"
 keyring = "4.2"
 lsp-types = { version = "0.97", features = ["proposed"] }
 sqlformat = "0.5"
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+tree-sitter = { version = "0.26", default-features = false }
+tree-sitter-sequel = "0.3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+manual_let_else = "warn"
+
+# Dev builds keep our crates debuggable but optimize dependencies: unoptimized gpui/taffy
+# made a 50-card diagram take ~180 ms a frame
+[profile.dev.package."*"]
+opt-level = 2
+
+# Unit tests don't render 60fps UI frames; opt-level 1 compiles much faster and doesn't bloat debuginfo
+[profile.test.package."*"]
+opt-level = 1
+debug = 0
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,39 +1,38 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 use crate::state::{AppState, ConnectionProfile, Environment};
-use quarry_core::DatabaseSession;
-use std::sync::Arc;
 use crate::theme::Theme;
 use crate::ui::*;
+use crate::{CommitTx, QuarryWindow, RollbackTx, ToggleBottomPanel, ToggleSidebar, ToggleTxMode};
+use gpui::component::ActiveTheme;
 use gpui::*;
+use quarry_core::DatabaseSession;
+use std::sync::Arc;
 
 pub struct StatusBar;
 
 impl StatusBar {
-    pub fn render<T: 'static>(
+    pub fn render(
         state: &AppState,
         session: Option<&Arc<dyn DatabaseSession>>,
         connection: Option<&ConnectionProfile>,
+        vim_mode: Option<crate::state::VimMode>,
         theme: &Theme,
-        cx: &Context<T>,
-        on_toggle_bottom: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_sidebar: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_toggle_tx: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_commit: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
-        on_rollback: impl Fn(&mut T, &mut Window, &mut Context<T>) + Copy + 'static,
+        cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
-        let (manual, in_tx) = session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
-        let link = |id: &'static str, label: &'static str, color: Rgba| {
+        let (manual, in_tx) =
+            session.map_or((false, false), |s| (s.tx().manual(), s.in_transaction()));
+        let link = |id: &'static str, label: &str, color: Rgba| {
             div()
                 .id(id)
                 .px_1p5()
                 .rounded(px(3.0))
-                .text_xs()
+                .text_sm()
                 .text_color(color)
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover))
-                .child(label)
+                .child(label.to_string())
         };
         // Only shown once there's a result to describe; query tabs show it in their results header
         let stats = state
@@ -41,7 +40,11 @@ impl StatusBar {
             .filter(|t| !matches!(t, crate::state::Tab::Query { .. }))
             .and_then(|t| {
                 let rs = t.grid().read(cx).delegate();
-                let more = if rs.source.as_ref().is_some_and(|s| s.has_more) { "+" } else { "" };
+                let more = if rs.source.as_ref().is_some_and(|s| s.has_more) {
+                    "+"
+                } else {
+                    ""
+                };
                 rs.result().map(|res| (res, more))
             })
             .map(|(res, more)| {
@@ -52,15 +55,24 @@ impl StatusBar {
             })
             .map(|(rows, time)| format!("{} · {}", rows, time));
 
-        let conn_name = connection.map(|c| c.name.clone()).unwrap_or_else(|| "Not connected".to_string());
+        let conn_name = connection
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Not connected".to_string());
         // Where it points, so two connections with similar names can't be confused
-        let address = connection.map(|c| crate::connections::display_address(c)).filter(|a| *a != conn_name);
+        let address = connection
+            .map(crate::connections::display_address)
+            .filter(|a| *a != conn_name);
         let env_tag = connection.map(|c| c.env).unwrap_or(Environment::Local);
-        // Flow C: "PROD · READ-ONLY" is impossible to miss
+        // Flow C: "Production · Read-only" is impossible to miss
         let env_label = match (env_tag, session.is_some_and(|s| s.is_read_only())) {
-            (env, true) => format!("{} · READ-ONLY", env.label()),
-            (env, false) => env.label().to_string(),
+            (env, true) => format!("{} · Read-only", env.name()),
+            (env, false) => env.name().to_string(),
         };
+        // The name is in the title bar and editor toolbar; here it's the hover detail
+        let conn_tip: Option<SharedString> = connection.map(|_| match &address {
+            Some(a) => format!("{conn_name} · {a}").into(),
+            None => conn_name.clone().into(),
+        });
 
         let env_color = match env_tag {
             Environment::Local => theme.success,
@@ -82,74 +94,141 @@ impl StatusBar {
                 h_flex()
                     .gap_3()
                     .items_center()
-                    // Transaction mode (E9): click to switch; an open transaction shows Commit / Rollback
-                    .when(session.is_some(), |this| this.child(
-                        link("tx-mode", if manual { "Manual commit" } else { "Auto-commit" }, theme.text_muted)
-                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_tx(this, window, cx))),
-                    ))
-                    .when(in_tx, |this| {
-                        this.child(div().text_xs().font_weight(FontWeight::BOLD).text_color(theme.warning).child("● Transaction open"))
-                            .child(
-                                link("tx-commit", "Commit", theme.success)
-                                    .on_click(cx.listener(move |this, _, window, cx| on_commit(this, window, cx))),
-                            )
-                            .child(
-                                link("tx-rollback", "Rollback", theme.danger)
-                                    .on_click(cx.listener(move |this, _, window, cx| on_rollback(this, window, cx))),
-                            )
-                    })
-                    .child(
-                        // Active connection badge
-                        h_flex()
-                            .gap_1p5()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(px(5.0))
-                                    .h(px(5.0))
-                                    .rounded(px(2.5))
-                                    .bg(env_color),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_secondary)
-                                    .child(conn_name),
-                            )
-                            .when_some(address, |d, a| d.child(div().text_xs().text_color(theme.text_muted).child(a))),
-                    )
-                    .when(connection.is_some(), |this| this.child(
-                        // Environment Pill
+                    // Vim mode sits where Vim puts it: bottom left
+                    .children(vim_mode.map(|mode| {
                         div()
-                            .px_1p5()
-                            .py(px(0.5))
-                            .rounded(px(3.0))
-                            .bg(theme.bg_surface)
-                            .text_xs()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(env_color)
-                            .child(env_label),
-                    )),
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(match mode {
+                                crate::state::VimMode::Normal => theme.accent,
+                                crate::state::VimMode::Insert => theme.success,
+                                crate::state::VimMode::Visual => theme.warning,
+                            })
+                            .child(mode.label())
+                    }))
+                    // Transaction mode (E9): click to switch; an open transaction shows Commit / Rollback
+                    .when(session.is_some(), |this| {
+                        this.child(
+                            link(
+                                "tx-mode",
+                                if manual {
+                                    "Manual commit"
+                                } else {
+                                    "Auto-commit"
+                                },
+                                theme.text_muted,
+                            )
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.toggle_tx_mode(&ToggleTxMode, window, cx)
+                                },
+                            )),
+                        )
+                    })
+                    .when(in_tx, |this| {
+                        this.child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme.warning)
+                                .child("● Transaction open"),
+                        )
+                        .child(
+                            link("tx-commit", "Commit", theme.success).on_click(cx.listener(
+                                move |this, _, window, cx| this.commit_tx(&CommitTx, window, cx),
+                            )),
+                        )
+                        .child(
+                            link("tx-rollback", "Rollback", theme.danger).on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.rollback_tx(&RollbackTx, window, cx)
+                                },
+                            )),
+                        )
+                    })
+                    // Environment: a quiet dot locally, a tinted pill where mistakes cost more
+                    .child(match conn_tip {
+                        Some(tip) => {
+                            let loud = env_tag != Environment::Local;
+                            h_flex()
+                                .id("statusbar-conn")
+                                .gap_1p5()
+                                .items_center()
+                                .px_1p5()
+                                .rounded(px(4.0))
+                                .when(loud, |d| {
+                                    d.bg(Theme::tint(env_color, 0.14))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                })
+                                .tooltip(move |window, cx| {
+                                    gpui::component::tooltip::Tooltip::new(tip.clone())
+                                        .build(window, cx)
+                                })
+                                .child(div().size(px(6.0)).rounded_full().bg(env_color))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(if loud {
+                                            env_color
+                                        } else {
+                                            theme.text_secondary
+                                        })
+                                        .child(env_label),
+                                )
+                        }
+                        None => h_flex().id("statusbar-conn").child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.text_muted)
+                                .child(conn_name),
+                        ),
+                    }),
             )
             .child(
-                // Center items: Row count & execution time
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .children(stats.map(|s| div().text_xs().text_color(theme.text_secondary).child(s))),
-            )
-            .child(
-                // Right items: quiet toggles (also on ⌘B / ⌘J and in ⌘K)
+                // Right items: result stats, then quiet toggles (also on ⌘B / ⌘J and in ⌘K)
                 h_flex()
                     .gap_1()
                     .items_center()
+                    // Mono digits: the timing changes every run and mustn't jiggle
+                    .children(stats.map(|s| {
+                        div()
+                            .mr_3()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(theme.text_muted)
+                            .child(s)
+                    }))
                     .child(
-                        link("statusbar-toggle-sidebar", "Sidebar ⌘B", if state.sidebar_visible { theme.text_secondary } else { theme.text_muted })
-                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_sidebar(this, window, cx))),
+                        link(
+                            "statusbar-toggle-sidebar",
+                            &format_keys("Sidebar ⌘B"),
+                            if state.sidebar_visible {
+                                theme.text_secondary
+                            } else {
+                                theme.text_muted
+                            },
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.toggle_sidebar(&ToggleSidebar, window, cx)
+                            },
+                        )),
                     )
                     .child(
-                        link("statusbar-toggle-bottom", "Panel ⌘J", if state.bottom_panel_open { theme.text_secondary } else { theme.text_muted })
-                            .on_click(cx.listener(move |this, _, window, cx| on_toggle_bottom(this, window, cx))),
+                        link(
+                            "statusbar-toggle-bottom",
+                            &format_keys("Panel ⌘J"),
+                            if state.bottom_panel_open {
+                                theme.text_secondary
+                            } else {
+                                theme.text_muted
+                            },
+                        )
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.toggle_bottom_panel(&ToggleBottomPanel, window, cx)
+                            },
+                        )),
                     ),
             )
     }

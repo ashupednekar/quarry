@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
-
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! Pinned tables and queries per connection (U6), in ~/.config/quarry/pins.json.
 
@@ -31,7 +30,10 @@ fn path() -> Option<std::path::PathBuf> {
 }
 
 pub fn load() -> Pins {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 pub fn save(pins: &Pins) {
@@ -61,12 +63,18 @@ mod tests {
     #[test]
     fn toggling_pins_per_connection() {
         let mut pins = Pins::new();
-        let t = Pin::Table { schema: "public".into(), table: "users".into() };
+        let t = Pin::Table {
+            schema: "public".into(),
+            table: "users".into(),
+        };
         assert!(toggle(&mut pins, "a", t.clone()));
         assert!(toggle(&mut pins, "b", t.clone()));
         assert!(!toggle(&mut pins, "a", t.clone()));
         assert!(pins["a"].is_empty() && pins["b"].len() == 1);
         let json = serde_json::to_string(&pins["b"]).unwrap();
-        assert_eq!(json, r#"[{"kind":"table","schema":"public","table":"users"}]"#);
+        assert_eq!(
+            json,
+            r#"[{"kind":"table","schema":"public","table":"users"}]"#
+        );
     }
 }

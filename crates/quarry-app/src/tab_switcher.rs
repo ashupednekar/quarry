@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Copyright (C) 2026 Krishna <https://github.com/krishna/quarry>
+// Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
 //! ⌃Tab switcher: hold ⌃, press Tab to walk tabs in most-recently-used order, let go of ⌃ to switch.
 
@@ -37,7 +37,9 @@ impl QuarryWindow {
         // A tab switch (⌃Tab, click, ⌘W…) hides the old tab's editor; if it kept focus, keys would go nowhere
         if changed {
             match self.state.active_tab() {
-                Some(Tab::Query { editor, .. }) => editor.clone().update(cx, |e, cx| e.focus(window, cx)),
+                Some(Tab::Query { editor, .. }) => {
+                    editor.clone().update(cx, |e, cx| e.focus(window, cx))
+                }
                 _ => self.refocus_root(window, cx),
             }
         }
@@ -61,8 +63,14 @@ impl QuarryWindow {
 
     /// Letting go of ⌃ switches to the highlighted tab
     pub fn commit_tab_switcher(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(i) = self.tab_switcher.take() else { return };
-        if let Some(ix) = self.tab_mru.get(i).and_then(|id| self.state.tabs.iter().position(|t| t.id() == id)) {
+        let Some(i) = self.tab_switcher.take() else {
+            return;
+        };
+        if let Some(ix) = self
+            .tab_mru
+            .get(i)
+            .and_then(|id| self.state.tabs.iter().position(|t| t.id() == id))
+        {
             self.state.active_tab_index = ix;
         }
         cx.notify();
@@ -74,11 +82,19 @@ impl QuarryWindow {
         let rows = self.tab_mru.iter().enumerate().filter_map(|(i, id)| {
             let tab = self.state.tabs.iter().find(|tab| tab.id() == id)?;
             let (icon, detail) = match tab {
-                Tab::Query { connection_id, file, .. } => (
+                Tab::Query {
+                    connection_id,
+                    file,
+                    ..
+                } => (
                     IconName::SquareTerminal,
                     file.as_ref().map(|f| f.display().to_string()).or_else(|| {
                         let id = connection_id.as_ref()?;
-                        self.state.saved_connections.iter().find(|c| &c.id == id).map(|c| c.name.clone())
+                        self.state
+                            .saved_connections
+                            .iter()
+                            .find(|c| &c.id == id)
+                            .map(|c| c.name.clone())
                     }),
                 ),
                 Tab::Table { schema_name, .. } => (IconName::Table, Some(schema_name.clone())),
@@ -99,9 +115,26 @@ impl QuarryWindow {
                         this.tab_switcher = Some(i);
                         this.commit_tab_switcher(window, cx);
                     }))
-                    .child(Icon::new(icon).xsmall().text_color(if on { t.accent } else { t.text_muted }))
-                    .child(div().text_sm().text_color(if on { t.text_primary } else { t.text_secondary }).child(tab.title().to_string()))
-                    .children(detail.map(|d| div().flex_1().min_w_0().text_xs().text_color(t.text_muted).truncate().child(d))),
+                    .child(Icon::new(icon).xsmall().text_color(if on {
+                        t.accent
+                    } else {
+                        t.text_muted
+                    }))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(if on { t.text_primary } else { t.text_secondary })
+                            .child(tab.title().to_string()),
+                    )
+                    .children(detail.map(|d| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(t.text_muted)
+                            .truncate()
+                            .child(d)
+                    })),
             )
         });
         Some(
@@ -123,7 +156,7 @@ impl QuarryWindow {
                         .bg(t.bg_panel)
                         .border_1()
                         .border_color(t.border)
-                        .rounded(px(8.0))
+                        .rounded(px(10.0))
                         .shadow_lg()
                         .children(rows),
                 )
