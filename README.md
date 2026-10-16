@@ -4,6 +4,8 @@ Quarry is a desktop database client written in Rust. It covers the parts of Data
 
 It's in early beta. Expect rough edges, and please open an issue when you hit one.
 
+![Quarry: SQL editor, results grid with cell aggregates, schema browser](assets/screenshot.png)
+
 ## What it does
 
 - SQL editor with schema-aware autocomplete, formatting, `EXPLAIN` plans and an optional Vim mode
@@ -15,6 +17,15 @@ It's in early beta. Expect rough edges, and please open an issue when you hit on
 - A `⌘K` / `Ctrl+K` command bar for every action
 
 Supported databases: PostgreSQL, MySQL, SQLite, SQL Server and Oracle. Oracle needs Oracle Instant Client, which Quarry can download for you from the connection form. To add another engine, see [DRIVERS.md](DRIVERS.md).
+
+## Screenshots
+
+| | |
+|---|---|
+| ![ER diagram of a table and its foreign-key neighbours](assets/screenshot-diagram.png) | ![Table structure: columns, keys, indexes and references](assets/screenshot-structure.png) |
+| **ER diagram** of a table and every table it links to | **Structure** view with keys, indexes, foreign keys and back-references |
+| ![Review dialog showing the generated UPDATE and DELETE statements](assets/screenshot-review.png) | ![Command bar listing actions with their shortcuts](assets/screenshot-command-bar.png) |
+| **Review before commit**: see the exact SQL your grid edits will run | **Command bar** (`⌘K`) for every action, table and query |
 
 ## Install
 
