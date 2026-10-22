@@ -6,9 +6,9 @@
 use gpui::component::input::{CompletionProvider, HoverProvider, Rope, RopeExt};
 use gpui::{App, Task, Window};
 use lsp_types::{
-    CompletionContext, CompletionItem, CompletionItemKind, CompletionTriggerKind, CompletionResponse, CompletionTextEdit,
-    Hover, HoverContents, InlineCompletionContext, InlineCompletionItem, InlineCompletionResponse,
-    MarkupContent, MarkupKind, TextEdit,
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
+    CompletionTriggerKind, Hover, HoverContents, InlineCompletionContext, InlineCompletionItem,
+    InlineCompletionResponse, MarkupContent, MarkupKind, TextEdit,
 };
 use quarry_core::SchemaCatalog;
 use quarry_sql::{CompletionKind, SchemaCompleter};

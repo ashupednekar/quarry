@@ -150,7 +150,18 @@ pub fn modal_header(
                         .child(title.into()),
                 )
                 .when_some(subtitle, |d, s| {
-                    d.child(div().text_sm().text_color(t.text_muted).truncate().child(s))
+                    let tip = s.clone();
+                    d.child(
+                        div()
+                            .id("modal-subtitle")
+                            .text_sm()
+                            .text_color(t.text_muted)
+                            .truncate()
+                            .tooltip(move |window, cx| {
+                                gpui::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                            })
+                            .child(s),
+                    )
                 }),
         )
         .child(
@@ -439,6 +450,15 @@ mod tests {
             "Maximize (Shift+Esc)"
         );
     }
+}
+
+/// macOS System Settings › Accessibility › Display › Reduce motion
+pub fn os_reduce_motion() -> bool {
+    cfg!(target_os = "macos")
+        && std::process::Command::new("defaults")
+            .args(["read", "com.apple.universalaccess", "reduceMotion"])
+            .output()
+            .is_ok_and(|o| o.stdout.starts_with(b"1"))
 }
 
 /// Modals ease in (fade plus a small rise) the first frames they're shown; closing is instant

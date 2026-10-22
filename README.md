@@ -1,72 +1,145 @@
 # Quarry
 
-Quarry is a desktop database client written in Rust. It covers the parts of DataGrip I use day to day (writing queries, browsing tables, editing rows, importing and exporting) without the rest of the IDE.
+Quarry is a fast, lightweight desktop database client written in Rust. It delivers the core developer workflow of DataGrip—writing queries, navigating schemas, editing rows with atomic review, and importing/exporting data—without IDE bloat, slow startup, or heavy background resource consumption.
 
-It's in early beta. Expect rough edges, and please open an issue when you hit one.
+Built with [GPUI](https://www.gpui.rs) for GPU-accelerated 60fps rendering and powered by an asynchronous multi-driver database engine.
+
+It's currently in early beta. Feedback, bug reports, and contributions are welcome!
 
 ![Quarry: SQL editor, results grid with cell aggregates, schema browser](assets/screenshot.png)
 
-## What it does
+---
 
-- SQL editor with schema-aware autocomplete, formatting, `EXPLAIN` plans and an optional Vim mode
-- Table browser with a data grid, structure and DDL views, and an ER diagram
-- Row editing that shows the generated `UPDATE` / `INSERT` / `DELETE` statements for review before anything is committed
-- Filter builder, plus count / sum / average / min / max for the selected cells
-- Import and export as CSV or JSON, and dump a whole database to SQL
-- SSH tunnels, passwords stored in the system keychain, and connections tagged Local / Staging / Production, where Production asks before running anything that changes data
-- A `⌘K` / `Ctrl+K` command bar for every action
+## Highlights
 
-Supported databases: PostgreSQL, MySQL, SQLite, SQL Server and Oracle. Oracle needs Oracle Instant Client, which Quarry can download for you from the connection form. To add another engine, see [DRIVERS.md](DRIVERS.md).
+- **SQL Editor:** Schema-aware autocompletion (keywords, tables, columns, CTEs, subqueries, and foreign-key join hints), query formatting, syntax highlighting, explain plans, query parameter placeholders (`:id`, `$1`), and an optional modal **Vim mode**.
+- **Interactive Data Grid:** Zero-copy column-oriented row buffer rendering up to 100,000 rows smoothly. Live cell editing with optimistic concurrency verification, cell range selection, aggregate summaries (sum, avg, count, min, max), transposed vertical view, and foreign-key navigation (`F4`).
+- **Review Before Commit:** Visual review dialog displaying generated `UPDATE`, `INSERT`, and `DELETE` SQL statements before applying modifications to the database.
+- **Visual Filter Builder:** Construct composite filters visually with comparison operators (`=`, `!=`, `>`, `<`, `LIKE`, `IN`, `IS NULL`) without hand-crafting `WHERE` clauses.
+- **ER Diagram & Schema Explorer:** Interactive foreign-key relationship diagrams with multi-hop neighbors, table structure inspection (columns, keys, indexes, triggers, table stats), DDL generation, and fast table peeking on hover.
+- **Import & Export:** Streaming import wizard with CSV / JSON auto-detection, schema inference, conflict resolution (`ON CONFLICT DO NOTHING / UPDATE`), and streaming export to CSV, JSON, or SQL `INSERT` statements.
+- **Security & Safety:** Encrypted SSH tunneling, OS keychain password storage, and environment tagging (**Local**, **Staging**, **Production**). Production environments safeguard against accidental mutations with explicit confirmation prompts.
+- **Command Bar (`⌘K` / `Ctrl+K`):** Unified keyboard-first launcher to quickly switch connections, open tables, run recent queries, and trigger commands.
+
+---
+
+## Supported Databases
+
+Quarry abstracts database engines behind a modular driver interface in `crates/quarry-core`. Adding new engines requires implementing the driver traits without touching the UI layer (see [DRIVERS.md](DRIVERS.md)).
+
+| Engine | Driver Crate / Protocol | Features | Notes |
+|---|---|---|---|
+| **PostgreSQL** | `tokio-postgres` (Rustls TLS) | Full introspection, streaming cursors, `EXPLAIN (FORMAT JSON)`, `pg_dump`, server activity & locks | SSH tunneling, per-tab `search_path` schema switching |
+| **SQLite** | `rusqlite` (bundled C engine) | Schema inspection, in-memory & file DBs, built-in SQL dump | `:memory:` connections are ephemeral |
+| **MySQL / MariaDB** | `mysql_async` (Rustls TLS) | Processlist, statements monitor, mysqldump, table DDL | Supports `#` comments and `\'` escape sequences |
+| **SQL Server** | `tiberius` (TDS 7.3) | Active requests, query stats, lock inspector | Supports `GO` batch statement separation |
+| **Oracle** | `rust-oracle` (ODPI-C) | Sessions, SQL stats, lock monitors, PL/SQL blocks | Dynamic Instant Client loading; PL/SQL blocks end at `/` |
+
+---
 
 ## Screenshots
 
 | | |
 |---|---|
 | ![ER diagram of a table and its foreign-key neighbours](assets/screenshot-diagram.png) | ![Table structure: columns, keys, indexes and references](assets/screenshot-structure.png) |
-| **ER diagram** of a table and every table it links to | **Structure** view with keys, indexes, foreign keys and back-references |
+| **ER Diagram:** Visual graph of tables and foreign-key relationships | **Structure View:** Columns, keys, indexes, foreign keys, and comments |
 | ![Review dialog showing the generated UPDATE and DELETE statements](assets/screenshot-review.png) | ![Command bar listing actions with their shortcuts](assets/screenshot-command-bar.png) |
-| **Review before commit**: see the exact SQL your grid edits will run | **Command bar** (`⌘K`) for every action, table and query |
+| **Review Before Commit:** Inspect generated SQL statements before executing edits | **Command Bar (`⌘K`):** Fast launcher for actions, tables, and query history |
 
-## Install
+---
 
-**Linux and Windows:** download the `.deb`, `.AppImage` or Windows installer from [Releases](https://github.com/thekodeking/quarry/releases).
+## Architecture
 
-**macOS:** there are no prebuilt builds, because distributing them would need an Apple developer certificate. Building it yourself takes a few minutes:
+Quarry is organized as a Cargo workspace with three focused crates:
+
+```
+quarry/
+├── crates/
+│   ├── quarry-core/    # Engine-agnostic database driver traits, connection registry,
+│   │                   # column-oriented RowBuffer, DbValue, schema catalog, streaming I/O
+│   ├── quarry-sql/     # Statement splitting, AST-assisted autocomplete, CTE extraction,
+│   │                   # parameter binding (:id, $1), and query rewrites
+│   └── quarry-app/     # GPU-accelerated desktop UI (GPUI), background Tokio runtime,
+│                       # data grids, tab/split layout, and dialog workflows
+├── docs/
+│   └── ARCHITECTURE.md # Comprehensive GitHub Wiki architectural reference
+└── DRIVERS.md          # Guide to adding and testing new database engines
+```
+
+For an in-depth architectural breakdown—including memory layout, asynchronous runtime isolation, and data-flow diagrams—see the [Architecture Documentation (GitHub Wiki)](docs/ARCHITECTURE.md).
+
+---
+
+## Keyboard Shortcuts
+
+| Shortcut (macOS) | Shortcut (Win / Linux) | Action |
+|---|---|---|
+| `⌘K` | `Ctrl+K` | Open Command Bar (actions, tables, queries) |
+| `⌘↵` | `Ctrl+Enter` | Run statement at cursor (or selected text) |
+| `⇧⌘↵` | `Ctrl+Shift+Enter` | Run all statements in editor |
+| `⌘T` | `Ctrl+T` | Open new query tab |
+| `⌘W` | `Ctrl+W` | Close active tab |
+| `⇧⌘T` | `Ctrl+Shift+T` | Reopen last closed tab |
+| `⌘P` | `Ctrl+P` | Quick switch tab |
+| `⌘B` | `Ctrl+B` | Toggle left sidebar |
+| `⌘J` | `Ctrl+J` | Toggle bottom panel (history, logs, server monitor) |
+| `⌘\` | `Ctrl+\` | Split active tab horizontally / vertically |
+| `⌥↵` | `Alt+Enter` | Show query code actions (expand `*`, add `LIMIT`, wrap in transaction) |
+| `F4` | `F4` | Follow foreign key from selected grid cell |
+| `⌘Z` / `⇧⌘Z` | `Ctrl+Z` / `Ctrl+Y` | Undo / redo staged data grid edits |
+
+---
+
+## Installation
+
+### Linux & Windows
+Download pre-built `.deb`, `.AppImage`, or Windows installer binaries from [GitHub Releases](https://github.com/thekodeking/quarry/releases).
+
+### macOS
+Prebuilt binaries for macOS require self-signing or manual compilation. Building locally takes only a few minutes:
 
 ```sh
-# Requires the Xcode command line tools (xcode-select --install) and Rust (https://rustup.rs)
+# Prerequisites: Xcode command line tools (xcode-select --install) and Rust (https://rustup.rs)
 git clone https://github.com/thekodeking/quarry && cd quarry
 cargo install cargo-packager --locked
 cd crates/quarry-app && cargo packager --release -f app
 cp -R ../../dist/Quarry.app /Applications/
 ```
 
-An app you build on your own Mac opens without a Gatekeeper warning.
+Building on your own machine bypasses Apple Gatekeeper warnings.
+
+---
 
 ## Development
 
 ```sh
-make run     # run the app
-make test    # run the tests
-make lint    # rustfmt check and clippy
+make run        # Run debug build of the application
+make test       # Run unit and integration tests across workspace
+make lint       # Check rustfmt formatting and Clippy warnings
+make fmt        # Format all code with rustfmt
+make bench      # Run Criterion benchmarks for quarry-core and quarry-sql
 ```
 
-The workspace has three crates:
+### Packaging & Release Builds
 
-- `crates/quarry-core`: the driver registry, one driver per database, and the shared value and row types
-- `crates/quarry-sql`: SQL statement splitting and the autocomplete engine
-- `crates/quarry-app`: the user interface, built on [GPUI](https://www.gpui.rs)
-
-### Packaging and releases
-
-Packages are built with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) and written to `dist/`:
+Packages are generated using [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) and output to `dist/`:
 
 ```sh
 cd crates/quarry-app
-cargo packager --release -f app   # or dmg, deb, appimage, nsis
+cargo packager --release -f app       # macOS .app
+# or: -f dmg, -f deb, -f appimage, -f nsis
 ```
 
-To publish a release, push a tag that matches the version in `Cargo.toml` (for example `v0.1.0`). After approval, the Release workflow builds the Linux and Windows packages and attaches them to a GitHub release.
+To create a new release, push a git tag matching the workspace version (e.g. `v0.1.0`).
+
+---
+
+## Documentation
+
+- **[Architecture Guide & Wiki](docs/ARCHITECTURE.md):** Deep-dive into design decisions, threading models, and engine subsystems.
+- **[Driver Implementation Guide](DRIVERS.md):** Step-by-step instructions for implementing and testing new database engines.
+
+---
 
 ## License
 

@@ -7,10 +7,14 @@ use crate::edits::quote_ident;
 use crate::value::DbValue;
 use std::io::{self, Write};
 
+/// Supported file and statement formats for data export.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ExportFormat {
+    /// Comma-separated values (configurable delimiter).
     Csv,
+    /// JSON array of objects.
     Json,
+    /// Batch SQL `INSERT INTO` statements.
     Sql,
 }
 

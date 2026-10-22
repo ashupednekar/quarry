@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Global application state, connection profiles, session pooling, and tab lifecycle.
+//!
+//! Manages open database sessions, active tabs, saved queries, environment tags,
+//! SSH tunnels, and autocomplete state.
+
 use crate::grid::ResultSet;
 use chrono::{DateTime, Utc};
 use gpui::component::input::{EditorState, InputState};
@@ -13,6 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Deployment environment classification with safety guarantees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Environment {
     Local,
@@ -189,6 +195,10 @@ pub enum BottomPanelTab {
     Server,
 }
 
+/// Central runtime state for the Quarry desktop client.
+///
+/// Holds open connection profiles, active sessions, the schema catalog, query history,
+/// SSH tunnel processes, activity logs, and editor autocomplete registries.
 #[allow(dead_code)]
 pub struct AppState {
     pub active_connection: Option<ConnectionProfile>,
@@ -357,7 +367,6 @@ impl AppState {
         state.expanded_schemas.insert("public".to_string());
         state
     }
-
 
     pub fn active_tab(&self) -> Option<&Tab> {
         self.tabs.get(self.active_tab_index)
@@ -611,7 +620,7 @@ pub async fn open_session(
     })?;
     let addr = driver.display_address(&profile.path_or_url);
     tracing::info!(
-        "Connecting to [{}] ({}) via {}...",
+        "Connecting to [{}] ({}) via {}…",
         profile.name,
         addr,
         driver.name()

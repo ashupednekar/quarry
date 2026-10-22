@@ -21,57 +21,147 @@ pub struct Field {
     pub width: Option<f32>,
 }
 
+/// Database driver abstraction responsible for connection instantiation and UI metadata.
+///
+/// Implementors declare driver identification, connection string URL syntax, recognition heuristics,
+/// connection configuration form fields, password extraction/keychain management, SSH tunneling targets,
+/// and asynchronous connection factory logic.
 #[async_trait]
 pub trait Driver: Send + Sync {
-    /// Stable id stored in saved connections, e.g. "postgres"
+    /// Stable identifier stored in saved connections (e.g. `"postgres"`, `"sqlite"`, `"mysql"`).
     fn id(&self) -> &'static str;
 
-    /// Shown in the connect form, e.g. "PostgreSQL"
+    /// Human-readable name displayed in the connection manager UI (e.g. `"PostgreSQL"`).
     fn name(&self) -> &'static str;
 
-    /// Prefilled when the user picks this driver in the form
+    /// Prefilled sample connection string shown when the user selects this driver.
     fn sample(&self) -> &'static str;
 
-    /// Whether a pasted string is meant for this driver. Checked in registry order.
+    /// Evaluates whether a raw connection string belongs to this driver.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Raw connection string or file path to evaluate.
+    ///
+    /// # Returns
+    ///
+    /// `true` if this driver recognizes the URI scheme or connection syntax.
     fn recognizes(&self, conn: &str) -> bool;
 
-    /// The structured form fields. A single field means the connection string is typed directly.
+    /// The structured connection form fields.
+    ///
+    /// A single field indicates the connection string is edited directly without decomposition.
     fn fields(&self) -> &'static [Field];
 
-    /// Connection string → one value per field
+    /// Deconstructs a connection string into one value per form field.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Serialized connection string.
+    ///
+    /// # Returns
+    ///
+    /// Vector of field string values matching the ordering of [`fields`](Self::fields).
     fn split(&self, conn: &str) -> Vec<String>;
 
-    /// Field values → connection string. `previous` keeps whatever the fields don't cover (options).
+    /// Recombines form field values into a connection string.
+    ///
+    /// # Arguments
+    ///
+    /// * `values` - Slice of field values matching the driver's [`Field`] layout.
+    /// * `previous` - Previous connection string preserving options not covered by form fields.
+    ///
+    /// # Returns
+    ///
+    /// Formatted connection string.
     fn join(&self, values: &[String], previous: &str) -> String;
 
-    /// The connection string without its password, and the password
+    /// Extracts sensitive secrets (passwords) from the connection string for OS keychain storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Raw connection string containing potential credentials.
+    ///
+    /// # Returns
+    ///
+    /// A tuple of `(sanitized_connection_string, optional_extracted_password)`.
     fn take_secret(&self, conn: &str) -> (String, Option<String>) {
         (conn.to_string(), None)
     }
 
-    /// Puts a keychain password back into a bare connection string
+    /// Re-injects an OS keychain secret back into a sanitized connection string.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Sanitized connection string.
+    /// * `secret` - Secret credentials retrieved from the system keychain.
+    ///
+    /// # Returns
+    ///
+    /// Complete connection string ready for driver connection.
     fn put_secret(&self, conn: &str, _secret: &str) -> String {
         conn.to_string()
     }
 
-    /// Nothing outlives the session (an in-memory database), so the connection isn't saved
+    /// Indicates whether database data is ephemeral and tied to process lifetime (e.g. SQLite `:memory:`).
     fn is_ephemeral(&self, _conn: &str) -> bool {
         false
     }
 
-    /// Short "where" for the sidebar and default names: `host:port/db`, a file name
+    /// Generates a concise display address for the sidebar and title (e.g. `host:port/db` or filename).
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Serialized connection string.
+    ///
+    /// # Returns
+    ///
+    /// Short human-readable target string.
     fn display_address(&self, conn: &str) -> String;
 
-    /// Host and port an SSH tunnel should forward to; `None` when the database isn't reached over TCP
+    /// Extracts target host and port when connection is routable over an SSH tunnel.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Connection string.
+    ///
+    /// # Returns
+    ///
+    /// `Some((host, port))` for TCP endpoints, or `None` for local/embedded databases.
     fn tunnel_target(&self, _conn: &str) -> Option<(String, u16)> {
         None
     }
 
-    /// The connection string pointed at the tunnel's local end
+    /// Rewrites a connection string to route through a local SSH tunnel port.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Original connection string.
+    /// * `local_port` - Local TCP port allocated for the active SSH tunnel.
+    ///
+    /// # Returns
+    ///
+    /// Rewritten connection string pointed at `127.0.0.1:<local_port>`.
     fn through_tunnel(&self, conn: &str, _local_port: u16) -> String {
         conn.to_string()
     }
 
+    /// Establishes an asynchronous database session.
+    ///
+    /// # Arguments
+    ///
+    /// * `conn` - Connection string containing credentials and endpoint settings.
+    /// * `read_only` - If `true`, the connection should enforce read-only semantics if supported.
+    ///
+    /// # Returns
+    ///
+    /// An atomically reference-counted [`DatabaseSession`] instance.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError::AuthenticationFailed`] if invalid credentials provided.
+    /// * [`DbError::ConnectionLost`] if host is unreachable.
+    /// * [`DbError::QueryError`] if initialization commands fail.
     async fn connect(
         &self,
         conn: &str,

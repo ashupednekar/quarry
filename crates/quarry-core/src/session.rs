@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Database session traits, query result containers, streaming cursors, and error handling.
+//!
+//! Defines [`DatabaseSession`], the primary async trait implemented by database drivers, along
+//! with [`QueryResult`], [`QueryChunk`] for streaming queries, [`TxState`] for transaction tracking,
+//! and [`DbError`] for classified operational errors.
+
 use crate::dialect::Dialect;
 use crate::edits::PendingChanges;
 use crate::row_buffer::RowBuffer;
@@ -91,12 +97,22 @@ pub enum DbError {
 /// or export, to see them all.
 pub const MAX_ROWS: usize = 100_000;
 
+/// Complete in-memory representation of an executed query result set.
+///
+/// Holds the list of column names, the columnar [`RowBuffer`] storing up to [`MAX_ROWS`] rows,
+/// affected row counts (or total server rows matched), query execution latency, and the
+/// executed SQL statement string.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {
+    /// Ordered list of column names returned by the database.
     pub columns: Vec<String>,
+    /// Columnar storage holding up to [`MAX_ROWS`] returned rows.
     pub rows: RowBuffer,
+    /// Total count of rows affected by a DML statement, or total row count scanned/returned.
     pub rows_affected: u64,
+    /// Total wall-clock time spent executing the query against the database engine.
     pub execution_time: Duration,
+    /// Original SQL statement string that generated this result.
     pub statement: String,
 }
 
@@ -321,21 +337,67 @@ fn has_outer_read_verb_tokens(tokens: &[crate::lexer::Token]) -> bool {
     false
 }
 
+/// Asynchronous database session interface implemented by database drivers.
+///
+/// Encapsulates connection lifecycle, live schema introspection, SQL execution (eager and streaming),
+/// transactional change commits, metadata inspection, and optional server monitor/dump extensions.
 #[async_trait]
 pub trait DatabaseSession: Send + Sync {
-    /// Tests connectivity and returns latency
+    /// Tests connectivity to the database and measures round-trip latency.
+    ///
+    /// # Returns
+    ///
+    /// The round-trip wall-clock [`Duration`] elapsed during the ping probe.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError::ConnectionLost`] if the server is unreachable or socket dropped.
+    /// * [`DbError::QueryError`] if the underlying heartbeat probe fails.
     async fn ping(&self) -> Result<Duration, DbError>;
 
-    /// Returns the live schema tree (schemas, tables, columns, PKs)
+    /// Introspects the live database schema catalog.
+    ///
+    /// Retrieves all visible schemas, tables, views, columns, primary keys, and foreign keys.
+    ///
+    /// # Returns
+    ///
+    /// A fully populated [`SchemaCatalog`] representing the database structure.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError::QueryError`] if schema catalog query execution fails.
+    /// * [`DbError::ConnectionLost`] if disconnected during introspection.
     async fn introspect(&self) -> Result<SchemaCatalog, DbError>;
 
-    /// The catalog to start a connection with. Drivers for big databases load only the default
-    /// schema here (see `SchemaCatalog::lazy`) and the rest through `introspect_schema`.
+    /// Loads the initial catalog for a newly opened connection.
+    ///
+    /// Drivers for large databases may load only the default schema initially (see `SchemaCatalog::lazy`)
+    /// and fetch the remainder on-demand through [`introspect_schema`](Self::introspect_schema).
+    ///
+    /// # Returns
+    ///
+    /// Initial [`SchemaCatalog`] ready for immediate autocompletion and sidebar presentation.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if catalog initialization fails.
     async fn load_catalog(&self) -> Result<SchemaCatalog, DbError> {
         self.introspect().await
     }
 
-    /// One schema's tables
+    /// Introspects table structures within a specific schema.
+    ///
+    /// # Arguments
+    ///
+    /// * `schema` - Unquoted or quoted schema name to inspect.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`TableSchema`] items belonging to the requested schema.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if schema query fails.
     async fn introspect_schema(&self, schema: &str) -> Result<Vec<TableSchema>, DbError> {
         Ok(self
             .introspect()
@@ -346,12 +408,43 @@ pub trait DatabaseSession: Send + Sync {
             .collect())
     }
 
-    /// Executes an arbitrary SQL query or statement
+    /// Executes an arbitrary SQL query or command eagerly.
+    ///
+    /// Buffers up to [`MAX_ROWS`] rows in a columnar [`RowBuffer`] and computes execution duration.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - SQL statement string to execute against the session.
+    ///
+    /// # Returns
+    ///
+    /// A complete [`QueryResult`] containing columns, rows, rows affected, and duration.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError::QueryError`] if the database returns an execution error.
+    /// * [`DbError::ConnectionLost`] if the connection terminates mid-execution.
     async fn execute(&self, sql: &str) -> Result<QueryResult, DbError>;
 
-    /// Executes a statement and streams row chunks via `tx` as they arrive from the database cursor.
-    /// Drivers can stream directly from their wire protocol / cursor; the default implementation
-    /// runs `execute(sql)` and emits the result as chunk(s).
+    /// Executes a statement and streams row chunks via an mpsc channel as they arrive from the cursor.
+    ///
+    /// Drivers can stream directly from their wire protocol cursor; the default implementation
+    /// runs `execute(sql)` eagerly and emits the result as chunk(s).
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - Statement string to execute.
+    /// * `chunk_size` - Maximum number of rows to package into each [`QueryChunk`].
+    /// * `tx` - Asynchronous channel sender receiving yielded chunks or stream errors.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` when execution and streaming finish successfully.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError::QueryError`] if execution fails.
+    /// * [`DbError::ConnectionLost`] if the network cursor drops during streaming.
     async fn execute_stream(
         &self,
         sql: &str,
@@ -400,17 +493,58 @@ pub trait DatabaseSession: Send + Sync {
         Ok(())
     }
 
-    /// Like `execute`, but not recorded in the activity log (background monitoring polls)
+    /// Executes a SQL statement quietly without appending it to the user activity history.
+    ///
+    /// Suitable for internal background polling (e.g. server monitor heartbeats or transaction status queries).
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - SQL statement string to execute quietly.
+    ///
+    /// # Returns
+    ///
+    /// A [`QueryResult`] containing the query outcome.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if execution fails.
     async fn execute_quiet(&self, sql: &str) -> Result<QueryResult, DbError> {
         self.execute(sql).await
     }
 
-    /// Applies pending edits atomically (E4-E6). `table` is the quoted, schema-qualified name.
-    /// Fails with `ConcurrentModification` if any statement doesn't affect exactly one row.
+    /// Applies in-memory pending grid edits atomically using optimistic concurrency checks.
+    ///
+    /// Emits parameterized UPDATE, INSERT, and DELETE statements wrapped in a transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - Quoted, schema-qualified target table name.
+    /// * `changes` - Staged cell edits, inserted rows, and deleted rows.
+    ///
+    /// # Returns
+    ///
+    /// The total count of modified rows upon successful commit.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError::MissingPrimaryKey`] if target table lacks a unique primary key identifier.
+    /// * [`DbError::ConcurrentModification`] if a row was updated or removed by an external actor.
+    /// * [`DbError::QueryError`] if a database constraint check fails.
     async fn apply_edits(&self, table: &str, changes: &PendingChanges) -> Result<usize, DbError>;
 
-    /// DDL and indexes for a table's Structure and DDL views. The default rebuilds `CREATE TABLE`
-    /// from the catalog; drivers that can do better (stored DDL, indexes, constraints) override it.
+    /// Fetches DDL and index metadata for structure and schema inspect views.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - Target table schema reference.
+    ///
+    /// # Returns
+    ///
+    /// A [`TableInfo`] struct populated with DDL strings, index descriptors, and constraint rules.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if database metadata queries fail.
     async fn table_info(&self, table: &TableSchema) -> Result<TableInfo, DbError> {
         Ok(TableInfo {
             ddl: table.create_sql(self.dialect()),
@@ -419,12 +553,37 @@ pub trait DatabaseSession: Send + Sync {
         })
     }
 
-    /// Functions, sequences, triggers and types in `schema`. Fetched when the schema is expanded.
+    /// Fetches auxiliary schema objects (functions, sequences, triggers, types) in a schema.
+    ///
+    /// # Arguments
+    ///
+    /// * `schema` - Target schema name.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`SchemaObject`] descriptors.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if object catalog query fails.
     async fn objects(&self, _schema: &str) -> Result<Vec<SchemaObject>, DbError> {
         Ok(Vec::new())
     }
 
-    /// The definition of one of `objects`, as SQL that would recreate it
+    /// Fetches SQL DDL script to recreate a specific schema object.
+    ///
+    /// # Arguments
+    ///
+    /// * `schema` - Parent schema name.
+    /// * `obj` - Target schema object reference.
+    ///
+    /// # Returns
+    ///
+    /// SQL source DDL defining the object.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if no definition is available or query fails.
     async fn object_ddl(&self, _schema: &str, obj: &SchemaObject) -> Result<String, DbError> {
         Err(DbError::Internal(format!(
             "no definition available for {}",
@@ -432,22 +591,33 @@ pub trait DatabaseSession: Send + Sync {
         )))
     }
 
-    /// Whole-database dump, when the database supports one
+    /// Returns an optional database dumper interface for whole-database exports.
     fn dumper(&self) -> Option<&dyn crate::dump::Dumper> {
         None
     }
 
-    /// Server monitoring (activity, locks, logs), when the database has a server to watch
+    /// Returns an optional server monitor interface (active connections, locks, storage metrics).
     fn monitor(&self) -> Option<&dyn crate::monitor::Monitor> {
         None
     }
 
+    /// Returns a reference to the session's transaction state tracker.
     fn tx(&self) -> &TxState;
 
+    /// Returns true if an uncommitted transaction is currently open on this session.
     fn in_transaction(&self) -> bool {
         self.tx().open()
     }
 
+    /// Commits the active transaction.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` upon successful commit.
+    ///
+    /// # Errors
+    ///
+    /// * [`DbError`] if commit fails.
     async fn commit(&self) -> Result<(), DbError> {
         self.execute("COMMIT").await.map(|_| ())
     }

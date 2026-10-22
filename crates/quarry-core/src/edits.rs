@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! In-memory staging of table grid mutations, optimistic concurrency checks, and SQL generation.
+//!
+//! Provides [`PendingChanges`], [`PendingCellEdit`], [`PendingRowInsert`], and [`PendingRowDelete`]
+//! allowing users to modify table cells, insert new rows, and mark records for deletion, with
+//! visual SQL preview before atomic execution against the target database.
+
 use crate::dialect::{Ansi, Dialect};
 use crate::value::DbValue;
 use std::collections::HashMap;
@@ -8,29 +14,43 @@ use std::collections::HashMap;
 /// A row's identity: its primary-key columns and their values as loaded.
 pub type RowKey = Vec<(String, DbValue)>;
 
+/// Staged edit to a single table cell.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingCellEdit {
+    /// Identifying primary key values for the row being modified.
     pub pks: RowKey,
+    /// Target column name.
     pub column_name: String,
+    /// Snapshot of the cell value prior to modification (used for optimistic concurrency verification).
     pub old_value: DbValue,
+    /// Newly entered value.
     pub new_value: DbValue,
 }
 
+/// Staged insertion of a new row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingRowInsert {
+    /// Temporary UI-allocated identifier for tracking uncommitted rows.
     pub temp_id: String,
+    /// Column name to new value mapping.
     pub values: HashMap<String, DbValue>,
 }
 
+/// Staged deletion of an existing row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingRowDelete {
+    /// Identifying primary key values for the target row to delete.
     pub pks: RowKey,
 }
 
+/// Aggregated set of uncommitted table changes staged in the data grid.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PendingChanges {
+    /// Pending column cell updates.
     pub cell_edits: Vec<PendingCellEdit>,
+    /// Pending newly inserted rows.
     pub row_inserts: Vec<PendingRowInsert>,
+    /// Pending row deletions.
     pub row_deletes: Vec<PendingRowDelete>,
 }
 

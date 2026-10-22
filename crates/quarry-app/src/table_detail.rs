@@ -191,7 +191,7 @@ impl QuarryWindow {
                     h_flex().items_center().px_3().py_1().justify_end().child(
                         zbutton("ddl-to-query")
                             .pad_xs()
-                            .label("Open in Query Tab")
+                            .label("Open in query tab")
                             .ghost()
                             .small()
                             .on_click({

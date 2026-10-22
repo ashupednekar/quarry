@@ -9,7 +9,11 @@ use crate::schema::ColumnType;
 use crate::session::{DatabaseSession, DbError};
 use crate::value::DbValue;
 
-/// Creates `table` in `schema`, exercises it, and drops it again
+/// Verifies that a [`DatabaseSession`] conforms to Quarry's full driver contract.
+///
+/// Exercises table creation, column type mappings, primary key introspection, single-schema
+/// and lazy-catalog loading, CRUD operations, atomic pending cell edits with optimistic locking,
+/// unique indexes, triggers, and result truncation behavior against `schema`.
 pub async fn check(s: &dyn DatabaseSession, schema: &str) {
     let d = s.dialect();
     let t = d.qualified(schema, "quarry_conformance");

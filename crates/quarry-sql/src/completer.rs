@@ -1,24 +1,40 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Intelligent schema-aware autocompletion and static analysis engine.
+//!
+//! Provides SQL keyword suggestions, catalog table and column resolution, CTE expansion,
+//! subquery column projection, automatic foreign-key join condition generation, smart table aliasing,
+//! match scoring with historical usage ranking, and query static linting.
+
 use quarry_core::{SchemaCatalog, TableSchema};
 use serde::{Deserialize, Serialize};
 
+/// Type classification for completion candidates shown in the editor popup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompletionKind {
+    /// SQL language keywords (`SELECT`, `WHERE`, `JOIN`, etc.).
     Keyword,
+    /// Database table or view names from the catalog.
     Table,
+    /// Column names from tables, views, CTEs, or subqueries.
     Column,
+    /// Database schema names.
     Schema,
 }
 
+/// A single completion proposal presented to the user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompletionCandidate {
+    /// Replacement text inserted upon selection.
     pub label: String,
+    /// Category of completion candidate.
     pub kind: CompletionKind,
+    /// Contextual metadata (e.g. data type, primary key flag, source table or CTE).
     pub detail: Option<String>,
 }
 
+/// Autocompletion engine coordinating catalog introspection with query AST/token context.
 pub struct SchemaCompleter;
 
 const KEYWORDS: &[&str] = &[
@@ -111,8 +127,9 @@ pub struct TableRef<'a> {
     pub name: String,
     /// Byte range of the name in the statement
     pub range: std::ops::Range<usize>,
+    /// Explicit or inferred alias (e.g. `u` in `users u`).
     pub alias: Option<String>,
-    /// None when the catalog has no such table
+    /// Resolved catalog table schema reference, if found in the catalog.
     pub table: Option<&'a TableSchema>,
 }
 
@@ -132,10 +149,11 @@ impl TableRef<'_> {
 /// A common table expression (CTE) defined in a statement with its projected output columns
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CteSchema {
+    /// CTE alias or declared name (e.g. `recent_orders` in `WITH recent_orders AS (...)`).
     pub name: String,
+    /// Projected output columns and their inferred details `(column_name, detail)`.
     pub columns: Vec<(String, String)>,
 }
-
 
 /// Identifier-ish tokens (`a.b`, `"x"`), commas and parens, with byte ranges; skips strings and comments
 fn tokens(sql: &str) -> Vec<(&str, std::ops::Range<usize>)> {
@@ -416,8 +434,9 @@ pub fn extract_select_columns(
                     for c in &t.columns {
                         out.push((c.name.clone(), c.raw_type_name.to_lowercase()));
                     }
-                } else if let Some(cte) =
-                    known_ctes.iter().find(|c| c.name.eq_ignore_ascii_case(&r.name))
+                } else if let Some(cte) = known_ctes
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(&r.name))
                 {
                     for (c_name, c_type) in &cte.columns {
                         out.push((c_name.clone(), c_type.clone()));
@@ -505,7 +524,9 @@ pub fn extract_ctes(stmt: &str, catalog: &SchemaCatalog) -> Vec<CteSchema> {
         }
 
         if toks.get(i).is_some_and(|(t, _)| is_kw(t, "not"))
-            && toks.get(i + 1).is_some_and(|(t, _)| is_kw(t, "materialized"))
+            && toks
+                .get(i + 1)
+                .is_some_and(|(t, _)| is_kw(t, "materialized"))
         {
             i += 2;
         } else if toks.get(i).is_some_and(|(t, _)| is_kw(t, "materialized")) {
@@ -653,7 +674,6 @@ pub fn subquery_columns(
         Some(cols)
     }
 }
-
 
 /// The table an identifier qualifier means in this statement: an alias, a table name, or `schema.table`
 pub fn resolve_qualifier<'a>(
@@ -805,8 +825,31 @@ fn find_fk_between<'a>(
 }
 
 impl SchemaCompleter {
-    /// Best matches first: prefix, then substring, then letters in order (`cid` → `customer_id`).
-    /// Ties keep the scope order (columns in scope, keywords, tables…).
+    /// Generates ranked completion proposals for the current editor cursor offset.
+    ///
+    /// Ranks candidates using prefix matching, substring matching, and subsequence matching.
+    /// Ties preserve semantic scope order (columns in active query scope, SQL keywords, catalog tables).
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - Full SQL buffer text.
+    /// * `cursor_offset` - Zero-based byte offset of the cursor.
+    /// * `catalog` - Reference to the introspected [`SchemaCatalog`].
+    ///
+    /// # Returns
+    ///
+    /// A vector of ranked [`CompletionCandidate`] items.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use quarry_core::SchemaCatalog;
+    /// use quarry_sql::SchemaCompleter;
+    ///
+    /// let catalog = SchemaCatalog::default();
+    /// let candidates = SchemaCompleter::complete("SEL", 3, &catalog);
+    /// assert!(candidates.iter().any(|c| c.label == "SELECT"));
+    /// ```
     pub fn complete(
         sql: &str,
         cursor_offset: usize,
@@ -815,7 +858,18 @@ impl SchemaCompleter {
         Self::complete_with_usage(sql, cursor_offset, catalog, None)
     }
 
-    /// Complete with frequency usage ranking as a tiebreaker for equal match scores.
+    /// Generates completion proposals with historical usage frequency ranking as a tiebreaker.
+    ///
+    /// # Arguments
+    ///
+    /// * `sql` - Full SQL text in editor.
+    /// * `cursor_offset` - Current cursor position as a byte offset.
+    /// * `catalog` - Current [`SchemaCatalog`].
+    /// * `usage` - Optional map of completion label to historical invocation count.
+    ///
+    /// # Returns
+    ///
+    /// A vector of [`CompletionCandidate`] items sorted by match quality and frequency.
     pub fn complete_with_usage(
         sql: &str,
         cursor_offset: usize,
@@ -1475,7 +1529,9 @@ impl SchemaCompleter {
                 }),
         );
         // Columns from anywhere only while nothing is in scope yet (`SELECT em|` before FROM is typed)
-        if refs.iter().all(|r| r.table.is_none() && !ctes.iter().any(|c| c.name.eq_ignore_ascii_case(&r.name))) {
+        if refs.iter().all(|r| {
+            r.table.is_none() && !ctes.iter().any(|c| c.name.eq_ignore_ascii_case(&r.name))
+        }) {
             for t in &catalog.tables {
                 for c in t.columns.iter().filter(|c| starts(&c.name)) {
                     if !out
@@ -1557,8 +1613,19 @@ pub fn mentioned_unloaded(sql: &str, catalog: &SchemaCatalog) -> Vec<String> {
         .collect()
 }
 
-/// Names the catalog doesn't know: tables in FROM/JOIN and `alias.column` references.
-/// Returns byte ranges into `sql` with a message. Skips CTE names, which aren't in the catalog.
+/// Statically lints SQL text against the loaded schema catalog.
+///
+/// Identifies invalid table names, non-existent column projections, and unknown aliases.
+/// Safely skips CTE names defined in `WITH` clauses and unexpanded lazy schemas.
+///
+/// # Arguments
+///
+/// * `sql` - SQL script or statement text to lint.
+/// * `catalog` - Reference to active [`SchemaCatalog`].
+///
+/// # Returns
+///
+/// A vector of pairs `(byte_range, diagnostic_message)` highlighting error spans in the query.
 pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, String)> {
     if catalog.tables.is_empty() {
         return vec![]; // not connected, or nothing loaded yet
@@ -1577,10 +1644,9 @@ pub fn lint(sql: &str, catalog: &SchemaCatalog) -> Vec<(std::ops::Range<usize>, 
                 .rsplit_once('.')
                 .is_some_and(|(schema, _)| !catalog.is_loaded(schema))
         };
-        for r in refs
-            .iter()
-            .filter(|r| r.table.is_none() && !cte_names.contains(&r.name.to_lowercase()) && !pending(r))
-        {
+        for r in refs.iter().filter(|r| {
+            r.table.is_none() && !cte_names.contains(&r.name.to_lowercase()) && !pending(r)
+        }) {
             out.push((
                 stmt.start + r.range.start..stmt.start + r.range.end,
                 format!("Unknown table `{}`", r.name),
@@ -1983,7 +2049,10 @@ mod tests {
         assert_eq!(labels("select * from customers AS |")[0], "c");
         assert_eq!(labels("select * from orders |")[0], "o");
         // Colliding alias increments suffix
-        assert_eq!(labels("select * from customers c join customers |")[0], "c2");
+        assert_eq!(
+            labels("select * from customers c join customers |")[0],
+            "c2"
+        );
     }
 
     #[test]
@@ -2014,12 +2083,17 @@ mod tests {
             ["email"]
         );
         // CTE suggested in FROM
-        assert!(labels("with my_cte as (select id from customers) select * from my_|").contains(&"my_cte".to_string()));
+        assert!(
+            labels("with my_cte as (select id from customers) select * from my_|")
+                .contains(&"my_cte".to_string())
+        );
         // Smart alias generated for CTE
-        assert_eq!(labels("with my_cte as (select id from customers) select * from my_cte |")[0], "mc");
+        assert_eq!(
+            labels("with my_cte as (select id from customers) select * from my_cte |")[0],
+            "mc"
+        );
     }
 }
-
 
 #[cfg(test)]
 mod usage_tests {

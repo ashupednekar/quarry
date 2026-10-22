@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Database schema introspection catalog, table definitions, and type mapping.
+//!
+//! Provides [`SchemaCatalog`] representing the full metadata tree of a connected database,
+//! [`TableSchema`], [`ColumnSchema`], and normalized [`ColumnType`] mappings across database engines.
+
 use serde::{Deserialize, Serialize};
 
+/// Normalized column data type category across all database dialects.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ColumnType {
     Integer,
@@ -56,33 +62,53 @@ impl ColumnType {
     }
 }
 
+/// Metadata description of an individual table or view column.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSchema {
+    /// Column name as reported by the database engine.
     pub name: String,
+    /// Normalized cross-engine type category.
     pub data_type: ColumnType,
+    /// Raw database engine data type (e.g. `varchar(255)`, `int4`, `number(10,2)`).
     pub raw_type_name: String,
+    /// True if the column allows NULL values.
     pub is_nullable: bool,
+    /// True if this column is part of the table's primary key.
     pub is_primary_key: bool,
+    /// Default column expression if configured.
     pub default_value: Option<String>,
+    /// One-based column order in the table schema definition.
     pub ordinal_position: usize,
 }
 
+/// Introspected foreign key reference between two table columns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ForeignKeyRef {
+    /// Originating column in this table.
     pub from_column: String,
+    /// Target schema name (empty if within the same schema).
     #[serde(default)]
     pub to_schema: String,
+    /// Referenced target table name.
     pub to_table: String,
+    /// Referenced target column name.
     pub to_column: String,
 }
 
+/// Metadata description of a single database table or view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableSchema {
+    /// Containing schema name.
     pub schema_name: String,
+    /// Table or view name.
     pub table_name: String,
+    /// True if this entry represents a database view rather than a physical table.
     pub is_view: bool,
+    /// Ordered list of columns belonging to the table.
     pub columns: Vec<ColumnSchema>,
+    /// List of column names participating in the primary key.
     pub primary_keys: Vec<String>,
+    /// Foreign key relationships declared on this table.
     pub foreign_keys: Vec<ForeignKeyRef>,
 }
 
@@ -240,14 +266,20 @@ pub fn labelled_row(r: &crate::session::QueryResult) -> Vec<(String, String)> {
         .collect()
 }
 
+/// In-memory metadata catalog describing all discovered database schemas, tables, and views.
+///
+/// Supports partial, lazy loading via `unloaded` for high-density enterprise environments
+/// where loading all schemas eagerly would introduce unacceptable startup latency.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SchemaCatalog {
+    /// List of all schema names present in the database.
     pub schemas: Vec<String>,
+    /// Collection of table and view definitions loaded so far.
     pub tables: Vec<TableSchema>,
-    /// Where unqualified names resolve (Postgres: current_schema(), SQLite: main)
+    /// Default schema context where unqualified table names resolve (e.g. `public`, `main`).
     #[serde(default)]
     pub default_schema: Option<String>,
-    /// Schemas whose tables aren't loaded yet (big databases load them when opened). Empty: all loaded.
+    /// Schemas whose table definitions have not yet been introspected.
     #[serde(default)]
     pub unloaded: Vec<String>,
 }

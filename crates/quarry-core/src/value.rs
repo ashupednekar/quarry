@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Universal SQL data representation across all supported database drivers.
+//!
+//! Provides [`DbValue`] representing scalar primitives, strings, arbitrary-precision decimals,
+//! timestamps, JSON documents, binary blobs, and raw SQL expressions.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
+/// Canonical dynamic value representation for all database column cells.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DbValue {
     Null,

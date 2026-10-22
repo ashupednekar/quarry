@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Column-oriented in-memory storage for high-performance query result sets.
+//!
+//! Provides [`RowBuffer`], storing cell values in contiguous per-column buffers with zero-copy
+//! permutation sorting and fast row/column slicing.
+
 use crate::value::DbValue;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -24,7 +29,15 @@ pub struct RowBuffer {
 }
 
 impl RowBuffer {
-    /// Creates an empty row buffer with the given number of columns.
+    /// Creates an empty row buffer with the specified column count.
+    ///
+    /// # Arguments
+    ///
+    /// * `num_columns` - The number of columnar vectors to initialize.
+    ///
+    /// # Returns
+    ///
+    /// An empty [`RowBuffer`] configured for `num_columns` columns.
     pub fn new(num_columns: usize) -> Self {
         Self {
             row_count: 0,
@@ -34,6 +47,17 @@ impl RowBuffer {
     }
 
     /// Creates an empty row buffer with preallocated capacity for rows.
+    ///
+    /// Pre-allocating column vectors avoids re-allocations during row batch accumulation.
+    ///
+    /// # Arguments
+    ///
+    /// * `num_columns` - The number of columnar vectors to initialize.
+    /// * `row_capacity` - The initial row capacity to reserve per column vector.
+    ///
+    /// # Returns
+    ///
+    /// A pre-allocated empty [`RowBuffer`].
     pub fn with_capacity(num_columns: usize, row_capacity: usize) -> Self {
         Self {
             row_count: 0,
@@ -45,6 +69,14 @@ impl RowBuffer {
     }
 
     /// Converts a row-major 2D vector into a column-oriented `RowBuffer`.
+    ///
+    /// # Arguments
+    ///
+    /// * `rows` - Vector of rows, where each row is a `Vec<DbValue>`.
+    ///
+    /// # Returns
+    ///
+    /// A [`RowBuffer`] containing all row values organized into columnar storage.
     pub fn from_rows(rows: Vec<Vec<DbValue>>) -> Self {
         if rows.is_empty() {
             return Self::default();
@@ -81,7 +113,11 @@ impl RowBuffer {
         self.columns.len()
     }
 
-    /// Appends a single row of values to the column vectors.
+    /// Appends a single row of values to the columnar storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `row` - Iterator yielding cell values for each column. Missing columns are padded with [`DbValue::Null`].
     pub fn push_row(&mut self, row: impl IntoIterator<Item = DbValue>) {
         let mut row_iter = row.into_iter();
         if self.columns.is_empty() {
@@ -187,8 +223,14 @@ impl RowBuffer {
         self.columns.get(col).map(|c| c.as_slice())
     }
 
-    /// Sorts the display order of rows by the specified column using `cmp` without
-    /// moving or cloning column data.
+    /// Sorts the display order of rows by the specified column using a comparator.
+    ///
+    /// Updates an internal permutation vector without moving, copying, or cloning columnar data.
+    ///
+    /// # Arguments
+    ///
+    /// * `col` - Zero-based index of the column to sort on.
+    /// * `cmp` - Comparison function comparing two cell values.
     pub fn sort_by<F>(&mut self, col: usize, cmp: F)
     where
         F: Fn(&DbValue, &DbValue) -> Ordering,

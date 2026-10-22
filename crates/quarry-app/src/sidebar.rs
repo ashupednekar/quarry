@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Database explorer sidebar tree, connection switching, and schema object navigation.
+//!
+//! Renders the hierarchical tree of saved connections, database schemas, tables, views,
+//! functions, procedures, sequences, and triggers.
+
 use crate::object_menu::DbObject;
 use crate::state::{AppState, Environment, Tab};
 use crate::theme::Theme;
@@ -80,7 +85,7 @@ impl Sidebar {
                     .child(
                         zbutton("sidebar-empty-add")
                             .pad_sm()
-                            .label("Add Connection")
+                            .label("Add connection")
                             .small()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_add_conn(window, cx)

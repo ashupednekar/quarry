@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Interactive data grid component, cell editors, aggregates, and table source paging.
+//!
+//! Provides the [`ResultSet`] data delegate backing GPUI data tables, managing in-place cell editing,
+//! multi-cell selection ranges, statistical aggregates (sum/avg/min/max/count), transposition,
+//! undo/redo stacks for staged edits, foreign-key navigations, and quick filtering.
+
 use crate::runtime::run_db;
 use crate::theme::Theme;
 use crate::ui::*;
@@ -697,7 +703,7 @@ impl ResultSet {
                     .item(item("Filter: IS NOT NULL", |rs, c, w, cx| {
                         rs.apply_header_null_filter(c, false, w, cx);
                     }))
-                    .item(item("Filter Builder...", |rs, c, w, cx| {
+                    .item(item("Filter Builder…", |rs, c, w, cx| {
                         rs.open_filter_builder_for_col(c, w, cx);
                     }))
             })
@@ -1343,12 +1349,7 @@ fn render_transposed_view<T: 'static>(
                                     });
                                 }),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_muted)
-                                .child("↑/↓"),
-                        ),
+                        .child(div().text_xs().text_color(theme.text_muted).child("↑/↓")),
                 )
                 // Center: Column search filter
                 .child(
@@ -1572,7 +1573,9 @@ fn render_transposed_view<T: 'static>(
                                         .xsmall()
                                         .tooltip("Copy value")
                                         .on_click(move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(val_copy.clone()));
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                val_copy.clone(),
+                                            ));
                                         }),
                                 )
                                 .child(
@@ -1583,7 +1586,12 @@ fn render_transposed_view<T: 'static>(
                                         .tooltip("Inspect in Value Editor")
                                         .on_click(move |_, window, cx| {
                                             g_inspect.update(cx, |t, cx| {
-                                                t.delegate_mut().inspect(row, display_col, window, cx);
+                                                t.delegate_mut().inspect(
+                                                    row,
+                                                    display_col,
+                                                    window,
+                                                    cx,
+                                                );
                                                 cx.notify();
                                             });
                                         }),
@@ -1859,9 +1867,7 @@ fn render_json_tree<T: 'static>(
                                     }),
                             )
                         })
-                        .when(!item.is_container, |this| {
-                            this.child(div().w(px(18.0)))
-                        })
+                        .when(!item.is_container, |this| this.child(div().w(px(18.0))))
                         .when_some(item.key, |this, k| {
                             this.child(
                                 div()
@@ -1875,12 +1881,7 @@ fn render_json_tree<T: 'static>(
                                     })
                                     .child(k),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                                    .child(":"),
-                            )
+                            .child(div().text_xs().text_color(theme.text_muted).child(":"))
                         })
                         .when_some(item.summary, |this, sum| {
                             this.child(
@@ -1929,7 +1930,9 @@ fn render_json_tree<T: 'static>(
                                 .xsmall()
                                 .tooltip("Copy value")
                                 .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(raw_copy.clone()));
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        raw_copy.clone(),
+                                    ));
                                 }),
                         )
                         .child(
@@ -1939,7 +1942,9 @@ fn render_json_tree<T: 'static>(
                                 .xsmall()
                                 .tooltip(format!("Copy JSONPath ({})", path_for_copy))
                                 .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(path_for_copy.clone()));
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        path_for_copy.clone(),
+                                    ));
                                 }),
                         ),
                 )

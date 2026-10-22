@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! # Quarry SQL (`quarry-sql`)
+//!
+//! SQL statement parsing, lexing, autocomplete, static analysis, parameter binding,
+//! and AST-aware code actions for Quarry.
+//!
+//! ## Submodules
+//!
+//! - **[`splitter`]:** Semicolon and batch splitting respecting single/double quotes, dollar-quoting,
+//!   C-style / line comments, SQL Server `GO` batches, Oracle PL/SQL `/` blocks, and Tree-sitter fallback.
+//! - **[`completer`]:** Context-aware autocompletion engine resolving in-scope tables, CTEs, subquery projections,
+//!   foreign key join conditions, intelligent table aliasing, fuzzy scoring with usage frequency ranking, and static schema linting.
+//! - **[`params`]:** Parameter placeholder scanning (`:param`, `$1`) and literal binding with safe escaping.
+//! - **[`rewrites`]:** Query assist actions including `*` expansion into catalog columns, automated `LIMIT` injection,
+//!   and `EXPLAIN` wrapping.
+
 pub mod completer;
 pub mod params;
 pub mod rewrites;

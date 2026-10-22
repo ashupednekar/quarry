@@ -25,7 +25,7 @@ pub fn grid_menu(menu: PopupMenu, rs: &ResultSet) -> PopupMenu {
         .when(rs.source.is_some(), |m| {
             m.menu("Filter by Value", Box::new(FilterByValue))
                 .menu("Filter Excluding Value", Box::new(FilterExcludeValue))
-                .menu("Filter Builder...", Box::new(OpenFilterBuilder))
+                .menu("Filter Builder…", Box::new(OpenFilterBuilder))
                 .separator()
         })
         .menu("Hide Column", Box::new(HideColumn))
@@ -96,7 +96,9 @@ pub fn apply_row_action(
                 None
             }
             _ if any.is::<CopyValue>() => {
-                clipboard = if let Some(range) = rs.selected_range.as_ref().filter(|r| !r.is_single_cell()) {
+                clipboard = if let Some(range) =
+                    rs.selected_range.as_ref().filter(|r| !r.is_single_cell())
+                {
                     Some(rs.copy_range_tsv(range))
                 } else if let Some((row, col)) = target {
                     rs.cell_value(row, rs.actual(col)).0.map(|v| {

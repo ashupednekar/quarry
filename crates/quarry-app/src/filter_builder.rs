@@ -239,14 +239,8 @@ impl FilterBuilderDialog {
             .position(|c| c.eq_ignore_ascii_case(selected_col))
             .unwrap_or(0);
         let columns_list = columns.to_vec();
-        let col_state = cx.new(|cx| {
-            SelectState::new(
-                columns_list,
-                Some(IndexPath::new(col_idx)),
-                window,
-                cx,
-            )
-        });
+        let col_state =
+            cx.new(|cx| SelectState::new(columns_list, Some(IndexPath::new(col_idx)), window, cx));
 
         let op_options: Vec<String> = FilterOperator::ALL
             .iter()
@@ -256,19 +250,13 @@ impl FilterBuilderDialog {
             .iter()
             .position(|o| *o == operator)
             .unwrap_or(0);
-        let op_state = cx.new(|cx| {
-            SelectState::new(
-                op_options,
-                Some(IndexPath::new(op_idx)),
-                window,
-                cx,
-            )
-        });
+        let op_state =
+            cx.new(|cx| SelectState::new(op_options, Some(IndexPath::new(op_idx)), window, cx));
 
         let val_state = cx.new(|cx| {
             InputState::new(window, cx)
                 .default_value(value)
-                .placeholder("Value...")
+                .placeholder("Value…")
         });
 
         let mut subs = Vec::new();
@@ -292,18 +280,16 @@ impl FilterBuilderDialog {
         }));
 
         // Dropdown selection updates re-render
-        subs.push(cx.subscribe(
-            &col_state,
-            |_, _, _: &SelectEvent<Vec<String>>, cx| {
+        subs.push(
+            cx.subscribe(&col_state, |_, _, _: &SelectEvent<Vec<String>>, cx| {
                 cx.notify();
-            },
-        ));
-        subs.push(cx.subscribe(
-            &op_state,
-            |_, _, _: &SelectEvent<Vec<String>>, cx| {
+            }),
+        );
+        subs.push(
+            cx.subscribe(&op_state, |_, _, _: &SelectEvent<Vec<String>>, cx| {
                 cx.notify();
-            },
-        ));
+            }),
+        );
 
         (
             FilterRuleState {
@@ -379,7 +365,8 @@ pub fn parse_filter_expression(
         return (FilterCombineMode::And, Vec::new());
     }
 
-    let has_or = !split_top_level(trimmed, " OR ").is_empty() && trimmed.to_uppercase().contains(" OR ");
+    let has_or =
+        !split_top_level(trimmed, " OR ").is_empty() && trimmed.to_uppercase().contains(" OR ");
     let (mode, parts) = if has_or {
         (FilterCombineMode::Or, split_top_level(trimmed, " OR "))
     } else {
@@ -500,7 +487,10 @@ impl QuarryWindow {
         let (columns, current_filter) = {
             let rs = grid.read(cx).delegate();
             let cols = if let Some(src) = rs.source.as_ref() {
-                src.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+                src.columns
+                    .iter()
+                    .map(|c| c.name.clone())
+                    .collect::<Vec<_>>()
             } else if let Some(r) = rs.result() {
                 r.columns.clone()
             } else {
@@ -513,29 +503,19 @@ impl QuarryWindow {
             return;
         }
 
-        let (combine_mode, parsed_rules) =
-            parse_filter_expression(&current_filter, &columns);
+        let (combine_mode, parsed_rules) = parse_filter_expression(&current_filter, &columns);
 
         let mut rules = Vec::new();
         let mut subs = Vec::new();
 
         if !parsed_rules.is_empty() {
             for (col, op, val) in parsed_rules {
-                let (r, s) = FilterBuilderDialog::create_rule(
-                    &columns,
-                    &col,
-                    op,
-                    &val,
-                    window,
-                    cx,
-                );
+                let (r, s) = FilterBuilderDialog::create_rule(&columns, &col, op, &val, window, cx);
                 rules.push(r);
                 subs.extend(s);
             }
         } else {
-            let initial_col = preselected_col
-                .as_deref()
-                .unwrap_or_else(|| &columns[0]);
+            let initial_col = preselected_col.as_deref().unwrap_or_else(|| &columns[0]);
             let (r, s) = FilterBuilderDialog::create_rule(
                 &columns,
                 initial_col,
@@ -584,7 +564,9 @@ impl QuarryWindow {
         let dialect = self.state.dialect();
         let compiled = dialog.compile_to_sql(dialect, cx);
         if let Some(Tab::Table { filter, .. }) = self.state.active_tab() {
-            filter.clone().update(cx, |f, cx| f.set_value(&compiled, window, cx));
+            filter
+                .clone()
+                .update(cx, |f, cx| f.set_value(&compiled, window, cx));
         }
         self.refresh_active_tab(window, cx);
         self.refocus_root(window, cx);
@@ -611,7 +593,9 @@ impl QuarryWindow {
         } else {
             format!("{current} AND ({clause})")
         };
-        filter.clone().update(cx, |f, cx| f.set_value(&new_filter, window, cx));
+        filter
+            .clone()
+            .update(cx, |f, cx| f.set_value(&new_filter, window, cx));
         self.refresh_active_tab(window, cx);
         self.toast(format!("Filter added: {clause}"), false, cx);
     }
@@ -679,9 +663,11 @@ impl QuarryWindow {
             .items_center()
             .child(div().w(px(160.0)).child(Select::new(&rule.column_select)))
             .child(div().w(px(170.0)).child(Select::new(&rule.operator_select)))
-            .child(div().flex_1().when(requires_val, |d| {
-                d.child(Input::new(&rule.value_input))
-            }))
+            .child(
+                div()
+                    .flex_1()
+                    .when(requires_val, |d| d.child(Input::new(&rule.value_input))),
+            )
             .child(
                 zbutton(("delete-rule-btn", ix))
                     .icon(IconName::X)
@@ -699,7 +685,13 @@ impl QuarryWindow {
             )
     }
 
-    fn render_filter_builder_sql_preview(&self, preview_sql: &str, has_rules: bool, t: &Theme, cx: &Context<Self>) -> Div {
+    fn render_filter_builder_sql_preview(
+        &self,
+        preview_sql: &str,
+        has_rules: bool,
+        t: &Theme,
+        cx: &Context<Self>,
+    ) -> Div {
         div()
             .w_full()
             .p_3()
@@ -729,7 +721,12 @@ impl QuarryWindow {
                                 t.text_primary
                             })
                             .child(if preview_sql.is_empty() {
-                                if has_rules { "Fill in a value to see the filter" } else { "No conditions, so every row matches" }.to_string()
+                                if has_rules {
+                                    "Fill in a value to see the filter"
+                                } else {
+                                    "No conditions, so every row matches"
+                                }
+                                .to_string()
                             } else {
                                 preview_sql.to_string()
                             }),
@@ -750,7 +747,8 @@ impl QuarryWindow {
             .iter()
             .enumerate()
             .map(|(ix, rule)| self.render_filter_builder_rule_row(ix, rule, cx));
-        let preview = self.render_filter_builder_sql_preview(&preview_sql, !dialog.rules.is_empty(), &t, cx);
+        let preview =
+            self.render_filter_builder_sql_preview(&preview_sql, !dialog.rules.is_empty(), &t, cx);
 
         Some(
             crate::ui::fade_in(
@@ -857,7 +855,10 @@ mod tests {
             FilterOperator::GreaterThan.to_sql("price", "99.95"),
             "price > 99.95"
         );
-        assert_eq!(FilterOperator::IsNull.to_sql("archived_at", ""), "archived_at IS NULL");
+        assert_eq!(
+            FilterOperator::IsNull.to_sql("archived_at", ""),
+            "archived_at IS NULL"
+        );
         assert_eq!(
             FilterOperator::IsNotNull.to_sql("created_at", ""),
             "created_at IS NOT NULL"
@@ -906,7 +907,14 @@ mod tests {
         let (mode, rules) = parse_filter_expression(sql, &cols);
         assert_eq!(mode, FilterCombineMode::And);
         assert_eq!(rules.len(), 3);
-        assert_eq!(rules[0], ("name".to_string(), FilterOperator::Equals, "Alice".to_string()));
+        assert_eq!(
+            rules[0],
+            (
+                "name".to_string(),
+                FilterOperator::Equals,
+                "Alice".to_string()
+            )
+        );
         assert_eq!(
             rules[1],
             (

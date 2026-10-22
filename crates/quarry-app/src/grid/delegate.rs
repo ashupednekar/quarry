@@ -150,7 +150,11 @@ impl TableDelegate for ResultSet {
             .gap_2()
             .text_color(cx.theme().muted_foreground)
             .child(Icon::new(IconName::Inbox).size_8().opacity(0.6))
-            .child(div().text_sm().child("No rows"))
+            .child(div().text_sm().child(match &self.source {
+                Some(s) if !s.filter.trim().is_empty() => "No rows match this filter",
+                Some(_) => "This table is empty",
+                None => "The query returned no rows",
+            }))
     }
 
     fn render_td(
@@ -727,23 +731,27 @@ impl TableDelegate for ResultSet {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |table, e: &MouseDownEvent, window, cx| {
-                    table
-                        .delegate_mut()
-                        .handle_cell_mouse_down(row_ix, display_col, e.modifiers.shift);
+                    table.delegate_mut().handle_cell_mouse_down(
+                        row_ix,
+                        display_col,
+                        e.modifiers.shift,
+                    );
                     if table.delegate().inspector_open() {
-                        table.delegate_mut().inspect(row_ix, display_col, window, cx);
+                        table
+                            .delegate_mut()
+                            .inspect(row_ix, display_col, window, cx);
                     }
                     table.refresh(cx);
                 }),
             )
-            .on_mouse_move(
-                cx.listener(move |table, _, _, cx| {
-                    if table.delegate().is_dragging {
-                        table.delegate_mut().handle_cell_mouse_drag(row_ix, display_col);
-                        table.refresh(cx);
-                    }
-                }),
-            )
+            .on_mouse_move(cx.listener(move |table, _, _, cx| {
+                if table.delegate().is_dragging {
+                    table
+                        .delegate_mut()
+                        .handle_cell_mouse_drag(row_ix, display_col);
+                    table.refresh(cx);
+                }
+            }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |table, _, _, cx| {

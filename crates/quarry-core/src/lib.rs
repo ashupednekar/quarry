@@ -1,6 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! # Quarry Core (`quarry-core`)
+//!
+//! Core database abstractions, connection driver registry, and cross-engine runtime models for Quarry.
+//!
+//! ## Architecture Overview
+//!
+//! `quarry-core` serves as the engine-agnostic foundation layer of the Quarry database client:
+//!
+//! - **[`DatabaseSession`] & [`Driver`]:** Unified, asynchronous database session trait and pluggable driver
+//!   registration architecture. Each database engine (PostgreSQL, MySQL, SQLite, SQL Server, Oracle) implements
+//!   `DatabaseSession` behind Cargo feature flags.
+//! - **[`RowBuffer`]:** High-performance column-oriented in-memory storage for query results, drastically reducing
+//!   heap allocations and supporting zero-copy permutation sorting and streaming chunk consumption.
+//! - **[`DbValue`]:** Lossless universal representation of SQL scalar data types, JSON, timestamps, raw blobs, and expressions.
+//! - **[`SchemaCatalog`] & Introspection:** Comprehensive catalog model representing schemas, tables, columns, primary keys,
+//!   foreign key graphs, and triggers, featuring lazy on-demand schema loading for large production databases.
+//! - **Transactional Mutation Review ([`PendingChanges`]):** Staged cell updates, inserts, and deletes with optimistic
+//!   concurrency control against concurrent edits.
+//! - **Export, Import, Diff & Monitoring:** Universal streaming CSV/JSON export/import pipelines, live database schema diffing,
+//!   whole-database dumps, and server activity/lock/log inspection.
+
 pub mod conformance;
 pub mod conn_url;
 pub mod dialect;

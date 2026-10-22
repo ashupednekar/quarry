@@ -2,8 +2,15 @@
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 // Release builds on Windows are a GUI app: no console window alongside it
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
 #![recursion_limit = "4096"]
+
+//! # Quarry Application (`quarry-app`)
+//!
+//! Native desktop database client UI built on the GPU-accelerated [GPUI](https://www.gpui.rs) framework.
+//!
+//! Coordinates multi-connection lifecycle management, asynchronous query execution pipelines on dedicated
+//! Tokio background workers, split/tab layouts, schema browser trees, interactive columnar data grids,
+//! visual ER foreign-key relationship diagrams, query execution plans, and keyboard-driven command bars.
 
 mod add_conn_modal;
 mod bottom_panel;
@@ -272,10 +279,7 @@ impl QuarryWindow {
             InputState::new(window, cx).placeholder("Search tables, actions, or type SQL…")
         });
         // Empty by default: a blank name is filled from the address (host:port/db), never a stale "Local SQLite"
-        let conn_name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Optional")
-        });
+        let conn_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Optional"));
         let conn_path_input = cx.new(|cx| InputState::new(window, cx).default_value(":memory:"));
         let onboard_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Paste a connection URL or a SQLite file path")
@@ -856,17 +860,17 @@ impl QuarryWindow {
                                     .small()
                                     .text_color(t.text_muted),
                             )
-                            .child(
-                                div().flex_1().child(Input::new(filter).appearance(false)),
-                            )
+                            .child(div().flex_1().child(Input::new(filter).appearance(false)))
                             .child(
                                 zbutton("open-filter-builder-btn")
                                     .pad_xs()
                                     .icon(IconName::ListFilter)
-                                    .label("Filter Builder")
+                                    .label("Filter builder")
                                     .ghost()
                                     .small()
-                                    .tooltip(crate::ui::format_keys("Visual filter condition builder (⌥F)"))
+                                    .tooltip(crate::ui::format_keys(
+                                        "Visual filter condition builder (⌥F)",
+                                    ))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_filter_builder(None, window, cx);
                                     })),
@@ -1242,7 +1246,7 @@ impl QuarryWindow {
                                 .child(
                                     zbutton("close-confirm-discard")
                                         .pad_sm()
-                                        .label("Close Window")
+                                        .label("Close window")
                                         .danger()
                                         .small()
                                         .on_click(cx.listener(|this, _, window, _cx| {
@@ -2290,9 +2294,11 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(|this, _: &ExplainAnalyze, window, cx| {
                 this.start_run(RunMode::ExplainAnalyze, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &grid::OpenFilterBuilder, window, cx| {
-                this.open_filter_builder(None, window, cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &grid::OpenFilterBuilder, window, cx| {
+                    this.open_filter_builder(None, window, cx);
+                }),
+            )
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
             .on_action(cx.listener(Self::select_next_occurrence))
@@ -2409,14 +2415,12 @@ impl Render for QuarryWindow {
                                 Some((h, d)) => (h.to_string(), Some(d.to_string())),
                                 None => (msg, None),
                             };
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_0p5()
-                                .child(head)
-                                .when_some(detail, |d, raw| {
+                            v_flex().flex_1().min_w_0().gap_0p5().child(head).when_some(
+                                detail,
+                                |d, raw| {
                                     d.child(div().text_xs().text_color(t.text_muted).child(raw))
-                                })
+                                },
+                            )
                         })
                         .when_some(self.toast_reveal.clone(), |this, path| {
                             this.child(
@@ -3024,6 +3028,9 @@ fn main() {
             theme::load_fonts(cx);
             menus::bind_keys(cx);
             ui::init_modal_focus(cx);
+            // gpui renders animations at their end state when this is set; it doesn't read the OS itself
+            // ponytail: read once at launch, toggling Reduce Motion needs a restart
+            cx.set_reduce_motion(ui::os_reduce_motion());
             grid::bind_keys(cx);
             menus::set_app_menus(cx);
             let options = WindowOptions {

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! SQL query editor view, toolbar controls, gutter run buttons, and modal vim mode integration.
+//!
+//! Renders the primary text editor with schema switching, row limits, soft-wrapping toggles,
+//! line numbering, execution controls, and Vim state indicators.
+
 use crate::state::Environment;
 use crate::theme::Theme;
 use crate::ui::*;
@@ -11,6 +16,7 @@ use gpui::component::input::{Editor, EditorState};
 use gpui::component::{ActiveTheme, Icon, Sizable};
 use gpui::*;
 
+/// Renders the SQL query editor pane with interactive toolbars and execution controls.
 pub struct QueryEditor;
 
 const RUN_COL_W: f32 = 18.0;

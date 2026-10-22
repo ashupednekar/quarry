@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Color palettes, syntax tokens, theme loading, and system appearance detection.
+//!
+//! Provides [`Theme`] definitions for Quarry Dark, Quarry Light, Graphite, Paper,
+//! and user-customizable JSON themes.
+
 use gpui::*;
 
 #[allow(dead_code)]
@@ -59,13 +64,13 @@ impl Theme {
             border: rgb(0x25272c),
             text_primary: rgb(0xe6e7ea),
             text_secondary: rgb(0xa3a6ae),
-            text_muted: rgb(0x6b6f79),
+            text_muted: rgb(0x858890),
             accent: rgb(0x7b93ff),
             accent_hover: rgb(0x98aaff),
             success: rgb(0x4cc38a),
             warning: rgb(0xe5a84b),
             danger: rgb(0xef6b73),
-            null_token: rgb(0x5d616b),
+            null_token: rgb(0x7b7e86),
             pending_cell_bg: rgba(0xe5a84b38),
         }
     }
@@ -83,14 +88,14 @@ impl Theme {
             border: rgb(0xe3e3e7),
             text_primary: rgb(0x1b1c20),
             text_secondary: rgb(0x52555e),
-            text_muted: rgb(0x8a8d96),
+            text_muted: rgb(0x686a71),
             accent: rgb(0x4a63e8),
             accent_hover: rgb(0x3a52d4),
             success: rgb(0x1f9a62),
-            warning: rgb(0xb4761c),
+            warning: rgb(0xa06919),
             danger: rgb(0xd2414c),
-            null_token: rgb(0x9a9da5),
-            pending_cell_bg: rgba(0xb4761c33),
+            null_token: rgb(0x73757b),
+            pending_cell_bg: rgba(0xa0691933),
         }
     }
 
@@ -107,7 +112,7 @@ impl Theme {
             border: rgb(0x1f1f21),
             text_primary: rgb(0xe8e6e3),
             text_secondary: rgb(0xa29f99),
-            text_muted: rgb(0x6c6a66),
+            text_muted: rgb(0x858380),
             accent: rgb(0xf2b544),
             accent_hover: rgb(0xf7c96f),
             ..Self::dark()
@@ -127,7 +132,7 @@ impl Theme {
             border: rgb(0xe2ded3),
             text_primary: rgb(0x23211c),
             text_secondary: rgb(0x5c574c),
-            text_muted: rgb(0x8f897c),
+            text_muted: rgb(0x6a655c),
             accent: rgb(0x2f5bb7),
             accent_hover: rgb(0x244a9b),
             ..Self::light()

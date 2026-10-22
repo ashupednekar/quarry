@@ -125,7 +125,7 @@ impl CrashModal {
                                 .child(
                                     zbutton("btn-crash-copy")
                                         .icon(IconName::Copy)
-                                        .label("Copy Report")
+                                        .label("Copy report")
                                         .ghost()
                                         .small()
                                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -157,7 +157,7 @@ impl CrashModal {
                                 .items_center()
                                 .child(
                                     zbutton("btn-crash-clear")
-                                        .label("Clear Session")
+                                        .label("Clear session")
                                         .ghost()
                                         .small()
                                         .tooltip("Clear previous session tabs (Safe Mode)")
