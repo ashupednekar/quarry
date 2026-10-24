@@ -9,7 +9,7 @@
 <meta property="og:description" content="Instant startup, a GPU-rendered results grid, and no background processes. Free and open source.">
 <meta property="og:image" content="https://thekodeking.github.io/quarry/screenshot.png">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#0d0e12">
+<meta name="theme-color" content="#111214">
 <script>document.documentElement.classList.add('js')</script>
 <link rel="icon" href="app-icon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,25 +20,27 @@
 /* Hallmark · genre: modern-minimal · macrostructure: workbench · theme: cobalt-dark · nav: N5 · footer: Ft2 · slop: pass (42–45) · contrast: pass (40–41) */
 
 :root {
-  --color-paper: #0b0c10;
-  --color-paper-2: #12141a;
-  --color-paper-3: #181b24;
-  --color-paper-elevated: #1f232f;
-  
-  --color-ink: #f0f2f7;
-  --color-ink-2: #9aa2b5;
-  --color-muted: #7d8497;
-  
-  --color-border: rgba(255, 255, 255, 0.08);
-  --color-border-strong: rgba(255, 255, 255, 0.16);
+  /* Quarry Dark, from crates/quarry-app/src/theme.rs */
+  --color-paper: #111214;          /* bg_app */
+  --color-paper-2: #17181b;        /* bg_panel */
+  --color-paper-3: #1e2024;        /* bg_surface */
+  --color-paper-elevated: #24262b; /* bg_hover */
+
+  --color-ink: #e6e7ea;            /* text_primary */
+  --color-ink-2: #a3a6ae;          /* text_secondary */
+  --color-muted: #858890;          /* text_muted */
+
+  --color-border: #25272c;         /* border */
+  --color-border-strong: rgba(255, 255, 255, 0.12);
   --color-border-subtle: rgba(255, 255, 255, 0.04);
-  
-  --color-accent: #4e82ee;
-  --color-accent-subtle: rgba(78, 130, 238, 0.12);
-  --color-accent-ink: #ffffff;
-  
-  --color-status-success: #34d399;
-  --color-status-warn: #fbbf24;
+
+  --color-accent: #7b93ff;         /* accent */
+  --color-accent-hover: #98aaff;   /* accent_hover */
+  --color-accent-subtle: rgba(123, 147, 255, 0.12);
+  --color-accent-ink: #111214;     /* on_accent: dark themes put their background on accent fills */
+
+  --color-status-success: #4cc38a; /* success */
+  --color-status-warn: #e5a84b;    /* warning */
   
   --font-display: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
   --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -127,7 +129,7 @@ code, kbd, pre {
   position: sticky;
   top: 0;
   z-index: 100;
-  background-color: rgba(11, 12, 16, 0.82);
+  background-color: rgba(17, 18, 20, 0.82);
   backdrop-filter: blur(12px) saturate(160%);
   -webkit-backdrop-filter: blur(12px) saturate(160%);
   border-bottom: 1px solid var(--color-border);
@@ -268,26 +270,15 @@ button:focus-visible,
 }
 
 .btn-primary {
-  background-color: var(--color-ink);
-  color: var(--color-paper);
-  border-color: var(--color-ink);
+  background-color: var(--color-accent);
+  color: var(--color-accent-ink);
+  border-color: var(--color-accent);
   font-weight: 600;
 }
 
 .btn-primary:hover {
-  background-color: #ffffff;
-  border-color: #ffffff;
-}
-
-.btn-accent {
-  background-color: var(--color-accent);
-  color: var(--color-accent-ink);
-  border-color: var(--color-accent);
-}
-
-.btn-accent:hover {
-  background-color: #3f73dd;
-  border-color: #3f73dd;
+  background-color: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
 }
 
 .btn-sm {
@@ -408,7 +399,7 @@ h1 {
   position: absolute;
   inset: -3% -3% 15%;
   z-index: -1;
-  background: radial-gradient(ellipse at 50% 35%, rgba(78, 130, 238, 0.32), transparent 72%);
+  background: radial-gradient(ellipse at 50% 35%, rgba(123, 147, 255, 0.32), transparent 72%);
   filter: blur(40px);
   pointer-events: none;
 }
@@ -502,7 +493,7 @@ h2 {
   border-bottom: 1px solid var(--color-border);
   color: inherit;
   background:
-    radial-gradient(ellipse at 20% 0%, rgba(78, 130, 238, 0.12), transparent 60%),
+    radial-gradient(ellipse at 20% 0%, rgba(123, 147, 255, 0.12), transparent 60%),
     var(--color-paper);
   cursor: zoom-in;
   overflow: hidden;
@@ -566,8 +557,8 @@ h2 {
 }
 
 .tradeoff-card.is-not {
-  border-color: rgba(251, 191, 36, 0.2);
-  background-color: rgba(251, 191, 36, 0.02);
+  border-color: rgba(229, 168, 75, 0.2);
+  background-color: rgba(229, 168, 75, 0.02);
 }
 
 .tradeoff-title {
@@ -707,7 +698,7 @@ h2 {
 }
 
 .dl-os a,
-.dl-foot a {
+.dl-status a {
   color: var(--color-ink);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -750,19 +741,12 @@ h2 {
   color: var(--color-ink-2);
 }
 
-.dl-pending a {
-  color: var(--color-ink);
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: var(--color-border-strong);
-}
-
 .dl-yours {
   margin-inline-start: var(--space-2xs);
   padding: 2px 8px;
   border-radius: var(--radius-full);
   background-color: var(--color-accent-subtle);
-  color: #8fb0f5;
+  color: var(--color-accent-hover);
   font-family: var(--font-body);
   font-size: 12px;
   font-weight: 500;
@@ -808,12 +792,6 @@ h2 {
   position: absolute;
   top: var(--space-2xs);
   right: var(--space-2xs);
-}
-
-.dl-foot {
-  margin: var(--space-md) 0 0;
-  font-size: 13px;
-  color: var(--color-muted);
 }
 
 /* Screenshot viewer: the dialog fills the viewport so empty space closes it;
@@ -875,7 +853,7 @@ h2 {
 }
 
 .lightbox::backdrop {
-  background-color: rgba(9, 10, 14, 0.92);
+  background-color: rgba(12, 13, 14, 0.92);
   backdrop-filter: blur(12px);
 }
 
@@ -987,7 +965,7 @@ footer {
   .tradeoff-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  /* "Get Quarry" covers Download; the GitHub link keeps the icon */
+  /* The Download button stays; the GitHub link keeps its icon */
   .nav-links {
     display: none;
   }
@@ -1065,7 +1043,6 @@ footer {
       <a href="#tour">Features</a>
       <a href="#tradeoffs">Trade-offs</a>
       <a href="#engines">Databases</a>
-      <a href="#download">Download</a>
     </div>
 
     <div class="nav-actions">
@@ -1074,7 +1051,7 @@ footer {
         <span class="nav-gh-text">GitHub</span>
         <span class="nav-gh-count" id="github-star-count" hidden><span class="visually-hidden">, stars: </span><span id="star-number"></span></span>
       </a>
-      <a class="btn btn-sm btn-primary" href="#download">Get Quarry</a>
+      <a class="btn btn-sm" href="#download">Download</a>
     </div>
   </nav>
 </header>
@@ -1094,7 +1071,6 @@ footer {
         </p>
         <div class="reveal-load hero-ctas" style="--i: 3">
           <a class="btn btn-primary" href="#download">Download</a>
-          <a class="btn" href="#macos-build">macOS Build Guide</a>
         </div>
       </div>
     </div>
@@ -1243,7 +1219,7 @@ footer {
             <span class="dl-meta">Any distribution <span class="dl-size"></span></span>
           </div>
           <p class="dl-note">Make the AppImage executable before running it: <code>chmod +x Quarry*.AppImage</code></p>
-          <p class="dl-pending" hidden>No build published yet. <a href="https://github.com/thekodeking/quarry/releases" target="_blank" rel="noopener noreferrer">Watch releases on GitHub</a> to hear when it's out.</p>
+          <p class="dl-pending" hidden>Not released yet.</p>
         </div>
       </li>
       <li class="dl-row" data-os="windows">
@@ -1257,10 +1233,10 @@ footer {
             <span class="dl-meta">Setup wizard <span class="dl-size"></span></span>
           </div>
           <p class="dl-note">The installer isn't code-signed yet. If SmartScreen warns you, choose More info, then Run anyway.</p>
-          <p class="dl-pending" hidden>No build published yet. <a href="https://github.com/thekodeking/quarry/releases" target="_blank" rel="noopener noreferrer">Watch releases on GitHub</a> to hear when it's out.</p>
+          <p class="dl-pending" hidden>Not released yet.</p>
         </div>
       </li>
-      <li class="dl-row" id="macos-build" data-os="mac">
+      <li class="dl-row" data-os="mac">
         <div class="dl-os">
           <h3>macOS <span class="dl-yours" hidden>Your system</span></h3>
           <p>Apple silicon and Intel. Needs Xcode command line tools and <a href="https://rustup.rs" target="_blank" rel="noopener noreferrer">Rust</a>.</p>
@@ -1279,7 +1255,6 @@ cp -R ../../dist/Quarry.app /Applications/</code></pre>
       </li>
     </ul>
 
-    <p class="dl-foot">Older versions and release notes: <a href="https://github.com/thekodeking/quarry/releases" target="_blank" rel="noopener noreferrer">GitHub Releases</a></p>
   </section>
 
 </main>
@@ -1362,7 +1337,9 @@ cp -R ../../dist/Quarry.app /Applications/</code></pre>
       if (!res.ok) throw new Error(res.status);
       const [latest] = await res.json();
       if (!latest) {
-        status.textContent = 'No release published yet.';
+        status.replaceChildren('No release published yet. ',
+          Object.assign(document.createElement('a'), { href: 'https://github.com/thekodeking/quarry/releases', target: '_blank', rel: 'noopener noreferrer', textContent: 'Watch releases on GitHub' }),
+          ' to hear when it\'s out.');
         document.querySelectorAll('.dl-file, .dl-note').forEach(el => { el.hidden = true; });
         document.querySelectorAll('.dl-pending').forEach(el => { el.hidden = false; });
         return;
