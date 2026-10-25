@@ -45,6 +45,7 @@ uuid = { workspace = true }
 keyring = { workspace = true }
 lsp-types = { workspace = true }
 sqlformat = { workspace = true }
+trash = { workspace = true }
 
 [lints]
 workspace = true

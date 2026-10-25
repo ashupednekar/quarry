@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Asynchronous database worker runtime and UI integration helpers.
+//!
+//! Offloads all database queries, schema introspection, and streaming cursors onto a dedicated
+//! multi-threaded Tokio runtime ([`DB_RUNTIME`]), ensuring the GPUI 60fps render thread never blocks.
+
 use gpui::{Context, Window};
 
 /// One long-lived runtime for all DB I/O. Postgres connection drivers live here, so it must outlive every session.

@@ -57,8 +57,12 @@ pub fn is_plsql_block(sql: &str) -> bool {
     )
 }
 
+/// Engine-specific SQL dialect translation interface.
+///
+/// Encapsulates identifier quoting, qualification, pagination limits, parameter placeholders,
+/// EXPLAIN query syntax, type name generation, and date formatting across database engines.
 pub trait Dialect: Send + Sync {
-    /// Short name shown in the UI and used in tests, e.g. "postgres"
+    /// Short identifier shown in the UI and used in tests (e.g. `"postgres"`, `"mysql"`, `"sqlite"`).
     fn name(&self) -> &'static str;
 
     fn quote_ident(&self, ident: &str) -> String {

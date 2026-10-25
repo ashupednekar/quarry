@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Interactive data grid component, cell editors, aggregates, and table source paging.
+//!
+//! Provides the [`ResultSet`] data delegate backing GPUI data tables, managing in-place cell editing,
+//! multi-cell selection ranges, statistical aggregates (sum/avg/min/max/count), transposition,
+//! undo/redo stacks for staged edits, foreign-key navigations, and quick filtering.
+
 use crate::runtime::run_db;
 use crate::theme::Theme;
 use crate::ui::*;
@@ -697,7 +703,7 @@ impl ResultSet {
                     .item(item("Filter: IS NOT NULL", |rs, c, w, cx| {
                         rs.apply_header_null_filter(c, false, w, cx);
                     }))
-                    .item(item("Filter Builder...", |rs, c, w, cx| {
+                    .item(item("Filter Builder…", |rs, c, w, cx| {
                         rs.open_filter_builder_for_col(c, w, cx);
                     }))
             })
@@ -930,6 +936,19 @@ impl ResultSet {
     }
 
     /// The value a cell shows as a reference (pending edits win over loaded values) and whether it was edited
+    /// The first non-null loaded value decides, matching how cells align
+    fn is_numeric_column(&self, col: usize) -> bool {
+        self.result().is_some_and(|r| {
+            r.rows
+                .iter()
+                .filter_map(|row| row.get(col))
+                .find(|v| !matches!(v, DbValue::Null))
+                .is_some_and(|v| {
+                    matches!(v, DbValue::Int(_) | DbValue::Float(_) | DbValue::Decimal(_))
+                })
+        })
+    }
+
     fn cell_value_ref(&self, row: usize, col: usize) -> (Option<&DbValue>, bool) {
         if row >= self.loaded_len() {
             return (self.inserted_value_ref(row, col), false);
@@ -1068,7 +1087,7 @@ fn pager(
         div()
             .id("grid-row-count")
             .px_1()
-            .rounded(px(3.0))
+            .rounded(px(crate::ui::RADIUS_SM))
             .text_sm()
             .text_color(if counted {
                 theme.text_secondary
@@ -1321,7 +1340,7 @@ fn render_transposed_view<T: 'static>(
                             div()
                                 .px_1p5()
                                 .py_0p5()
-                                .rounded(px(4.0))
+                                .rounded(px(crate::ui::RADIUS_SM))
                                 .bg(theme.bg_hover)
                                 .font_family(mono.clone())
                                 .font_weight(FontWeight::BOLD)
@@ -1343,12 +1362,7 @@ fn render_transposed_view<T: 'static>(
                                     });
                                 }),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.text_muted)
-                                .child("↑/↓"),
-                        ),
+                        .child(div().text_xs().text_color(theme.text_muted).child("↑/↓")),
                 )
                 // Center: Column search filter
                 .child(
@@ -1367,7 +1381,7 @@ fn render_transposed_view<T: 'static>(
                             div()
                                 .px_1p5()
                                 .py_0p5()
-                                .rounded(px(4.0))
+                                .rounded(px(crate::ui::RADIUS_SM))
                                 .bg(theme.bg_surface)
                                 .border_1()
                                 .border_color(theme.border)
@@ -1454,7 +1468,7 @@ fn render_transposed_view<T: 'static>(
                         .min_h(px(CONTROL_H))
                         .px_3()
                         .py_1p5()
-                        .rounded(px(4.0))
+                        .rounded(px(crate::ui::RADIUS_SM))
                         .border_b_1()
                         .border_color(theme.border)
                         .items_center()
@@ -1488,7 +1502,7 @@ fn render_transposed_view<T: 'static>(
                                         div()
                                             .px_1()
                                             .py(px(0.5))
-                                            .rounded(px(4.0))
+                                            .rounded(px(crate::ui::RADIUS_SM))
                                             .bg(Theme::tint(theme.warning, 0.15))
                                             .border_1()
                                             .border_color(Theme::tint(theme.warning, 0.4))
@@ -1502,7 +1516,7 @@ fn render_transposed_view<T: 'static>(
                                     div()
                                         .px_1p5()
                                         .py(px(0.5))
-                                        .rounded(px(4.0))
+                                        .rounded(px(crate::ui::RADIUS_SM))
                                         .bg(theme.bg_surface)
                                         .border_1()
                                         .border_color(theme.border)
@@ -1524,7 +1538,7 @@ fn render_transposed_view<T: 'static>(
                                         div()
                                             .px_1p5()
                                             .py_0p5()
-                                            .rounded(px(4.0))
+                                            .rounded(px(crate::ui::RADIUS_SM))
                                             .bg(theme.bg_surface)
                                             .border_1()
                                             .border_color(theme.border)
@@ -1550,7 +1564,7 @@ fn render_transposed_view<T: 'static>(
                                             .ml_2()
                                             .px_1p5()
                                             .py(px(0.5))
-                                            .rounded(px(4.0))
+                                            .rounded(px(crate::ui::RADIUS_SM))
                                             .bg(theme.pending_cell_bg)
                                             .text_xs()
                                             .font_weight(FontWeight::SEMIBOLD)
@@ -1572,7 +1586,9 @@ fn render_transposed_view<T: 'static>(
                                         .xsmall()
                                         .tooltip("Copy value")
                                         .on_click(move |_, _, cx| {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(val_copy.clone()));
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                val_copy.clone(),
+                                            ));
                                         }),
                                 )
                                 .child(
@@ -1583,7 +1599,12 @@ fn render_transposed_view<T: 'static>(
                                         .tooltip("Inspect in Value Editor")
                                         .on_click(move |_, window, cx| {
                                             g_inspect.update(cx, |t, cx| {
-                                                t.delegate_mut().inspect(row, display_col, window, cx);
+                                                t.delegate_mut().inspect(
+                                                    row,
+                                                    display_col,
+                                                    window,
+                                                    cx,
+                                                );
                                                 cx.notify();
                                             });
                                         }),
@@ -1829,7 +1850,7 @@ fn render_json_tree<T: 'static>(
                 .pl(depth_indent)
                 .pr_2()
                 .py(px(1.5))
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .items_center()
                 .justify_between()
                 .hover(|s| s.bg(theme.bg_hover))
@@ -1859,9 +1880,7 @@ fn render_json_tree<T: 'static>(
                                     }),
                             )
                         })
-                        .when(!item.is_container, |this| {
-                            this.child(div().w(px(18.0)))
-                        })
+                        .when(!item.is_container, |this| this.child(div().w(px(18.0))))
                         .when_some(item.key, |this, k| {
                             this.child(
                                 div()
@@ -1875,19 +1894,14 @@ fn render_json_tree<T: 'static>(
                                     })
                                     .child(k),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.text_muted)
-                                    .child(":"),
-                            )
+                            .child(div().text_xs().text_color(theme.text_muted).child(":"))
                         })
                         .when_some(item.summary, |this, sum| {
                             this.child(
                                 div()
                                     .px_1()
                                     .py(px(0.5))
-                                    .rounded(px(4.0))
+                                    .rounded(px(crate::ui::RADIUS_SM))
                                     .bg(theme.bg_surface)
                                     .border_1()
                                     .border_color(theme.border)
@@ -1929,7 +1943,9 @@ fn render_json_tree<T: 'static>(
                                 .xsmall()
                                 .tooltip("Copy value")
                                 .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(raw_copy.clone()));
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        raw_copy.clone(),
+                                    ));
                                 }),
                         )
                         .child(
@@ -1939,7 +1955,9 @@ fn render_json_tree<T: 'static>(
                                 .xsmall()
                                 .tooltip(format!("Copy JSONPath ({})", path_for_copy))
                                 .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(path_for_copy.clone()));
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        path_for_copy.clone(),
+                                    ));
                                 }),
                         ),
                 )
@@ -2014,7 +2032,7 @@ impl DataGrid {
 
         // Toolbar: Zed-quiet icon buttons with DataGrip's operations
         let toolbar = h_flex()
-            .h(px(BAR_H))
+            .h(px(ROW_H))
             .px_3()
             .gap_0p5()
             .items_center()
@@ -2225,7 +2243,7 @@ impl DataGrid {
                                 .id(("result-set", ix))
                                 .px_2()
                                 .py_0p5()
-                                .rounded(px(3.0))
+                                .rounded(px(crate::ui::RADIUS_SM))
                                 .text_sm()
                                 .cursor_pointer()
                                 .when(ix == active, |d| {
@@ -2508,7 +2526,15 @@ impl DataGrid {
                                         });
                                     }
                                 })
-                                .child(DataTable::new(grid).bordered(false))
+                                .child(
+                                    // Data-tool density: 26px rows, cell padding unchanged. A custom
+                                    // size drops the preset's text size, so set it on a wrapper
+                                    div().size_full().text_sm().child(
+                                        DataTable::new(grid)
+                                            .bordered(false)
+                                            .with_size(gpui::component::Size::Size(px(26.0))),
+                                    ),
+                                )
                             })
                             .when(rs.transposed_view, |this| {
                                 this.child(render_transposed_view(grid, theme, cx))
@@ -2572,7 +2598,7 @@ impl DataGrid {
                                                         div()
                                                             .flex()
                                                             .p(px(1.5))
-                                                            .rounded(px(4.0))
+                                                            .rounded(px(crate::ui::RADIUS_SM))
                                                             .bg(theme.bg_hover)
                                                             .gap(px(2.0))
                                                             .child(
@@ -2628,7 +2654,7 @@ impl DataGrid {
                                     let g_cp = grid.clone();
                                     this.child(
                                         h_flex()
-                                            .h(px(32.0))
+                                            .h(px(crate::ui::CONTROL_H))
                                             .px_2()
                                             .items_center()
                                             .justify_between()
@@ -2702,7 +2728,7 @@ impl DataGrid {
                                     let g_cp = grid.clone();
                                     this.child(
                                         h_flex()
-                                            .h(px(32.0))
+                                            .h(px(crate::ui::CONTROL_H))
                                             .px_2()
                                             .items_center()
                                             .justify_end()
@@ -2899,7 +2925,7 @@ impl DataGrid {
                                     .items_center()
                                     .gap_1()
                                     .px_1p5()
-                                    .rounded(px(4.0))
+                                    .rounded(px(crate::ui::RADIUS_SM))
                                     .cursor_pointer()
                                     .hover(|s| s.bg(theme.bg_hover))
                                     .tooltip(move |window, cx| {
@@ -2961,7 +2987,7 @@ impl DataGrid {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one
-    use super::{PendingRowInsert, ResultSet, Theme};
+    use super::{CellRange, PendingRowInsert, ResultSet, Theme};
 
     #[test]
     fn date_part_reads_the_leading_date() {

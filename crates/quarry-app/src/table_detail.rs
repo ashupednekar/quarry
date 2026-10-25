@@ -133,7 +133,7 @@ impl QuarryWindow {
                     .items_center()
                     .px_2()
                     .py_0p5()
-                    .rounded(px(4.0))
+                    .rounded(px(crate::ui::RADIUS_SM))
                     .text_sm()
                     .cursor_pointer()
                     .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
@@ -191,7 +191,7 @@ impl QuarryWindow {
                     h_flex().items_center().px_3().py_1().justify_end().child(
                         zbutton("ddl-to-query")
                             .pad_xs()
-                            .label("Open in Query Tab")
+                            .label("Open in query tab")
                             .ghost()
                             .small()
                             .on_click({
@@ -235,7 +235,7 @@ impl QuarryWindow {
                 .children(count.map(|n| {
                     div()
                         .px_1p5()
-                        .rounded(px(3.0))
+                        .rounded(px(crate::ui::RADIUS_SM))
                         .bg(t.bg_surface)
                         .font_weight(FontWeight::NORMAL)
                         .child(n.to_string())
@@ -285,7 +285,7 @@ impl QuarryWindow {
         let badge = |label: &'static str, color: Rgba| {
             div()
                 .px_1()
-                .rounded(px(3.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .bg(crate::Theme::tint(color, 0.15))
                 .text_color(color)
                 .child(label)
@@ -377,7 +377,7 @@ impl QuarryWindow {
                         v_flex()
                             .px_2p5()
                             .py_1p5()
-                            .rounded(px(6.0))
+                            .rounded(px(crate::ui::RADIUS_MD))
                             .border_1()
                             .border_color(t.border)
                             .bg(t.bg_panel)

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! SQL query editor view, toolbar controls, gutter run buttons, and modal vim mode integration.
+//!
+//! Renders the primary text editor with schema switching, row limits, soft-wrapping toggles,
+//! line numbering, execution controls, and Vim state indicators.
+
 use crate::state::Environment;
 use crate::theme::Theme;
 use crate::ui::*;
@@ -11,6 +16,7 @@ use gpui::component::input::{Editor, EditorState};
 use gpui::component::{ActiveTheme, Icon, Sizable};
 use gpui::*;
 
+/// Renders the SQL query editor pane with interactive toolbars and execution controls.
 pub struct QueryEditor;
 
 const RUN_COL_W: f32 = 18.0;
@@ -37,11 +43,11 @@ impl QueryEditor {
         let picker = |id: &'static str, icon: IconName, text: String, on: bool| {
             h_flex()
                 .id(id)
-                .h(px(24.0))
+                .h(px(crate::ui::SMALL_H))
                 .px_2()
                 .gap_1()
                 .items_center()
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .cursor_pointer()
                 .text_sm()
                 .text_color(if on {
@@ -106,9 +112,9 @@ impl QueryEditor {
             .flex_shrink_0()
             .gap_1p5()
             .items_center()
-            .h(px(24.0))
+            .h(px(crate::ui::SMALL_H))
             .px_2()
-            .rounded(px(4.0))
+            .rounded(px(crate::ui::RADIUS_SM))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
             .on_click(cx.listener(move |this, _, window, cx| this.open_connection_menu(window, cx)))
@@ -178,7 +184,7 @@ impl QueryEditor {
                             ))
                             .child(
                                 zbutton("btn-run-query")
-                                    .h(px(24.0))
+                                    .h(px(crate::ui::SMALL_H))
                                     .px_2p5()
                                     .ml_1()
                                     .icon(IconName::Play)
@@ -399,7 +405,7 @@ fn toolbar_button(
     action: Box<dyn Action>,
 ) -> impl IntoElement {
     zbutton(id)
-        .h(px(24.0))
+        .h(px(crate::ui::SMALL_H))
         .px_2()
         .icon(icon)
         .label(label)

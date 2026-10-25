@@ -6,6 +6,7 @@
 use crate::session::QueryResult;
 use crate::value::DbValue;
 
+/// Node in a hierarchical query execution plan tree.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlanNode {
     /// What the step does: "Seq Scan", "Hash Join", "SCAN users"

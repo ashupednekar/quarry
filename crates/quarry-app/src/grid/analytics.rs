@@ -328,7 +328,11 @@ impl ColumnStats {
             }
             if let (Some(min), Some(max)) = (self.min_str.as_deref(), self.max_str.as_deref()) {
                 if min != max {
-                    parts.push(format!("Min: {} · Max: {}", truncate(min, 24), truncate(max, 24)));
+                    parts.push(format!(
+                        "Min: {} · Max: {}",
+                        truncate(min, 24),
+                        truncate(max, 24)
+                    ));
                 } else {
                     parts.push(format!("Val: {}", truncate(min, 24)));
                 }
@@ -638,7 +642,11 @@ mod tests {
             Some(DbValue::Int(30)),
             Some(DbValue::Null),
         ];
-        let stats = ColumnStats::compute("amount".into(), "INTEGER".into(), vals.iter().map(|v| v.as_ref()));
+        let stats = ColumnStats::compute(
+            "amount".into(),
+            "INTEGER".into(),
+            vals.iter().map(|v| v.as_ref()),
+        );
         assert_eq!(stats.total_rows, 4);
         assert_eq!(stats.non_null_count, 3);
         assert_eq!(stats.null_count, 1);
@@ -684,7 +692,11 @@ mod tests {
             Some(DbValue::Text("apple".into())),
             Some(DbValue::Null),
         ];
-        let stats = ColumnStats::compute("fruit".into(), "VARCHAR".into(), vals.iter().map(|v| v.as_ref()));
+        let stats = ColumnStats::compute(
+            "fruit".into(),
+            "VARCHAR".into(),
+            vals.iter().map(|v| v.as_ref()),
+        );
         assert_eq!(stats.total_rows, 4);
         assert_eq!(stats.non_null_count, 3);
         assert_eq!(stats.distinct_count, 2);

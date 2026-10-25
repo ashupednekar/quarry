@@ -1,12 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! SQL statement splitting, batch parsing, and cursor statement lookup.
+//!
+//! Handles dialect-specific delimiters, strings, escape sequences, comments,
+//! Microsoft SQL Server `GO` batches, Oracle PL/SQL blocks, and cursor position resolution.
+
 pub use quarry_core::dialect::SplitRules;
 
+/// A slice of a SQL script representing an individual executable statement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatementSpan {
+    /// Zero-based byte offset where the statement begins in the original script.
     pub start: usize,
+    /// Zero-based byte offset where the statement ends in the original script.
     pub end: usize,
+    /// Extracted SQL statement text without surrounding delimiters.
     pub sql: String,
 }
 
@@ -17,11 +26,37 @@ pub struct StatementSpan {
 /// 4. Multi-line comments: `/* comment; */`
 /// 5. PostgreSQL dollar-quoted strings: `$$ ...;... $$` or `$tag$ ...;... $tag$`
 /// 6. Backtick identifiers: `` `col;name` `` (MySQL)
+///
+/// # Arguments
+///
+/// * `input` - SQL script string to split.
+///
+/// # Returns
+///
+/// A vector of [`StatementSpan`] items representing individual statements.
+///
+/// # Examples
+///
+/// ```
+/// use quarry_sql::split_statements;
+///
+/// let stmts = split_statements("SELECT 1; SELECT 2;");
+/// assert_eq!(stmts.len(), 2);
+/// ```
 pub fn split_statements(input: &str) -> Vec<StatementSpan> {
     split_statements_with(input, SplitRules::default())
 }
 
-///// `split_statements` with a dialect's extra rules (`#` comments, backslash escapes)
+/// Splits a SQL script into individual statements using dialect-specific splitting rules.
+///
+/// # Arguments
+///
+/// * `input` - SQL script string to split.
+/// * `rules` - Dialect configuration (e.g. SQL Server `GO` batches, Oracle PL/SQL `/` blocks).
+///
+/// # Returns
+///
+/// A vector of [`StatementSpan`] items.
 pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpan> {
     let mut statements = Vec::new();
     let mut stmt_start: Option<usize> = None;
@@ -97,11 +132,31 @@ pub fn split_statements_with(input: &str, rules: SplitRules) -> Vec<StatementSpa
     statements
 }
 
-/// Finds the single statement containing the cursor byte offset, ideal for ⌘↵ (Run Current Statement)
+/// Finds the single statement containing the cursor byte offset (used for ⌘↵ Run Current Statement).
+///
+/// # Arguments
+///
+/// * `input` - SQL script containing one or more statements.
+/// * `cursor_offset` - Zero-based byte offset of the editor cursor.
+///
+/// # Returns
+///
+/// The enclosing [`StatementSpan`], or `None` if the input contains no statements.
 pub fn find_statement_at_offset(input: &str, cursor_offset: usize) -> Option<StatementSpan> {
     find_statement_at_offset_with(input, cursor_offset, SplitRules::default())
 }
 
+/// Finds the statement containing the cursor byte offset with custom dialect rules.
+///
+/// # Arguments
+///
+/// * `input` - SQL script text.
+/// * `cursor_offset` - Zero-based byte offset of the cursor.
+/// * `rules` - Dialect-specific delimiter and batch rules.
+///
+/// # Returns
+///
+/// The enclosing [`StatementSpan`], or `None` if input is empty.
 pub fn find_statement_at_offset_with(
     input: &str,
     cursor_offset: usize,

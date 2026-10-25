@@ -13,13 +13,20 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// An executed statement record captured in the client-side activity log.
 #[derive(Debug, Clone)]
 pub struct LogEntry {
+    /// Timestamp when execution was recorded.
     pub at: DateTime<Utc>,
+    /// Display address or connection identifier.
     pub connection: String,
+    /// Executed SQL statement text.
     pub sql: String,
+    /// Query execution duration.
     pub duration: Duration,
+    /// Number of rows returned or affected.
     pub rows: u64,
+    /// Error message string if statement execution failed.
     pub error: Option<String>,
 }
 

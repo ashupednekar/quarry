@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Database explorer sidebar tree, connection switching, and schema object navigation.
+//!
+//! Renders the hierarchical tree of saved connections, database schemas, tables, views,
+//! functions, procedures, sequences, and triggers.
+
 use crate::object_menu::DbObject;
 use crate::state::{AppState, Environment, Tab};
 use crate::theme::Theme;
@@ -39,15 +44,18 @@ impl Sidebar {
         let row = |id: ElementId, depth: f32| {
             h_flex()
                 .id(id)
-                .h(px(ROW_H))
+                .h(px(SMALL_H))
                 .pl(px(8.0 + depth * 16.0))
                 .pr_2()
                 .gap_1p5()
                 .items_center()
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover))
         };
+        // Leaves skip the chevron column, so a spacer keeps their icon under the parent's label
+        let leaf =
+            |id: ElementId, depth: f32| row(id, depth).child(div().w(px(12.0)).flex_shrink_0());
         let menu_on = |obj: DbObject| {
             cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                 this.open_sidebar_menu(obj.clone(), window, cx)
@@ -63,7 +71,7 @@ impl Sidebar {
         };
         let muted = |text: String| div().text_sm().text_color(theme.text_muted).child(text);
 
-        let mut tree = v_flex().py_2().px_2().gap_px();
+        let mut tree = v_flex().py_1p5().px_2();
         if state.saved_connections.is_empty() {
             tree = tree.child(
                 v_flex()
@@ -80,7 +88,7 @@ impl Sidebar {
                     .child(
                         zbutton("sidebar-empty-add")
                             .pad_sm()
-                            .label("Add Connection")
+                            .label("Add connection")
                             .small()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.open_add_conn(window, cx)
@@ -111,7 +119,7 @@ impl Sidebar {
                         .child(div().size(px(6.0)).rounded_full().bg(color))
                         .child(
                             div()
-                                .text_sm()
+                                .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_muted)
                                 .child(conn.env.name()),
@@ -169,7 +177,7 @@ impl Sidebar {
                 let (open_pin, drop_pin) = (pin.clone(), pin.clone());
                 let is_table = matches!(pin, crate::pins::Pin::Table { .. });
                 tree = tree.child(
-                    row(("pin", pin_ix).into(), 1.0)
+                    leaf(("pin", pin_ix).into(), 1.0)
                         .group("pin-row")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_pin(open_pin.clone(), window, cx)
@@ -236,7 +244,7 @@ impl Sidebar {
                 }
                 if !state.catalog.is_loaded(schema) {
                     tree = tree.child(
-                        row(("schema-loading", schema_ix).into(), 2.0)
+                        leaf(("schema-loading", schema_ix).into(), 2.0)
                             .child(muted("Loading…".to_string())),
                     );
                     continue;
@@ -247,7 +255,7 @@ impl Sidebar {
                     let (t_name, s_name) = (tbl.table_name.clone(), tbl.schema_name.clone());
                     let (h_name, h_schema) = (t_name.clone(), s_name.clone());
                     tree = tree.child(
-                        row(("table", schema_ix * 100_000 + tbl_ix).into(), 2.0)
+                        leaf(("table", schema_ix * 100_000 + tbl_ix).into(), 2.0)
                             .when(selected, |r| r.bg(theme.bg_selected))
                             .on_mouse_down(
                                 MouseButton::Right,
@@ -297,7 +305,7 @@ impl Sidebar {
                 let objects = state.schema_objects.get(schema);
                 if matches!(objects, Some(None)) {
                     tree = tree.child(
-                        row(("objects-loading", schema_ix).into(), 2.0)
+                        leaf(("objects-loading", schema_ix).into(), 2.0)
                             .child(muted("Loading…".into())),
                     );
                 }
@@ -334,7 +342,7 @@ impl Sidebar {
                     for (obj_ix, obj) in of_kind.into_iter().enumerate() {
                         let (s_name, o) = (schema.clone(), obj.clone());
                         tree = tree.child(
-                            row(("object", group_id * 100_000 + obj_ix).into(), 3.0)
+                            leaf(("object", group_id * 100_000 + obj_ix).into(), 3.0)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_object_definition(
                                         s_name.clone(),
@@ -385,22 +393,23 @@ impl Sidebar {
                     .child(crate::ui::format_keys("Save a query (⌘S) to see it here.")),
             );
         }
+        let rename_row = |input: &Entity<gpui::component::input::InputState>| {
+            h_flex()
+                .h(px(ROW_H))
+                .pl_2()
+                .pr_1()
+                .gap_1p5()
+                .items_center()
+                .child(icon(IconName::FileCode, theme.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .child(gpui::component::input::Input::new(input).xsmall()),
+                )
+        };
         for (ix, path) in queries.into_iter().enumerate() {
             if let Some((_, input)) = state.renaming_query.as_ref().filter(|(p, _)| *p == path) {
-                query_list = query_list.child(
-                    h_flex()
-                        .h(px(ROW_H))
-                        .pl_2()
-                        .pr_1()
-                        .gap_1p5()
-                        .items_center()
-                        .child(icon(IconName::FileCode, theme.accent))
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(gpui::component::input::Input::new(input).xsmall()),
-                        ),
-                );
+                query_list = query_list.child(rename_row(input));
                 continue;
             }
             let selected = active_file.as_ref() == Some(&path);
@@ -445,6 +454,10 @@ impl Sidebar {
             );
         }
         for (ix, path) in recent.into_iter().enumerate() {
+            if let Some((_, input)) = state.renaming_query.as_ref().filter(|(p, _)| *p == path) {
+                query_list = query_list.child(rename_row(input));
+                continue;
+            }
             let selected = active_file.as_ref() == Some(&path);
             let name = path
                 .file_stem()

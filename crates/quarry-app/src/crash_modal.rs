@@ -46,7 +46,7 @@ impl CrashModal {
                             v_flex()
                                 .gap_1p5()
                                 .p_3()
-                                .rounded_md()
+                                .rounded(px(crate::ui::RADIUS_MD))
                                 .bg(theme.bg_surface)
                                 .border_1()
                                 .border_color(theme.border)
@@ -89,7 +89,7 @@ impl CrashModal {
                                     div()
                                         .id("crash-backtrace-excerpt")
                                         .p_2p5()
-                                        .rounded_md()
+                                        .rounded(px(crate::ui::RADIUS_MD))
                                         .bg(theme.bg_app)
                                         .border_1()
                                         .border_color(theme.border)
@@ -125,7 +125,7 @@ impl CrashModal {
                                 .child(
                                     zbutton("btn-crash-copy")
                                         .icon(IconName::Copy)
-                                        .label("Copy Report")
+                                        .label("Copy report")
                                         .ghost()
                                         .small()
                                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -157,7 +157,7 @@ impl CrashModal {
                                 .items_center()
                                 .child(
                                     zbutton("btn-crash-clear")
-                                        .label("Clear Session")
+                                        .label("Clear session")
                                         .ghost()
                                         .small()
                                         .tooltip("Clear previous session tabs (Safe Mode)")

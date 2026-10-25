@@ -2,8 +2,15 @@
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 // Release builds on Windows are a GUI app: no console window alongside it
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
 #![recursion_limit = "4096"]
+
+//! # Quarry Application (`quarry-app`)
+//!
+//! Native desktop database client UI built on the GPU-accelerated [GPUI](https://www.gpui.rs) framework.
+//!
+//! Coordinates multi-connection lifecycle management, asynchronous query execution pipelines on dedicated
+//! Tokio background workers, split/tab layouts, schema browser trees, interactive columnar data grids,
+//! visual ER foreign-key relationship diagrams, query execution plans, and keyboard-driven command bars.
 
 mod add_conn_modal;
 mod bottom_panel;
@@ -272,10 +279,7 @@ impl QuarryWindow {
             InputState::new(window, cx).placeholder("Search tables, actions, or type SQL…")
         });
         // Empty by default: a blank name is filled from the address (host:port/db), never a stale "Local SQLite"
-        let conn_name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("Optional")
-        });
+        let conn_name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Optional"));
         let conn_path_input = cx.new(|cx| InputState::new(window, cx).default_value(":memory:"));
         let onboard_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Paste a connection URL or a SQLite file path")
@@ -713,7 +717,7 @@ impl QuarryWindow {
                     return div().size_full().child(editor).into_any_element();
                 }
                 let header = h_flex()
-                    .h(px(28.0))
+                    .h(px(crate::ui::ROW_H))
                     .px_3()
                     .gap_2()
                     .items_center()
@@ -752,7 +756,7 @@ impl QuarryWindow {
                     .child(div().flex_1())
                     .child(
                         zbutton("results-expand")
-                            .h(px(22.0))
+                            .h(px(crate::ui::SMALL_H))
                             .px_2()
                             .icon(if self.results_expanded {
                                 IconName::PanelTopOpen
@@ -778,7 +782,7 @@ impl QuarryWindow {
                     )
                     .child(
                         zbutton("results-export")
-                            .h(px(22.0))
+                            .h(px(crate::ui::SMALL_H))
                             .px_2()
                             .icon(IconName::Download)
                             .label("Export")
@@ -851,22 +855,37 @@ impl QuarryWindow {
                                     this.refresh_active_tab(window, cx);
                                 },
                             ))
+                            // One bordered field, so the filter reads as an input, not floating text
                             .child(
-                                Icon::new(IconName::ListFilter)
-                                    .small()
-                                    .text_color(t.text_muted),
-                            )
-                            .child(
-                                div().flex_1().child(Input::new(filter).appearance(false)),
+                                h_flex()
+                                    .flex_1()
+                                    .h(px(ROW_H))
+                                    .px_2()
+                                    .gap_1p5()
+                                    .items_center()
+                                    .rounded(px(crate::ui::RADIUS_SM))
+                                    .border_1()
+                                    .border_color(t.border)
+                                    .bg(t.bg_panel)
+                                    .child(
+                                        Icon::new(IconName::ListFilter)
+                                            .small()
+                                            .text_color(t.text_muted),
+                                    )
+                                    .child(
+                                        div().flex_1().child(Input::new(filter).appearance(false)),
+                                    ),
                             )
                             .child(
                                 zbutton("open-filter-builder-btn")
                                     .pad_xs()
                                     .icon(IconName::ListFilter)
-                                    .label("Filter Builder")
+                                    .label("Filter builder")
                                     .ghost()
                                     .small()
-                                    .tooltip(crate::ui::format_keys("Visual filter condition builder (⌥F)"))
+                                    .tooltip(crate::ui::format_keys(
+                                        "Visual filter condition builder (⌥F)",
+                                    ))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.open_filter_builder(None, window, cx);
                                     })),
@@ -896,11 +915,11 @@ impl QuarryWindow {
         let row = |id: ElementId, icon: IconName, label: SharedString, hint: &'static str| {
             h_flex()
                 .id(id)
-                .h(px(32.0))
+                .h(px(crate::ui::CONTROL_H))
                 .px_3()
                 .gap_3()
                 .items_center()
-                .rounded(px(6.0))
+                .rounded(px(crate::ui::RADIUS_MD))
                 .cursor_pointer()
                 .hover(|s| s.bg(t.bg_hover))
                 .child(Icon::new(icon).small().text_color(t.text_muted))
@@ -1242,7 +1261,7 @@ impl QuarryWindow {
                                 .child(
                                     zbutton("close-confirm-discard")
                                         .pad_sm()
-                                        .label("Close Window")
+                                        .label("Close window")
                                         .danger()
                                         .small()
                                         .on_click(cx.listener(|this, _, window, _cx| {
@@ -1303,8 +1322,9 @@ impl QuarryWindow {
         self.state.toast_message = Some((msg, error));
         self.toast_reveal = None;
         self.toast_task = Some(cx.spawn(async move |this, cx| {
+            // Errors stay long enough to read, e.g. a connection that failed while the window opened
             cx.background_executor()
-                .timer(std::time::Duration::from_secs(4))
+                .timer(std::time::Duration::from_secs(if error { 10 } else { 4 }))
                 .await;
             this.update(cx, |this, cx| {
                 this.state.toast_message = None;
@@ -2290,9 +2310,11 @@ impl Render for QuarryWindow {
             .on_action(cx.listener(|this, _: &ExplainAnalyze, window, cx| {
                 this.start_run(RunMode::ExplainAnalyze, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &grid::OpenFilterBuilder, window, cx| {
-                this.open_filter_builder(None, window, cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &grid::OpenFilterBuilder, window, cx| {
+                    this.open_filter_builder(None, window, cx);
+                }),
+            )
             .on_action(cx.listener(Self::menu_up))
             .on_action(cx.listener(Self::menu_down))
             .on_action(cx.listener(Self::select_next_occurrence))
@@ -2385,7 +2407,7 @@ impl Render for QuarryWindow {
                         .max_w(px(480.0))
                         .px_3()
                         .py_2()
-                        .rounded(px(6.0))
+                        .rounded(px(crate::ui::RADIUS_MD))
                         .bg(t.bg_panel)
                         .border_1()
                         .border_color(if error { t.danger } else { t.border })
@@ -2409,14 +2431,12 @@ impl Render for QuarryWindow {
                                 Some((h, d)) => (h.to_string(), Some(d.to_string())),
                                 None => (msg, None),
                             };
-                            v_flex()
-                                .flex_1()
-                                .min_w_0()
-                                .gap_0p5()
-                                .child(head)
-                                .when_some(detail, |d, raw| {
+                            v_flex().flex_1().min_w_0().gap_0p5().child(head).when_some(
+                                detail,
+                                |d, raw| {
                                     d.child(div().text_xs().text_color(t.text_muted).child(raw))
-                                })
+                                },
+                            )
                         })
                         .when_some(self.toast_reveal.clone(), |this, path| {
                             this.child(
@@ -2425,11 +2445,7 @@ impl Render for QuarryWindow {
                                     .text_color(t.accent)
                                     .cursor_pointer()
                                     .on_click(move |_, _, _| export_dialog::reveal(&path))
-                                    .child(if cfg!(target_os = "macos") {
-                                        "Reveal in Finder"
-                                    } else {
-                                        "Show in folder"
-                                    }),
+                                    .child(object_menu::REVEAL),
                             )
                         }),
                 )
@@ -2613,12 +2629,16 @@ impl QuarryWindow {
             return None;
         }
 
+        // Drop zones tint with the theme accent
+        let accent = self.theme.accent;
+        let zone = move |a: f32| Rgba { a, ..accent };
+
         let mut overlay = div()
             .id("dock-overlay")
             .absolute()
             .inset_0()
-            .top(px(38.0))
-            .bottom(px(24.0))
+            .top(px(crate::ui::BAR_H))
+            .bottom(px(crate::ui::SMALL_H))
             .on_drop(cx.listener(|this, _: &layout::DraggedPane, _, cx| {
                 this.active_drag_pane = None;
                 cx.notify();
@@ -2638,12 +2658,12 @@ impl QuarryWindow {
                 .py_1p5()
                 .gap_1p5()
                 .items_center()
-                .rounded_md()
-                .bg(rgba(0x111214cc))
+                .rounded(px(crate::ui::RADIUS_MD))
+                .bg(self.theme.bg_panel)
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(0x80b0ff))
-                .child(Icon::new(icon).xsmall().text_color(rgb(0x80b0ff)))
+                .text_color(zone(1.0))
+                .child(Icon::new(icon).xsmall().text_color(zone(1.0)))
                 .child(text)
         };
 
@@ -2659,16 +2679,16 @@ impl QuarryWindow {
                         .w_1_4()
                         .min_w(px(200.0))
                         .max_w(px(360.0))
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_r_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
                             this.active_drag_pane = None;
@@ -2686,16 +2706,16 @@ impl QuarryWindow {
                         .w_1_4()
                         .min_w(px(200.0))
                         .max_w(px(360.0))
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_l_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
                             this.active_drag_pane = None;
@@ -2715,16 +2735,16 @@ impl QuarryWindow {
                         .h_1_4()
                         .min_h(px(140.0))
                         .max_h(px(320.0))
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_t_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
                             this.active_drag_pane = None;
@@ -2742,16 +2762,16 @@ impl QuarryWindow {
                         .w_1_4()
                         .min_w(px(200.0))
                         .max_w(px(360.0))
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_l_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(|this, _: &layout::DraggedPane, window, cx| {
                             this.active_drag_pane = None;
@@ -2769,16 +2789,16 @@ impl QuarryWindow {
                         .bottom_0()
                         .left_0()
                         .w_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_r_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedSplitPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(
                             cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
@@ -2796,16 +2816,16 @@ impl QuarryWindow {
                         .bottom_0()
                         .right_0()
                         .w_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_l_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedSplitPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(
                             cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
@@ -2823,16 +2843,16 @@ impl QuarryWindow {
                         .h_1_2()
                         .left_1_4()
                         .right_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_b_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedSplitPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(
                             cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
@@ -2850,16 +2870,16 @@ impl QuarryWindow {
                         .h_1_2()
                         .left_1_4()
                         .right_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_t_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedSplitPane>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(
                             cx.listener(move |this, _: &layout::DraggedSplitPane, _, cx| {
@@ -2879,16 +2899,16 @@ impl QuarryWindow {
                         .bottom_0()
                         .left_0()
                         .w_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_r_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedTab>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(
                             |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
@@ -2909,16 +2929,16 @@ impl QuarryWindow {
                         .bottom_0()
                         .right_0()
                         .w_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_l_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedTab>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(
                             |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
@@ -2939,16 +2959,16 @@ impl QuarryWindow {
                         .h_1_2()
                         .left_1_4()
                         .right_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_b_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedTab>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(
                             |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
@@ -2969,16 +2989,16 @@ impl QuarryWindow {
                         .h_1_2()
                         .left_1_4()
                         .right_1_4()
-                        .bg(rgba(0x4080ff18))
-                        .border_2()
+                        .bg(zone(0.10))
+                        .border_1()
                         .border_dashed()
-                        .border_color(rgba(0x4080ff60))
+                        .border_color(zone(0.45))
                         .rounded_t_lg()
                         .flex()
                         .items_center()
                         .justify_center()
-                        .drag_over::<layout::DraggedTab>(|style, _, _, _| {
-                            style.bg(rgba(0x4080ff40)).border_color(rgb(0x4080ff))
+                        .drag_over::<layout::DraggedTab>(move |style, _, _, _| {
+                            style.bg(zone(0.22)).border_color(zone(1.0))
                         })
                         .on_drop(cx.listener(
                             |this, &layout::DraggedTab(idx): &layout::DraggedTab, _, cx| {
@@ -3024,6 +3044,9 @@ fn main() {
             theme::load_fonts(cx);
             menus::bind_keys(cx);
             ui::init_modal_focus(cx);
+            // gpui renders animations at their end state when this is set; it doesn't read the OS itself
+            // ponytail: read once at launch, toggling Reduce Motion needs a restart
+            cx.set_reduce_motion(ui::os_reduce_motion());
             grid::bind_keys(cx);
             menus::set_app_menus(cx);
             let options = WindowOptions {

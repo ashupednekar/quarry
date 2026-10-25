@@ -414,7 +414,8 @@ impl ResultSet {
             let text = ins.editor.read(cx).value().to_string();
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                    ins.editor.update(cx, |e, cx| e.set_value(pretty, window, cx));
+                    ins.editor
+                        .update(cx, |e, cx| e.set_value(pretty, window, cx));
                     ins.parsed_json = Some(val);
                 }
             }
@@ -426,7 +427,8 @@ impl ResultSet {
             let text = ins.editor.read(cx).value().to_string();
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Ok(compact) = serde_json::to_string(&val) {
-                    ins.editor.update(cx, |e, cx| e.set_value(compact, window, cx));
+                    ins.editor
+                        .update(cx, |e, cx| e.set_value(compact, window, cx));
                     ins.parsed_json = Some(val);
                 }
             }

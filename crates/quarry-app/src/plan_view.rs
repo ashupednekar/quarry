@@ -64,7 +64,7 @@ pub fn render(plan: &Plan, t: &Theme) -> AnyElement {
                 .flex()
                 .items_center()
                 .gap_3()
-                .h(px(28.0))
+                .h(px(crate::ui::ROW_H))
                 .px_3()
                 .border_b_1()
                 .border_color(t.border)

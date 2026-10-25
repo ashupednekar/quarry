@@ -38,76 +38,79 @@ impl AddConnModal {
             (Environment::Staging, "Staging", t.warning),
             (Environment::Prod, "Production", t.danger),
         ];
+        let env_switch = segmented(t).children(envs.into_iter().enumerate().map(
+            |(i, (env, label, color))| {
+                let on = state.add_conn_env == env;
+                chip(t, ("env", i), label, on)
+                    .flex_1()
+                    .justify_center()
+                    .when(on, |c| c.bg(Rgba { a: 0.16, ..color }))
+                    .child(div().ml_1p5().size(px(6.0)).rounded_full().bg(color))
+                    .flex_row_reverse()
+                    .gap_1p5()
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.state.add_conn_env = env;
+                        cx.notify()
+                    }))
+            },
+        ));
+        // Settings-style groups: where it is, then how it's labelled
         let general = v_flex()
             .gap_4()
             // One field is the connection string itself (a file path); typing a URL there switches driver
             .when(fields.len() == 1, |d| {
-                d.child(field(
+                d.child(settings_group(
                     t,
-                    fields[0].label,
-                    Some(fields[0].placeholder),
-                    file_input(
-                        path_input,
-                        "btn-browse-db-file",
-                        cx.listener(|this, _, window, cx| {
-                            this.browse_sqlite_file(window, cx);
-                        }),
-                    ),
+                    [form_row(
+                        t,
+                        fields[0].label,
+                        Some(fields[0].placeholder.into()),
+                        None,
+                        file_input(
+                            path_input,
+                            "btn-browse-db-file",
+                            cx.listener(|this, _, window, cx| {
+                                this.browse_sqlite_file(window, cx);
+                            }),
+                        ),
+                    )],
                 ))
             })
             // Several fields: pasting a URL first fills them, and edits to them rewrite it
             .when(fields.len() > 1, |d| {
-                d.child(field(
+                d.child(settings_group(
                     t,
-                    "URL",
-                    Some("Paste a URL to fill the fields below"),
-                    compact_input(path_input),
+                    [form_row(
+                        t,
+                        "URL",
+                        Some("Paste one to fill the fields below".into()),
+                        None,
+                        compact_input(path_input),
+                    )],
                 ))
-                .child(
-                    h_flex()
-                        .gap_3()
-                        .items_center()
-                        .child(div().flex_1().h(px(1.0)).bg(t.border))
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(t.text_muted)
-                                .child("or enter details"),
-                        )
-                        .child(div().flex_1().h(px(1.0)).bg(t.border)),
-                )
-                .children(field_rows(t, fields, field_inputs, editing))
+                .child(settings_group(
+                    t,
+                    field_rows(t, fields, field_inputs, editing),
+                ))
             })
-            .child(field(
+            .child(settings_group(
                 t,
-                "Instance name",
-                Some("Shown in the sidebar and status bar. Blank uses the address."),
-                compact_input(name_input),
-            ))
-            .child(field(
-                t,
-                "Environment",
-                Some("Production asks before anything that changes data"),
-                segmented(t)
-                    .w_full()
-                    .children(
-                        envs.into_iter()
-                            .enumerate()
-                            .map(|(i, (env, label, color))| {
-                                let on = state.add_conn_env == env;
-                                chip(t, ("env", i), label, on)
-                                    .flex_1()
-                                    .justify_center()
-                                    .when(on, |c| c.bg(Rgba { a: 0.16, ..color }))
-                                    .child(div().ml_1p5().size(px(6.0)).rounded_full().bg(color))
-                                    .flex_row_reverse()
-                                    .gap_1p5()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.state.add_conn_env = env;
-                                        cx.notify()
-                                    }))
-                            }),
+                [
+                    form_row(
+                        t,
+                        "Instance name",
+                        Some("Shown in the sidebar. Blank uses the address.".into()),
+                        None,
+                        compact_input(name_input),
                     ),
+                    form_row(
+                        t,
+                        "Environment",
+                        Some("Production asks before changing data".into()),
+                        None,
+                        env_switch,
+                    ),
+                ],
             ));
 
         // SSH: a database behind a bastion
@@ -117,75 +120,77 @@ impl AddConnModal {
                 driver.name()
             )))
         } else {
-            v_flex()
-                .gap_6()
-                .child(setting_row(
+            let mut rows = vec![setting_row(
+                t,
+                "Connect through an SSH tunnel",
+                "Uses the system ssh; passphrase keys must be in ssh-agent",
+                gpui::component::switch::Switch::new("ssh-switch")
+                    .checked(state.add_conn_ssh)
+                    .small()
+                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                        this.state.add_conn_ssh = !this.state.add_conn_ssh;
+                        cx.notify()
+                    })),
+            )];
+            if state.add_conn_ssh {
+                rows.push(form_row(
                     t,
-                    "Connect through an SSH tunnel",
-                    "Uses the system ssh; keys with a passphrase must be in ssh-agent",
-                    gpui::component::switch::Switch::new("ssh-switch")
-                        .checked(state.add_conn_ssh)
-                        .small()
-                        .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                            this.state.add_conn_ssh = !this.state.add_conn_ssh;
-                            cx.notify()
-                        })),
-                ))
-                .when(state.add_conn_ssh, |d| {
-                    d.child(
-                        h_flex()
-                            .gap_3()
-                            .child(div().flex_1().child(field(
-                                t,
-                                "Host",
-                                None,
-                                compact_input(&ssh_inputs[0]),
-                            )))
-                            .child(div().w(px(160.0)).child(field(
-                                t,
-                                "User",
-                                None,
-                                compact_input(&ssh_inputs[1]),
-                            ))),
-                    )
-                    .child(field(
-                        t,
-                        "Private key",
-                        Some("Blank uses ssh-agent and ~/.ssh/config"),
-                        file_input(
-                            &ssh_inputs[2],
-                            "btn-browse-ssh-key",
-                            cx.listener(|this, _, window, cx| {
-                                this.browse_ssh_key_file(window, cx);
-                            }),
-                        ),
-                    ))
-                })
+                    "Host",
+                    None,
+                    None,
+                    compact_input(&ssh_inputs[0]),
+                ));
+                rows.push(form_row(
+                    t,
+                    "User",
+                    None,
+                    None,
+                    compact_input(&ssh_inputs[1]),
+                ));
+                rows.push(form_row(
+                    t,
+                    "Private key",
+                    Some("Blank uses ssh-agent and ~/.ssh/config".into()),
+                    None,
+                    file_input(
+                        &ssh_inputs[2],
+                        "btn-browse-ssh-key",
+                        cx.listener(|this, _, window, cx| {
+                            this.browse_ssh_key_file(window, cx);
+                        }),
+                    ),
+                ));
+            }
+            v_flex().child(settings_group(t, rows))
         };
 
         // Advanced: limits and guard rails
-        let advanced = v_flex()
-            .gap_6()
-            .child(field(
-                t,
-                "Statement timeout (seconds)",
-                Some("Blank uses the default from Settings"),
-                div().w(px(160.0)).child(compact_input(timeout_input)),
-            ))
-            .child(setting_row(
-                t,
-                "Read-only",
-                "Refuse INSERT, UPDATE, DELETE and DDL on this connection",
-                gpui::component::switch::Switch::new("ro-switch")
-                    .checked(state.add_conn_read_only)
-                    .small()
-                    .on_click(cx.listener(move |this, _: &bool, _, cx| {
-                        this.state.add_conn_read_only = !this.state.add_conn_read_only;
-                        cx.notify()
-                    })),
-            ));
+        let advanced = v_flex().child(settings_group(
+            t,
+            [
+                form_row(
+                    t,
+                    "Statement timeout",
+                    Some("Seconds. Blank uses the default from Settings".into()),
+                    Some(120.0),
+                    compact_input(timeout_input),
+                ),
+                setting_row(
+                    t,
+                    "Read-only",
+                    "Refuse INSERT, UPDATE, DELETE and DDL",
+                    gpui::component::switch::Switch::new("ro-switch")
+                        .checked(state.add_conn_read_only)
+                        .small()
+                        .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                            this.state.add_conn_read_only = !this.state.add_conn_read_only;
+                            cx.notify()
+                        })),
+                ),
+            ],
+        ));
 
-        // Like a Settings page: the database as the title, its option groups as a segmented control
+        // Same page head as Settings: the title large, its option groups as a segmented control
         let tabs = h_flex()
             .justify_between()
             .items_center()
@@ -339,8 +344,7 @@ impl AddConnModal {
             v_flex()
                 .id("add-conn-db-list")
                 .w(px(180.0))
-                .flex_shrink_0()
-                .h_full()
+                .flex_none()
                 .border_r_1()
                 .border_color(t.border)
                 .bg(t.bg_panel)
@@ -352,11 +356,11 @@ impl AddConnModal {
                     let is_selected = id == driver.id();
                     h_flex()
                         .id(("engine", i))
-                        .h(px(32.0))
+                        .h(px(crate::ui::CONTROL_H))
                         .px_2p5()
                         .gap_2()
                         .items_center()
-                        .rounded(px(6.0))
+                        .rounded(px(crate::ui::RADIUS_MD))
                         .cursor_pointer()
                         .when(is_selected, |s| s.bg(t.bg_selected))
                         .when(!is_selected, |s| s.hover(|h| h.bg(t.bg_hover)))
@@ -385,29 +389,14 @@ impl AddConnModal {
                         }))
                 }));
 
-        let right_pane = v_flex()
-            .id("add-conn-options-scroll")
+        let right_pane = modal_body("add-conn-options-scroll")
             .flex_1()
             .min_w_0()
-            .h_full()
-            .overflow_y_scroll()
-            .p_6()
-            .gap_4()
-            .child(tabs)
-            // The fields on one rounded surface, as Settings groups its rows
-            .child(
-                div()
-                    .p_4()
-                    .rounded(px(8.0))
-                    .bg(t.bg_app)
-                    .border_1()
-                    .border_color(t.border)
-                    .child(match tab {
-                        1 => ssh,
-                        2 => advanced,
-                        _ => general,
-                    }),
-            );
+            .child(v_flex().gap_4().child(tabs).child(match tab {
+                1 => ssh,
+                2 => advanced,
+                _ => general,
+            }));
 
         crate::ui::fade_in(
             "add-conn-backdrop-fade",
@@ -420,7 +409,10 @@ impl AddConnModal {
                 cx,
             )
             .child(
+                // Same frame as Settings: 820 × 560, nav left, page right
                 modal_card("add-conn-modal-card", 820.0, t)
+                    .h(px(560.0))
+                    .max_h_full()
                     // Enter in any field connects, like the primary button
                     .on_action(cx.listener(
                         move |this, _: &gpui::component::input::Enter, window, cx| {
@@ -444,8 +436,9 @@ impl AddConnModal {
                     .child(
                         h_flex()
                             .id("add-conn-two-pane")
-                            .h(px(480.0))
-                            .overflow_hidden()
+                            .flex_1()
+                            .min_h_0()
+                            .items_stretch()
                             .border_t_1()
                             .border_color(t.border)
                             .child(left_pane)
@@ -460,55 +453,35 @@ impl AddConnModal {
     }
 }
 
-/// The driver's fields, laid out by row; fields sharing a row sit side by side
+/// The driver's fields, one form row each
 fn field_rows(
     t: &Theme,
     fields: &[quarry_core::Field],
     inputs: &[Entity<InputState>],
     editing: bool,
 ) -> Vec<Div> {
-    let mut rows: Vec<(u8, Div)> = Vec::new();
-    for (f, input) in fields.iter().zip(inputs) {
-        let control = if f.secret {
-            div().child(
-                Input::new(input)
-                    .text_sm()
-                    .px_3p5()
-                    .content_type(InputContentType::Password)
-                    .mask_toggle(),
-            )
-        } else {
-            compact_input(input)
-        };
-        let hint = (f.secret && editing).then_some("Blank keeps the saved password");
-        let cell = match f.width {
-            Some(w) => div().w(px(w)),
-            None => div().flex_1().min_w_0(),
-        }
-        .child(field(t, f.label, hint, control));
-        match rows.last_mut() {
-            Some((row, line)) if *row == f.row => {
-                *line = std::mem::replace(line, div()).child(cell)
-            }
-            _ => rows.push((f.row, h_flex().gap_3().items_start().child(cell))),
-        }
-    }
-    let secret_row = fields.iter().find(|f| f.secret).map(|f| f.row);
-    rows.into_iter()
-        .map(|(row, line)| {
-            if !editing && Some(row) == secret_row {
-                v_flex().gap_2().child(line).child(
-                    h_flex()
-                        .gap_1p5()
-                        .items_center()
+    fields
+        .iter()
+        .zip(inputs)
+        .map(|(f, input)| {
+            let control = if f.secret {
+                div().child(
+                    Input::new(input)
                         .text_sm()
-                        .text_color(t.text_muted)
-                        .child(Icon::new(IconName::Lock).xsmall())
-                        .child("Password is stored in the keychain"),
+                        .px_3()
+                        .content_type(InputContentType::Password)
+                        .mask_toggle(),
                 )
             } else {
-                line
-            }
+                compact_input(input)
+            };
+            let hint = f.secret.then_some(if editing {
+                "Blank keeps the saved password"
+            } else {
+                "Stored in the keychain"
+            });
+            // Narrow fields (port) keep their width, right-aligned like the rest
+            form_row(t, f.label, hint.map(Into::into), f.width, control)
         })
         .collect()
 }

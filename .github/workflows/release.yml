@@ -1,7 +1,7 @@
 name: Release
 
-# Push a tag like v0.1.0 to build Linux and Windows packages and publish them as a GitHub release.
-# macOS is built from source by users (see README): there's no Apple signing identity for CI.
+# Push a tag like v0.1.0 to build Linux, Windows and macOS packages and publish them as a GitHub release.
+# macOS ships an ad-hoc signed DMG (not notarized), so users clear quarantine once (see README).
 on:
   push:
     tags: ["v*"]
@@ -11,9 +11,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Granular compiler cache for external dependencies
-  SCCACHE_GHA_ENABLED: "true"
-  RUSTC_WRAPPER: "sccache"
   # Prevent rustc stack overflow on deep GPUI macro/builder recursion
   RUST_MIN_STACK: "67108864"
 
@@ -46,15 +43,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Sets up sccache compiler cache backed by GitHub Actions cache
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      # Caches ~/.cargo registry and target/ across releases with a shared release key
+      # Restores the dependency cache warm-cache.yml saves on main (tag runs can't share caches with each other)
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "quarry-release-${{ matrix.os }}"
+          save-if: false
 
       # Install pre-compiled cargo-packager binary instead of compiling from source (saves 2-4 mins)
       - name: Install cargo-packager
@@ -68,9 +62,6 @@ jobs:
         run: cargo packager --release -f ${{ matrix.formats }}
         working-directory: crates/quarry-app
 
-      - name: Print sccache stats
-        run: sccache --show-stats
-
       - uses: actions/upload-artifact@v4
         with:
           name: quarry-${{ runner.os }}
@@ -80,8 +71,31 @@ jobs:
             dist/*.exe
           if-no-files-found: error
 
+  macos:
+    name: Package (macos-latest)
+    environment: release
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "quarry-release-macos-latest"
+          save-if: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager
+
+      - run: scripts/package-macos.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quarry-macOS
+          path: dist/*.dmg
+          if-no-files-found: error
+
   publish:
-    needs: package
+    needs: [package, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

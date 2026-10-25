@@ -30,10 +30,14 @@ pub enum TokenKind<'a> {
     Operator(&'a str),
 }
 
+/// A parsed lexical token borrowing directly from the underlying SQL text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token<'a> {
+    /// Grammatical token classification.
     pub kind: TokenKind<'a>,
+    /// Byte range of this token within the input text.
     pub span: std::ops::Range<usize>,
+    /// Borrowed raw string slice corresponding to `span`.
     pub text: &'a str,
 }
 

@@ -284,6 +284,7 @@ impl QuarryWindow {
         if let Err(e) = std::fs::rename(&from, &to) {
             return self.toast(format!("Couldn't rename: {e}"), true, cx);
         }
+        remember_file(&to);
         self.retarget_query_tabs(&from, Some(to), cx);
     }
 
@@ -304,32 +305,25 @@ impl QuarryWindow {
             })
             .find(|p| !p.exists())
             .expect("unbounded");
-        if let Err(e) = std::fs::copy(path, &to) {
-            self.toast(format!("Couldn't duplicate: {e}"), true, cx);
+        match std::fs::copy(path, &to) {
+            Ok(_) => remember_file(&to),
+            Err(e) => self.toast(format!("Couldn't duplicate: {e}"), true, cx),
         }
         cx.notify();
     }
 
-    /// Move to Trash (via Finder, so it can be put back); an open tab keeps its text as an unsaved query
+    /// Move to Trash / Recycle Bin, so it can be put back; an open tab keeps its text as an unsaved query
     pub fn trash_query_file(&mut self, path: &std::path::Path, cx: &mut Context<Self>) {
-        let script = format!(
-            "tell application \"Finder\" to delete POSIX file {:?}",
-            path.display().to_string()
-        );
-        match std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .output()
+        #[allow(unused_mut)]
+        let mut trash = trash::TrashContext::default();
+        // The default asks Finder over AppleScript, which blocks on an Automation prompt
+        #[cfg(target_os = "macos")]
         {
-            Ok(out) if out.status.success() => self.retarget_query_tabs(path, None, cx),
-            Ok(out) => self.toast(
-                format!(
-                    "Couldn't move to Trash: {}",
-                    String::from_utf8_lossy(&out.stderr).trim()
-                ),
-                true,
-                cx,
-            ),
+            use trash::macos::{DeleteMethod, TrashContextExtMacos};
+            trash.set_delete_method(DeleteMethod::NsFileManager);
+        }
+        match trash.delete(path) {
+            Ok(()) => self.retarget_query_tabs(path, None, cx),
             Err(e) => self.toast(format!("Couldn't move to Trash: {e}"), true, cx),
         }
     }

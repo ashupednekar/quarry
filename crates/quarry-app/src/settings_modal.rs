@@ -351,11 +351,11 @@ impl QuarryWindow {
                 let on = i == current;
                 h_flex()
                     .id(("settings-nav", i))
-                    .h(px(32.0))
+                    .h(px(crate::ui::CONTROL_H))
                     .px_2p5()
                     .gap_2()
                     .items_center()
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::RADIUS_MD))
                     .cursor_pointer()
                     .text_sm()
                     .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
@@ -382,18 +382,7 @@ impl QuarryWindow {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child(title),
             )
-            // Rows on one rounded surface, hairlines between them
-            .child(
-                v_flex()
-                    .px_4()
-                    .rounded(px(8.0))
-                    .bg(t.bg_app)
-                    .border_1()
-                    .border_color(t.border)
-                    .children(rows.into_iter().enumerate().map(|(i, row)| {
-                        row.when(i > 0, |d| d.border_t_1().border_color(t.border))
-                    })),
-            );
+            .child(settings_group(&t, rows));
 
         let footer = modal_footer(&t)
             .justify_between()

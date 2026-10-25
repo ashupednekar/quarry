@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Krishna <https://github.com/thekodeking/quarry>
 
+//! Vector SVG icons for supported database engines.
+//!
+//! Provides minimal, high-contrast monochrome vector icons for PostgreSQL, SQLite, MySQL,
+//! Oracle, and Microsoft SQL Server.
+
 use gpui::assets::IconName;
 use gpui::component::Icon;
 use gpui::{px, Pixels, Rgba, Styled};
