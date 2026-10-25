@@ -632,19 +632,28 @@ pub async fn open_session(
             .tunnel_target(&conn)
             .ok_or_else(|| format!("{} connections can't use an SSH tunnel", driver.name()))?;
         let cfg = ssh.clone();
+        let target = (host.clone(), port);
         let t = tokio::task::spawn_blocking(move || crate::ssh::Tunnel::open(&cfg, &host, port))
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| e.to_string())?
+            .map_err(|e| {
+                tracing::error!("SSH tunnel for [{}] failed: {e}", profile.name);
+                e
+            })?;
         conn = driver.through_tunnel(&conn, t.local_port);
-        tunnel = Some(t);
+        tunnel = Some((t, target));
     }
     let session = driver
         .connect(&conn, profile.read_only)
         .await
         .map_err(|e| {
             tracing::error!("Connection to [{}] failed: {e}", profile.name);
-            e.to_string()
+            match (&tunnel, &profile.ssh) {
+                (Some((_, target)), Some(ssh)) => tunnel_hint(&e.to_string(), target, &ssh.host),
+                _ => e.to_string(),
+            }
         })?;
+    let tunnel = tunnel.map(|(t, _)| t);
     let session: Arc<dyn DatabaseSession> =
         Arc::new(LoggedSession::new(session, profile.name.clone(), log));
     if let Some(secs) = profile.statement_timeout_secs.filter(|s| *s > 0) {
@@ -665,6 +674,25 @@ pub async fn open_session(
         catalog.tables.len()
     );
     Ok((session, catalog, tunnel))
+}
+
+/// The tunnel opens even when the SSH server can't reach the database; the driver then only
+/// sees the forwarded socket drop. Say which hop failed instead of a bare "connection reset".
+fn tunnel_hint(err: &str, (host, port): &(String, u16), bastion: &str) -> String {
+    let lower = err.to_lowercase();
+    let dropped = [
+        "reset by peer",
+        "connection closed",
+        "unexpected eof",
+        "broken pipe",
+    ]
+    .iter()
+    .any(|k| lower.contains(k));
+    if dropped {
+        format!("The SSH server {bastion} couldn't reach the database at {host}:{port}. Check the host and port as seen from {bastion}. ({err})")
+    } else {
+        err.to_string()
+    }
 }
 
 /// Which tab is active after closing `closed`: closing the active one moves to its right-hand
@@ -691,5 +719,21 @@ mod close_tests {
         assert_eq!(after_close(2, 0, 3), 1); // close A while C active -> still C
         assert_eq!(after_close(0, 3, 3), 0); // close D while A active -> still A
         assert_eq!(after_close(0, 0, 0), 0); // nothing left
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tunnel_hint;
+
+    #[test]
+    fn tunnel_hint_names_the_hop_only_for_dropped_sockets() {
+        let target = ("db.internal".to_string(), 5432);
+        let hinted = tunnel_hint("Connection reset by peer (os error 54)", &target, "bastion");
+        assert!(hinted
+            .starts_with("The SSH server bastion couldn't reach the database at db.internal:5432"));
+        // A real answer from the database (wrong password) passes through untouched
+        let auth = "password authentication failed for user \"app\"";
+        assert_eq!(tunnel_hint(auth, &target, "bastion"), auth);
     }
 }

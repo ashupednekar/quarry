@@ -1322,8 +1322,9 @@ impl QuarryWindow {
         self.state.toast_message = Some((msg, error));
         self.toast_reveal = None;
         self.toast_task = Some(cx.spawn(async move |this, cx| {
+            // Errors stay long enough to read, e.g. a connection that failed while the window opened
             cx.background_executor()
-                .timer(std::time::Duration::from_secs(4))
+                .timer(std::time::Duration::from_secs(if error { 10 } else { 4 }))
                 .await;
             this.update(cx, |this, cx| {
                 this.state.toast_message = None;
