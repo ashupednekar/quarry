@@ -125,7 +125,7 @@ impl ReviewModal {
                 .id(id)
                 .px_2p5()
                 .py_1()
-                .rounded(px(6.0))
+                .rounded(px(crate::ui::RADIUS_MD))
                 .text_sm()
                 .cursor_pointer()
                 .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
@@ -171,54 +171,55 @@ impl ReviewModal {
                 .child(cell().child("Before"))
                 .child(cell().child("After"))
         };
-        let table_row = |row_ix: usize,
-                         line_ix: usize,
-                         col: String,
-                         before: Option<String>,
-                         after: String| {
-            let format_cell = |val: String, is_before: bool, is_none: bool| -> AnyElement {
-                if is_none {
-                    return cell().text_color(t.text_muted).child("—").into_any_element();
-                }
-                let is_large = val.lines().count() > 5 || val.len() > 120;
-                let c = cell()
-                    .when(is_before, |d| d.text_color(t.text_muted).line_through())
-                    .when(!is_before, |d| {
-                        d.bg(crate::Theme::tint(t.success, 0.10))
-                            .rounded(px(3.0))
-                            .text_color(t.text_primary)
-                    });
-                if is_large {
-                    let id_str = SharedString::from(format!("diff-val-{is_before}-{row_ix}-{line_ix}"));
-                    c.id(ElementId::from(id_str))
-                        .max_h(px(140.0))
-                        .overflow_scroll()
-                        .child(val)
-                        .into_any_element()
-                } else {
-                    c.child(val).into_any_element()
-                }
-            };
+        let table_row =
+            |row_ix: usize, line_ix: usize, col: String, before: Option<String>, after: String| {
+                let format_cell = |val: String, is_before: bool, is_none: bool| -> AnyElement {
+                    if is_none {
+                        return cell()
+                            .text_color(t.text_muted)
+                            .child("—")
+                            .into_any_element();
+                    }
+                    let is_large = val.lines().count() > 5 || val.len() > 120;
+                    let c = cell()
+                        .when(is_before, |d| d.text_color(t.text_muted).line_through())
+                        .when(!is_before, |d| {
+                            d.bg(crate::Theme::tint(t.success, 0.10))
+                                .rounded(px(crate::ui::RADIUS_SM))
+                                .text_color(t.text_primary)
+                        });
+                    if is_large {
+                        let id_str =
+                            SharedString::from(format!("diff-val-{is_before}-{row_ix}-{line_ix}"));
+                        c.id(ElementId::from(id_str))
+                            .max_h(px(140.0))
+                            .overflow_scroll()
+                            .child(val)
+                            .into_any_element()
+                    } else {
+                        c.child(val).into_any_element()
+                    }
+                };
 
-            h_flex()
-                .items_start()
-                .px_1()
-                .border_b_1()
-                .border_color(t.border)
-                .child(
-                    cell()
-                        .flex_none()
-                        .w(px(COL_W))
-                        .truncate()
-                        .text_color(t.text_secondary)
-                        .child(col),
-                )
-                .child(match before {
-                    Some(v) => format_cell(v, true, false),
-                    None => format_cell(String::new(), true, true),
-                })
-                .child(format_cell(after, false, false))
-        };
+                h_flex()
+                    .items_start()
+                    .px_1()
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(
+                        cell()
+                            .flex_none()
+                            .w(px(COL_W))
+                            .truncate()
+                            .text_color(t.text_secondary)
+                            .child(col),
+                    )
+                    .child(match before {
+                        Some(v) => format_cell(v, true, false),
+                        None => format_cell(String::new(), true, true),
+                    })
+                    .child(format_cell(after, false, false))
+            };
         let badge = |kind: &'static str| {
             let color = match kind {
                 "INSERT" => t.success,
@@ -227,7 +228,7 @@ impl ReviewModal {
             };
             div()
                 .px_1p5()
-                .rounded(px(3.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .bg(crate::Theme::tint(color, 0.15))
                 .text_color(color)
                 .text_size(px(10.0))
@@ -236,7 +237,7 @@ impl ReviewModal {
         };
         let changes = rows.iter().enumerate().map(|(row_ix, r)| {
             v_flex()
-                .rounded(px(6.0))
+                .rounded(px(crate::ui::RADIUS_MD))
                 .border_1()
                 .border_color(t.border)
                 .overflow_hidden()
@@ -268,9 +269,13 @@ impl ReviewModal {
                         })
                         .children(r.lines.iter().enumerate().map(|(line_ix, l)| {
                             match l {
-                                Line::Change(c, before, after) => {
-                                    table_row(row_ix, line_ix, c.clone(), before.clone(), after.clone())
-                                }
+                                Line::Change(c, before, after) => table_row(
+                                    row_ix,
+                                    line_ix,
+                                    c.clone(),
+                                    before.clone(),
+                                    after.clone(),
+                                ),
                                 Line::Note(n) => h_flex()
                                     .px_3()
                                     .py_1p5()
@@ -286,7 +291,7 @@ impl ReviewModal {
                 .p_3()
                 .gap_3()
                 .items_start()
-                .rounded(px(6.0))
+                .rounded(px(crate::ui::RADIUS_MD))
                 .bg(t.bg_panel)
                 .border_1()
                 .border_color(t.border)

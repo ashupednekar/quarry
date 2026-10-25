@@ -583,7 +583,7 @@ impl QuarryWindow {
 
         let tab = |label: &'static str, which: BottomPanelTab| {
             underline_tab(theme, label, label, active == which)
-                .h(px(32.0))
+                .h(px(crate::ui::CONTROL_H))
                 .text_sm()
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.state.bottom_panel_tab = which;
@@ -594,7 +594,7 @@ impl QuarryWindow {
                 }))
         };
         let toggle = |id: &'static str, label: &'static str, on: bool| {
-            chip(theme, id, label, on).h(px(24.0)).px_2()
+            chip(theme, id, label, on).h(px(crate::ui::SMALL_H)).px_2()
         };
         let grid_view = |grid: &Entity<TableState<ResultSet>>, cx: &Context<Self>| {
             DataGrid::render(

@@ -779,7 +779,7 @@ impl QuarryWindow {
                                         .h(px(170.0))
                                         .border_1()
                                         .border_color(t.border)
-                                        .rounded(px(4.0))
+                                        .rounded(px(crate::ui::RADIUS_SM))
                                         .overflow_hidden()
                                         .child(DataGrid::render(
                                             &st.preview,

@@ -100,7 +100,7 @@ pub fn modal_card(id: &'static str, width: f32, t: &crate::theme::Theme) -> Stat
         .bg(t.bg_sidebar)
         .border_1()
         .border_color(t.border)
-        .rounded(px(10.0))
+        .rounded(px(RADIUS_LG))
         .shadow(vec![BoxShadow {
             color: hsla(0., 0., 0., 0.45),
             offset: point(px(0.), px(24.)),
@@ -117,10 +117,16 @@ pub fn dismiss_on_click(_: &ClickEvent, window: &mut Window, cx: &mut App) {
 }
 
 /// Spacing scale: every pane bar, row and modal edge uses one of these
+/// Dense controls inside bars: status bar, editor toolbar, inline buttons
+pub const SMALL_H: f32 = 24.0;
 pub const ROW_H: f32 = 28.0;
 pub const CONTROL_H: f32 = 32.0;
 /// Toolbars, pane headers, panel tab strips
 pub const BAR_H: f32 = 36.0;
+/// Corner radii: controls, popovers/menus, modal cards
+pub const RADIUS_SM: f32 = 4.0;
+pub const RADIUS_MD: f32 = 6.0;
+pub const RADIUS_LG: f32 = 10.0;
 /// Modal header and footer
 pub const MODAL_BAR_H: f32 = 48.0;
 
@@ -144,7 +150,7 @@ pub fn modal_header(
                 .min_w_0()
                 .child(
                     div()
-                        .text_sm()
+                        .text_base()
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(t.text_primary)
                         .child(title.into()),
@@ -154,11 +160,12 @@ pub fn modal_header(
                     d.child(
                         div()
                             .id("modal-subtitle")
-                            .text_sm()
+                            .text_xs()
                             .text_color(t.text_muted)
                             .truncate()
                             .tooltip(move |window, cx| {
-                                gpui::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                                gpui::component::tooltip::Tooltip::new(tip.clone())
+                                    .build(window, cx)
                             })
                             .child(s),
                     )
@@ -168,7 +175,7 @@ pub fn modal_header(
             div()
                 .id("modal-close")
                 .p_1()
-                .rounded(px(4.0))
+                .rounded(px(RADIUS_SM))
                 .cursor_pointer()
                 .hover(|s| s.bg(t.bg_hover))
                 .on_click(on_close)
@@ -203,32 +210,10 @@ pub fn modal_body(id: &'static str) -> Stateful<Div> {
         .min_h_0()
 }
 
-/// A label above its control, with an optional hint under it
-pub fn field(
-    t: &crate::theme::Theme,
-    label: impl Into<SharedString>,
-    hint: Option<&'static str>,
-    control: impl IntoElement,
-) -> Div {
-    v_flex()
-        .gap_2()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(t.text_secondary)
-                .child(label.into()),
-        )
-        .child(control)
-        .when_some(hint, |d, h| {
-            d.child(div().text_sm().text_color(t.text_muted).child(h))
-        })
-}
-
 /// Small caps-free section heading inside a modal
 pub fn section_title(t: &crate::theme::Theme, title: &'static str) -> Div {
     div()
-        .text_sm()
+        .text_xs()
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(t.text_muted)
         .child(title)
@@ -239,6 +224,53 @@ pub fn setting_row(
     t: &crate::theme::Theme,
     label: impl Into<SharedString>,
     description: impl Into<SharedString>,
+    control: impl IntoElement,
+) -> Div {
+    let description: SharedString = description.into();
+    h_flex()
+        .py_3()
+        .gap_6()
+        .items_center()
+        .justify_between()
+        .child(
+            v_flex()
+                .gap_0p5()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(t.text_primary)
+                        .child(label.into()),
+                )
+                .when(!description.is_empty(), |d| {
+                    d.child(div().text_xs().text_color(t.text_muted).child(description))
+                }),
+        )
+        .child(div().flex_shrink_0().child(control))
+}
+
+/// Settings-style group: rows on one rounded surface, hairlines between them
+pub fn settings_group(t: &crate::theme::Theme, rows: impl IntoIterator<Item = Div>) -> Div {
+    v_flex()
+        .px_4()
+        .rounded(px(RADIUS_MD))
+        .bg(t.bg_app)
+        .border_1()
+        .border_color(t.border)
+        .children(
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, row)| row.when(i > 0, |d| d.border_t_1().border_color(t.border))),
+        )
+}
+
+/// Form row in a settings group: label (and hint) left, a fixed-width control right.
+/// `width` narrows the control (a port, a timeout) while keeping it right-aligned.
+pub fn form_row(
+    t: &crate::theme::Theme,
+    label: impl Into<SharedString>,
+    hint: Option<SharedString>,
+    width: Option<f32>,
     control: impl IntoElement,
 ) -> Div {
     h_flex()
@@ -256,15 +288,21 @@ pub fn setting_row(
                         .text_color(t.text_primary)
                         .child(label.into()),
                 )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(t.text_muted)
-                        .child(description.into()),
-                ),
+                .when_some(hint, |d, h| {
+                    d.child(div().text_xs().text_color(t.text_muted).child(h))
+                }),
         )
-        .child(div().flex_shrink_0().child(control))
+        .child(
+            h_flex()
+                .flex_shrink_0()
+                .w(px(FORM_CONTROL_W))
+                .justify_end()
+                .child(div().w(px(width.unwrap_or(FORM_CONTROL_W))).child(control)),
+        )
 }
+
+/// Width of a text control in a form row
+pub const FORM_CONTROL_W: f32 = 300.0;
 
 /// One option in a segmented choice; the caller adds `.on_click`
 pub fn chip(
@@ -275,11 +313,11 @@ pub fn chip(
 ) -> Stateful<Div> {
     div()
         .id(id)
-        .h(px(30.0))
+        .h(px(ROW_H))
         .px_3()
         .flex()
         .items_center()
-        .rounded(px(5.0))
+        .rounded(px(RADIUS_SM))
         .text_sm()
         .cursor_pointer()
         .when(on, |d| d.bg(t.bg_selected).text_color(t.text_primary))
@@ -299,7 +337,7 @@ pub fn segmented(t: &crate::theme::Theme) -> Div {
     chip_group()
         .flex_nowrap()
         .p_0p5()
-        .rounded(px(7.0))
+        .rounded(px(RADIUS_MD))
         .bg(t.bg_sidebar)
         .border_1()
         .border_color(t.border)
@@ -314,7 +352,7 @@ pub fn underline_tab(
 ) -> Stateful<Div> {
     div()
         .id(id)
-        .h(px(36.0))
+        .h(px(BAR_H))
         .flex()
         .items_center()
         .text_sm()
@@ -339,13 +377,13 @@ pub fn zbutton(id: impl Into<ElementId>) -> gpui::component::button::Button {
 
 /// Roomier padding than gpui-kit's defaults (24px / 8px), for buttons with a label
 pub trait ButtonPadding: Styled + Sized {
-    /// 28px tall, 12px sides: modal and form actions
+    /// 32px tall, 16px sides: modal and form actions
     fn pad_sm(self) -> Self {
-        self.h(px(32.0)).px_4()
+        self.h(px(CONTROL_H)).px_4()
     }
-    /// 24px tall, 10px sides: toolbars and dense bars
+    /// 28px tall, 12px sides: toolbars and dense bars
     fn pad_xs(self) -> Self {
-        self.h(px(28.0)).px_3()
+        self.h(px(ROW_H)).px_3()
     }
 }
 
@@ -410,7 +448,7 @@ impl Render for DragGhost {
         div()
             .px_3()
             .py_1p5()
-            .rounded_md()
+            .rounded(px(RADIUS_MD))
             .bg(t.muted)
             .text_color(t.foreground)
             .border_1()

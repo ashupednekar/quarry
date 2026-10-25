@@ -83,6 +83,11 @@ impl TableDelegate for ResultSet {
                     .ok();
                 },
             )
+            // Numeric columns: header sits over the right-aligned values
+            .flex()
+            .when(self.is_numeric_column(self.actual(col_ix)), |d| {
+                d.justify_end()
+            })
             .child(self.column(col_ix, cx).name.clone())
     }
 
@@ -268,7 +273,7 @@ impl TableDelegate for ResultSet {
                                 .cursor_pointer()
                                 .px_1p5()
                                 .py_0p5()
-                                .rounded(px(3.0))
+                                .rounded(px(crate::ui::RADIUS_SM))
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
                                 .bg(c.token_bg)
@@ -298,7 +303,7 @@ impl TableDelegate for ResultSet {
                                 .cursor_pointer()
                                 .px_1p5()
                                 .py_0p5()
-                                .rounded(px(3.0))
+                                .rounded(px(crate::ui::RADIUS_SM))
                                 .text_sm()
                                 .font_weight(FontWeight::MEDIUM)
                                 .bg(c.token_bg)
@@ -335,7 +340,7 @@ impl TableDelegate for ResultSet {
                         .cursor_pointer()
                         .px_1p5()
                         .py_0p5()
-                        .rounded(px(3.0))
+                        .rounded(px(crate::ui::RADIUS_SM))
                         .text_sm()
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(c.muted)
@@ -364,7 +369,7 @@ impl TableDelegate for ResultSet {
                 .flex_shrink_0()
                 .cursor_pointer()
                 .p_1()
-                .rounded(px(3.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .text_color(c.muted)
                 .hover(|s| s.bg(c.token_bg).text_color(c.accent))
                 .tooltip(move |window, cx| Tooltip::new("Open in Value Editor").build(window, cx))
@@ -430,7 +435,7 @@ impl TableDelegate for ResultSet {
                             .flex_shrink_0()
                             .px_1p5()
                             .py_0p5()
-                            .rounded(px(3.0))
+                            .rounded(px(crate::ui::RADIUS_SM))
                             .font_weight(FontWeight::MEDIUM)
                             .cursor_pointer()
                             .text_color(c.accent)
@@ -465,7 +470,7 @@ impl TableDelegate for ResultSet {
                                     .bg(c.editor_bg)
                                     .border_1()
                                     .border_color(c.grid_line)
-                                    .rounded(px(4.0))
+                                    .rounded(px(crate::ui::RADIUS_SM))
                                     .shadow(vec![BoxShadow {
                                         color: hsla(0., 0., 0., 0.3),
                                         offset: point(px(0.), px(2.)),
@@ -529,7 +534,7 @@ impl TableDelegate for ResultSet {
                 .bg(c.editor_bg)
                 .border_1()
                 .border_color(border)
-                .rounded(px(3.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .shadow(vec![BoxShadow {
                     color: hsla(0., 0., 0., 0.4),
                     offset: point(px(0.), px(2.)),
@@ -572,7 +577,7 @@ impl TableDelegate for ResultSet {
         let token = |label: SharedString, fg: Rgba| {
             div()
                 .px_1p5()
-                .rounded(px(3.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .bg(c.token_bg)
                 .text_color(fg)
                 .child(label)
@@ -581,8 +586,13 @@ impl TableDelegate for ResultSet {
             None => token("DEFAULT".into(), c.muted).into_any_element(),
             Some(DbValue::Null) => token(self.null_label.clone(), c.muted).into_any_element(),
             Some(DbValue::Expr(_)) => token("DEFAULT".into(), c.muted).into_any_element(),
-            Some(DbValue::Boolean(true)) => token("true".into(), c.success).into_any_element(),
-            Some(DbValue::Boolean(false)) => token("false".into(), c.danger).into_any_element(),
+            // Plain text: a pill per cell is noise, and red `false` reads as an error
+            Some(DbValue::Boolean(true)) => {
+                div().text_color(c.text).child("true").into_any_element()
+            }
+            Some(DbValue::Boolean(false)) => {
+                div().text_color(c.muted).child("false").into_any_element()
+            }
             Some(v) => {
                 let cow = v.to_display_cow();
                 let is_multiline = cow.contains('\n') || cow.contains('\r');
@@ -710,7 +720,7 @@ impl TableDelegate for ResultSet {
                 .w(px(7.0))
                 .h(px(7.0))
                 .bg(c.accent)
-                .rounded_bl(px(4.0))
+                .rounded_bl(px(crate::ui::RADIUS_SM))
         });
 
         div()

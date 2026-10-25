@@ -44,15 +44,18 @@ impl Sidebar {
         let row = |id: ElementId, depth: f32| {
             h_flex()
                 .id(id)
-                .h(px(ROW_H))
+                .h(px(SMALL_H))
                 .pl(px(8.0 + depth * 16.0))
                 .pr_2()
                 .gap_1p5()
                 .items_center()
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover))
         };
+        // Leaves skip the chevron column, so a spacer keeps their icon under the parent's label
+        let leaf =
+            |id: ElementId, depth: f32| row(id, depth).child(div().w(px(12.0)).flex_shrink_0());
         let menu_on = |obj: DbObject| {
             cx.listener(move |this, _: &MouseDownEvent, window, cx| {
                 this.open_sidebar_menu(obj.clone(), window, cx)
@@ -68,7 +71,7 @@ impl Sidebar {
         };
         let muted = |text: String| div().text_sm().text_color(theme.text_muted).child(text);
 
-        let mut tree = v_flex().py_2().px_2().gap_px();
+        let mut tree = v_flex().py_1p5().px_2();
         if state.saved_connections.is_empty() {
             tree = tree.child(
                 v_flex()
@@ -116,7 +119,7 @@ impl Sidebar {
                         .child(div().size(px(6.0)).rounded_full().bg(color))
                         .child(
                             div()
-                                .text_sm()
+                                .text_xs()
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(theme.text_muted)
                                 .child(conn.env.name()),
@@ -174,7 +177,7 @@ impl Sidebar {
                 let (open_pin, drop_pin) = (pin.clone(), pin.clone());
                 let is_table = matches!(pin, crate::pins::Pin::Table { .. });
                 tree = tree.child(
-                    row(("pin", pin_ix).into(), 1.0)
+                    leaf(("pin", pin_ix).into(), 1.0)
                         .group("pin-row")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_pin(open_pin.clone(), window, cx)
@@ -241,7 +244,7 @@ impl Sidebar {
                 }
                 if !state.catalog.is_loaded(schema) {
                     tree = tree.child(
-                        row(("schema-loading", schema_ix).into(), 2.0)
+                        leaf(("schema-loading", schema_ix).into(), 2.0)
                             .child(muted("Loading…".to_string())),
                     );
                     continue;
@@ -252,7 +255,7 @@ impl Sidebar {
                     let (t_name, s_name) = (tbl.table_name.clone(), tbl.schema_name.clone());
                     let (h_name, h_schema) = (t_name.clone(), s_name.clone());
                     tree = tree.child(
-                        row(("table", schema_ix * 100_000 + tbl_ix).into(), 2.0)
+                        leaf(("table", schema_ix * 100_000 + tbl_ix).into(), 2.0)
                             .when(selected, |r| r.bg(theme.bg_selected))
                             .on_mouse_down(
                                 MouseButton::Right,
@@ -302,7 +305,7 @@ impl Sidebar {
                 let objects = state.schema_objects.get(schema);
                 if matches!(objects, Some(None)) {
                     tree = tree.child(
-                        row(("objects-loading", schema_ix).into(), 2.0)
+                        leaf(("objects-loading", schema_ix).into(), 2.0)
                             .child(muted("Loading…".into())),
                     );
                 }
@@ -339,7 +342,7 @@ impl Sidebar {
                     for (obj_ix, obj) in of_kind.into_iter().enumerate() {
                         let (s_name, o) = (schema.clone(), obj.clone());
                         tree = tree.child(
-                            row(("object", group_id * 100_000 + obj_ix).into(), 3.0)
+                            leaf(("object", group_id * 100_000 + obj_ix).into(), 3.0)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.open_object_definition(
                                         s_name.clone(),

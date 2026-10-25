@@ -59,7 +59,7 @@ impl QuarryWindow {
         #[cfg(not(target_os = "macos"))]
         let titlebar_left_pad = px(12.0);
         h_flex()
-            .h(px(38.0))
+            .h(px(crate::ui::BAR_H))
             .w_full()
             .pl(titlebar_left_pad)
             .pr_3()
@@ -67,9 +67,11 @@ impl QuarryWindow {
             .border_b_1()
             .border_color(t.border)
             .items_center()
+            // Equal zero-basis sides keep the omnibox centred on the window, whatever the breadcrumb says
             .child(
                 div()
                     .flex_1()
+                    .flex_basis(px(0.0))
                     .min_w_0()
                     .pr_3()
                     .children(self.render_breadcrumb()),
@@ -81,10 +83,10 @@ impl QuarryWindow {
                     .w(px(360.0))
                     .min_w(px(180.0))
                     .flex_shrink(1.0)
-                    .h(px(26.0))
+                    .h(px(crate::ui::ROW_H))
                     .px_2p5()
                     .gap_2()
-                    .rounded(px(6.0))
+                    .rounded(px(crate::ui::RADIUS_MD))
                     .bg(t.bg_panel)
                     .border_1()
                     .border_color(t.border)
@@ -116,7 +118,14 @@ impl QuarryWindow {
                             .child(crate::ui::format_keys("⌘K")),
                     ),
             )
-            .child(div().flex_1().min_w_0())
+            // Mirrors the traffic-light gutter on the left
+            .child(
+                div()
+                    .flex_1()
+                    .flex_basis(px(0.0))
+                    .min_w_0()
+                    .ml(titlebar_left_pad - px(12.0)),
+            )
     }
 
     /// Where the active tab points: `● connection › schema › ▦ table`.
@@ -217,7 +226,7 @@ impl QuarryWindow {
                 .border_b_1()
                 .border_color(t.border)
                 .items_end()
-                .drag_over::<layout::DraggedTab>(|style, _, _, _| style)
+                .drag_over::<layout::DraggedTab>(move |style, _, _, _| style)
                 .on_drop(cx.listener(|this, &layout::DraggedTab(from_idx): &layout::DraggedTab, _, cx| {
                     this.active_drag_tab = None;
                     let last = this.state.tabs.len().saturating_sub(1);
@@ -255,9 +264,16 @@ impl QuarryWindow {
                         .pr_1()
                         .gap_1p5()
                         .items_center()
-                        .rounded_t(px(5.0))
+                        .rounded_t(px(crate::ui::RADIUS_SM))
                         .cursor_pointer()
-                        .when(is_active, |d| d.bg(t.bg_app))
+                        .group("tab-row")
+                        .relative()
+                        // Active tab: joins the content below and carries a 2px accent cap
+                        .when(is_active, |d| {
+                            d.bg(t.bg_app).child(
+                                div().absolute().top_0().left_0().right_0().h(px(2.0)).bg(accent),
+                            )
+                        })
                         .when(!is_active, |d| d.hover(|s| s.bg(t.bg_hover)))
                         .on_drag(layout::DraggedTab(idx), {
                             let this_entity = this_entity.clone();
@@ -312,7 +328,7 @@ impl QuarryWindow {
                                     div()
                                         .px_1()
                                         .py(px(1.0))
-                                        .rounded_xs()
+                                        .rounded(px(crate::ui::RADIUS_SM))
                                         .bg(t.accent.opacity(0.14))
                                         .text_color(t.accent)
                                         .child(
@@ -336,17 +352,24 @@ impl QuarryWindow {
                             |d| d.child(div().size(px(6.0)).rounded_full().bg(t.text_secondary)),
                         )
                         .child(
-                            zbutton(("tab-close", idx))
-                                .icon(IconName::X)
-                                .ghost()
-                                .xsmall()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    // The tab under this button selects itself on click; without this it would
-                                    // re-select the closed slot (a neighbour, or nothing when it was the last)
-                                    cx.stop_propagation();
-                                    this.close_tab_at(idx, cx);
-                                    this.refocus_root(window, cx);
-                                })),
+                            // Close shows on the active tab and on hover, like Zed
+                            div()
+                                .when(!is_active, |d| {
+                                    d.invisible().group_hover("tab-row", |s| s.visible())
+                                })
+                                .child(
+                                    zbutton(("tab-close", idx))
+                                        .icon(IconName::X)
+                                        .ghost()
+                                        .xsmall()
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            // The tab under this button selects itself on click; without this it would
+                                            // re-select the closed slot (a neighbour, or nothing when it was the last)
+                                            cx.stop_propagation();
+                                            this.close_tab_at(idx, cx);
+                                            this.refocus_root(window, cx);
+                                        })),
+                                ),
                         )
                 }))
                 // Tabs sit on the strip's bottom edge; centre the + on a tab's height so it lines up with them
@@ -441,7 +464,7 @@ impl QuarryWindow {
             .pr_1()
             .gap_1p5()
             .items_center()
-            .rounded_t(px(5.0))
+            .rounded_t(px(crate::ui::RADIUS_SM))
             .cursor_pointer()
             .when(is_active, |d| d.bg(t.bg_app))
             .when(!is_active, |d| d.hover(|s| s.bg(t.bg_hover)))
@@ -596,6 +619,8 @@ impl QuarryWindow {
             );
 
         let content = self.render_tab_view(tab, cx);
+        let accent = self.theme.accent;
+        let zone = move |a: f32| Rgba { a, ..accent };
 
         v_flex()
             .id(("split-pane-container", p_ix))
@@ -603,7 +628,7 @@ impl QuarryWindow {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .drag_over::<layout::DraggedSplitPane>(|style, _, _, _| style.bg(rgba(0x4080ff10)))
+            .drag_over::<layout::DraggedSplitPane>(move |style, _, _, _| style.bg(zone(0.08)))
             .on_drop(cx.listener(
                 move |this,
                       &layout::DraggedSplitPane(from_ix): &layout::DraggedSplitPane,
@@ -615,7 +640,7 @@ impl QuarryWindow {
                     }
                 },
             ))
-            .drag_over::<layout::DraggedTab>(|style, _, _, _| style.bg(rgba(0x4080ff10)))
+            .drag_over::<layout::DraggedTab>(move |style, _, _, _| style.bg(zone(0.08)))
             .on_drop(cx.listener(
                 move |this, &layout::DraggedTab(from_idx): &layout::DraggedTab, _, cx| {
                     this.active_drag_tab = None;

@@ -43,11 +43,11 @@ impl QueryEditor {
         let picker = |id: &'static str, icon: IconName, text: String, on: bool| {
             h_flex()
                 .id(id)
-                .h(px(24.0))
+                .h(px(crate::ui::SMALL_H))
                 .px_2()
                 .gap_1()
                 .items_center()
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .cursor_pointer()
                 .text_sm()
                 .text_color(if on {
@@ -112,9 +112,9 @@ impl QueryEditor {
             .flex_shrink_0()
             .gap_1p5()
             .items_center()
-            .h(px(24.0))
+            .h(px(crate::ui::SMALL_H))
             .px_2()
-            .rounded(px(4.0))
+            .rounded(px(crate::ui::RADIUS_SM))
             .cursor_pointer()
             .hover(|s| s.bg(theme.bg_hover))
             .on_click(cx.listener(move |this, _, window, cx| this.open_connection_menu(window, cx)))
@@ -184,7 +184,7 @@ impl QueryEditor {
                             ))
                             .child(
                                 zbutton("btn-run-query")
-                                    .h(px(24.0))
+                                    .h(px(crate::ui::SMALL_H))
                                     .px_2p5()
                                     .ml_1()
                                     .icon(IconName::Play)
@@ -405,7 +405,7 @@ fn toolbar_button(
     action: Box<dyn Action>,
 ) -> impl IntoElement {
     zbutton(id)
-        .h(px(24.0))
+        .h(px(crate::ui::SMALL_H))
         .px_2()
         .icon(icon)
         .label(label)

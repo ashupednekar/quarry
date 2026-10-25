@@ -64,9 +64,11 @@ impl QuarryWindow {
         self.state.add_conn_tab = 0;
         self.state.add_conn_read_only = false;
         self.state.add_conn_ssh = false;
-        // A fresh form: nothing carried over from the last connection added
+        // A fresh form starts on the driver's usual local defaults (host, port, user, database),
+        // so only what differs needs typing. Never a password: that's always typed
         self.set_conn_driver(self.state.add_conn_driver, window, cx);
-        self.set_conn_inputs(Some(""), "", window, cx);
+        let sample = self.conn_driver().sample();
+        self.set_conn_inputs(Some(""), sample, window, cx);
         self.state.add_conn_modal_open = true;
         // The URL / file comes first in the form; the name is optional
         self.conn_path_input.update(cx, |i, cx| i.focus(window, cx));

@@ -103,11 +103,11 @@ impl QuarryWindow {
             Some(
                 h_flex()
                     .id(("switcher-row", i))
-                    .h(px(30.0))
+                    .h(px(crate::ui::ROW_H))
                     .px_3()
                     .gap_2()
                     .items_center()
-                    .rounded(px(4.0))
+                    .rounded(px(crate::ui::RADIUS_SM))
                     .cursor_pointer()
                     .when(on, |d| d.bg(t.bg_selected))
                     .hover(|s| s.bg(t.bg_hover))
@@ -138,29 +138,32 @@ impl QuarryWindow {
             )
         });
         Some(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .justify_center()
-                .items_start()
-                .pt(px(120.0))
-                .child(
-                    v_flex()
-                        .id("tab-switcher")
-                        .w(px(420.0))
-                        .max_h(px(420.0))
-                        .overflow_y_scroll()
-                        .p_1()
-                        .gap_px()
-                        .bg(t.bg_panel)
-                        .border_1()
-                        .border_color(t.border)
-                        .rounded(px(10.0))
-                        .shadow_lg()
-                        .children(rows),
-                )
-                .into_any_element(),
+            crate::ui::fade_in(
+                "tab-switcher-fade",
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .justify_center()
+                    .items_start()
+                    .pt(px(120.0))
+                    .child(
+                        v_flex()
+                            .id("tab-switcher")
+                            .w(px(420.0))
+                            .max_h(px(420.0))
+                            .overflow_y_scroll()
+                            .p_1()
+                            .gap_px()
+                            .bg(t.bg_panel)
+                            .border_1()
+                            .border_color(t.border)
+                            .rounded(px(crate::ui::RADIUS_LG))
+                            .shadow_lg()
+                            .children(rows),
+                    ),
+            )
+            .into_any_element(),
         )
     }
 }

@@ -283,127 +283,124 @@ impl QuarryWindow {
         let choice = |id: &'static str, label: &'static str, on: bool| {
             chip(&t, id, label, on).when(busy, |d| d.opacity(0.5))
         };
-        let row = |label: &'static str| {
-            h_flex().gap_4().items_center().min_h(px(32.0)).child(
-                div()
-                    .w(px(104.0))
-                    .flex_shrink_0()
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(t.text_secondary)
-                    .child(label),
-            )
-        };
-
-        let body = v_flex()
-            .gap_4()
-            .child(
-                row("Format").child(
-                    segmented(&t).children(
-                        [
-                            (ExportFormat::Csv, "CSV"),
-                            (ExportFormat::Json, "JSON"),
-                            (ExportFormat::Sql, "SQL INSERT"),
-                        ]
-                        .map(|(f, label)| {
-                            choice(label, label, e.format == f).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    this.export.format = f;
-                                    cx.notify();
-                                },
-                            ))
-                        }),
-                    ),
-                ),
-            )
-            .when(e.format == ExportFormat::Csv, |this| {
-                this.child(row("Delimiter").child(segmented(&t).children(
-                    [(',', "Comma"), (';', "Semicolon"), ('\t', "Tab")].map(|(d, label)| {
+        let format_switch = segmented(&t).children(
+            [
+                (ExportFormat::Csv, "CSV"),
+                (ExportFormat::Json, "JSON"),
+                (ExportFormat::Sql, "SQL INSERT"),
+            ]
+            .map(|(f, label)| {
+                choice(label, label, e.format == f).on_click(cx.listener(move |this, _, _, cx| {
+                    this.export.format = f;
+                    cx.notify();
+                }))
+            }),
+        );
+        // Format and its CSV options
+        let mut format_rows = vec![setting_row(&t, "Format", "", format_switch)];
+        if e.format == ExportFormat::Csv {
+            format_rows.push(setting_row(
+                &t,
+                "Delimiter",
+                "",
+                segmented(&t).children([(',', "Comma"), (';', "Semicolon"), ('\t', "Tab")].map(
+                    |(d, label)| {
                         choice(label, label, e.delimiter == d).on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.export.delimiter = d;
                                 cx.notify();
                             },
                         ))
-                    }),
-                )))
-                // An on/off setting is a switch, not a lone chip
-                .child(
-                    row("Header row").child(
-                        gpui::component::switch::Switch::new("export-header")
-                            .checked(e.header)
-                            .small()
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _: &bool, _, cx| {
-                                this.export.header = !this.export.header;
-                                cx.notify();
-                            })),
-                    ),
-                )
-                .child(row("NULL as").child(segmented(&t).children(
-                    [("", "Empty"), ("NULL", "NULL"), ("\\N", "\\N")].map(|(n, label)| {
+                    },
+                )),
+            ));
+            format_rows.push(setting_row(
+                &t,
+                "Header row",
+                "Column names as the first line",
+                gpui::component::switch::Switch::new("export-header")
+                    .checked(e.header)
+                    .small()
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _: &bool, _, cx| {
+                        this.export.header = !this.export.header;
+                        cx.notify();
+                    })),
+            ));
+            format_rows.push(setting_row(
+                &t,
+                "NULL as",
+                "",
+                segmented(&t).children([("", "Empty"), ("NULL", "NULL"), ("\\N", "\\N")].map(
+                    |(n, label)| {
                         choice(label, label, e.null_text == n).on_click(cx.listener(
                             move |this, _, _, cx| {
                                 this.export.null_text = n;
                                 cx.notify();
                             },
                         ))
-                    }),
-                )))
-            })
-            .child(div().h(px(1.0)).bg(t.border))
+                    },
+                )),
+            ));
+        }
+
+        // Which rows
+        let rows_switch = segmented(&t)
             .child(
-                row("Rows")
-                    .child(
-                        segmented(&t)
-                            .child(
-                                choice("rows-loaded", "Loaded rows", !e.whole_table).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.export.whole_table = false;
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
-                            .when(is_table || truncated, |this| {
-                                this.child(
-                                    choice(
-                                        "rows-all",
-                                        if is_table { "Entire table" } else { "All rows" },
-                                        e.whole_table,
-                                    )
-                                    .on_click(cx.listener(
-                                        |this, _, _, cx| {
-                                            this.export.whole_table = true;
-                                            cx.notify();
-                                        },
-                                    )),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(t.text_muted)
-                            .child(if e.whole_table {
-                                if is_table {
-                                    "re-runs the table query".to_string()
-                                } else {
-                                    "re-runs the query".to_string()
-                                }
-                            } else {
-                                format!("{loaded} rows")
-                            }),
-                    ),
+                choice("rows-loaded", "Loaded rows", !e.whole_table).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.export.whole_table = false;
+                        cx.notify();
+                    },
+                )),
             )
-            .child(row("Limit").child(div().w(px(140.0)).child(form_input(&e.limit))))
+            .when(is_table || truncated, |this| {
+                this.child(
+                    choice(
+                        "rows-all",
+                        if is_table { "Entire table" } else { "All rows" },
+                        e.whole_table,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.export.whole_table = true;
+                        cx.notify();
+                    })),
+                )
+            });
+        let rows_hint = match (e.whole_table, is_table) {
+            (true, true) => "Re-runs the table query".to_string(),
+            (true, false) => "Re-runs the query".to_string(),
+            (false, _) => format!("{loaded} rows already loaded"),
+        };
+        let row_rows = [
+            setting_row(&t, "Rows", rows_hint, rows_switch),
+            form_row(
+                &t,
+                "Limit",
+                Some("Blank exports every row".into()),
+                Some(120.0),
+                div().child(
+                    gpui::component::input::Input::new(&e.limit)
+                        .text_sm()
+                        .px_3(),
+                ),
+            ),
+        ];
+
+        // Columns: a checklist that scrolls, All / None in its head
+        let columns = v_flex()
+            .gap_2()
             .child(
-                row("Columns")
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().text_sm().text_color(t.text_primary).child("Columns"))
                     .child(
                         div()
                             .flex_1()
-                            .text_sm()
+                            .text_xs()
                             .text_color(t.text_muted)
-                            .child(format!("{picked} of {} selected", e.columns.len())),
+                            .child(format!("{picked} of {}", e.columns.len())),
                     )
                     .child(
                         zbutton("export-cols-all")
@@ -431,28 +428,39 @@ impl QuarryWindow {
                     ),
             )
             .child(
-                chip_group()
-                    .gap_1()
+                v_flex()
+                    .id("export-columns")
+                    .max_h(px(224.0))
+                    .overflow_y_scroll()
+                    .px_3()
+                    .py_1p5()
+                    .rounded(px(RADIUS_MD))
+                    .border_1()
+                    .border_color(t.border)
                     .children(e.columns.iter().enumerate().map(|(i, (name, on))| {
-                        chip(&t, ("export-col", i), name.clone(), *on)
-                            .gap_1()
-                            .when(*on, |d| {
-                                d.child(
-                                    gpui::component::Icon::new(gpui::assets::IconName::Check)
-                                        .xsmall()
-                                        .text_color(t.accent),
-                                )
-                            })
-                            .flex_row_reverse()
-                            .when(!*on, |d| d.text_color(t.text_muted))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(c) = this.export.columns.get_mut(i) {
-                                    c.1 = !c.1;
-                                }
-                                cx.notify();
-                            }))
+                        h_flex().h(px(ROW_H)).flex_shrink_0().items_center().child(
+                            gpui::component::checkbox::Checkbox::new(("export-col", i))
+                                .label(name.clone())
+                                .checked(*on)
+                                .disabled(busy)
+                                .on_click(cx.listener(move |this, _: &bool, _, cx| {
+                                    if let Some(c) = this.export.columns.get_mut(i) {
+                                        c.1 = !c.1;
+                                    }
+                                    cx.notify();
+                                })),
+                        )
                     })),
             );
+
+        // Plain rows on the modal, hairlines only between sections: a quick dialog, not a settings page
+        let divider = || div().h_px().my_2().bg(t.border);
+        let body = v_flex()
+            .child(v_flex().children(format_rows))
+            .child(divider())
+            .child(v_flex().children(row_rows))
+            .child(divider())
+            .child(columns.pt_3());
 
         let footer = modal_footer(&t)
             .child(
@@ -507,6 +515,7 @@ impl QuarryWindow {
                 "export-card-backdrop-fade",
                 modal_backdrop("export-card-backdrop", dismiss_on_click, cx).child(
                     modal_card("export-card", 560.0, &t)
+                        .max_h_full()
                         // Enter in any field exports, like the primary button
                         .on_action(cx.listener(
                             |this, _: &gpui::component::input::Enter, window, cx| {
@@ -526,7 +535,7 @@ impl QuarryWindow {
                             }),
                             dismiss_on_click,
                         ))
-                        .child(modal_body("export-body").max_h(px(460.0)).child(body))
+                        .child(modal_body("export-body").child(body))
                         .child(footer),
                 ),
             )

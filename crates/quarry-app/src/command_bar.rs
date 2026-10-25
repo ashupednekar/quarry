@@ -581,7 +581,7 @@ impl CommandBar {
                 .h(px(18.0))
                 .flex()
                 .items_center()
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .bg(theme.bg_surface)
                 .text_sm()
                 .text_color(theme.text_muted)
@@ -624,10 +624,10 @@ impl CommandBar {
             list = list.child(
                 h_flex()
                     .id(("cmd-item", idx))
-                    .h(px(36.0))
-                    .px_3()
-                    .gap_3()
-                    .rounded(px(6.0))
+                    .h(px(crate::ui::ROW_H))
+                    .px_2()
+                    .gap_2()
+                    .rounded(px(crate::ui::RADIUS_SM))
                     .items_center()
                     .cursor_pointer()
                     .when(is_selected, |d| d.bg(theme.bg_selected))
@@ -674,6 +674,9 @@ impl CommandBar {
                 cx.listener(move |this, _, window, cx| this.dismiss(&crate::Dismiss, window, cx)),
                 cx,
             )
+            // Drops down from the omnibox it was opened from, like Zed's palette
+            .items_start()
+            .pt(px(crate::ui::BAR_H + 8.0))
             .child(
                 modal_card("command-bar-card", 640.0, theme)
                     .key_context("CommandBar")
@@ -681,7 +684,7 @@ impl CommandBar {
                     .overflow_hidden()
                     .child(
                         h_flex()
-                            .h(px(52.0))
+                            .h(px(44.0))
                             .px_4()
                             .gap_3()
                             .items_center()
@@ -698,7 +701,7 @@ impl CommandBar {
                     .child(list.flex_1().min_h_0())
                     .child(
                         h_flex()
-                            .h(px(36.0))
+                            .h(px(crate::ui::BAR_H))
                             .px_4()
                             .gap_4()
                             .items_center()

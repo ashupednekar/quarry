@@ -181,7 +181,7 @@ impl QuarryWindow {
             .w(px(520.0))
             .p_3()
             .gap_2()
-            .rounded(px(10.0))
+            .rounded(px(crate::ui::RADIUS_LG))
             .bg(t.bg_sidebar)
             .border_1()
             .border_color(t.border)

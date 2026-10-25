@@ -432,7 +432,7 @@ impl QuarryWindow {
                             .flex()
                             .items_center()
                             .justify_center()
-                            .rounded(px(4.0))
+                            .rounded(px(crate::ui::RADIUS_SM))
                             .text_color(t.text_secondary)
                             .hover(|s| s.bg(t.bg_hover).text_color(t.accent))
                             .tooltip(move |window, cx| {
@@ -527,7 +527,7 @@ impl QuarryWindow {
                             .children(label.map(|l| {
                                 div()
                                     .px_1()
-                                    .rounded(px(3.0))
+                                    .rounded(px(crate::ui::RADIUS_SM))
                                     .bg(crate::Theme::tint(color, 0.15))
                                     .text_color(color)
                                     .text_size(sz(10.0))
@@ -561,7 +561,7 @@ impl QuarryWindow {
                 .left(sz(p.x))
                 .top(sz(p.y))
                 .w(sz(CARD_W))
-                .rounded(px(6.0))
+                .rounded(px(crate::ui::RADIUS_MD))
                 .border_1()
                 .border_color(if is_this_dragged || focus {
                     t.accent
@@ -680,7 +680,7 @@ impl QuarryWindow {
             .items_center()
             .p_0p5()
             .gap_0p5()
-            .rounded(px(6.0))
+            .rounded(px(crate::ui::RADIUS_MD))
             .border_1()
             .border_color(t.border)
             .bg(t.bg_panel)
@@ -703,7 +703,7 @@ impl QuarryWindow {
                         .id(("er-depth", d))
                         .px_2()
                         .py_0p5()
-                        .rounded(px(4.0))
+                        .rounded(px(crate::ui::RADIUS_SM))
                         .cursor_pointer()
                         .when(on, |s| s.bg(t.bg_selected).text_color(t.text_primary))
                         .when(!on, |s| {
@@ -719,7 +719,7 @@ impl QuarryWindow {
         let badge = |label: &'static str, color: Rgba| {
             div()
                 .px_1()
-                .rounded(px(3.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .bg(crate::Theme::tint(color, 0.15))
                 .text_color(color)
                 .text_size(px(10.0))
@@ -770,7 +770,7 @@ impl QuarryWindow {
                 .id(id)
                 .px_2()
                 .py_0p5()
-                .rounded(px(4.0))
+                .rounded(px(crate::ui::RADIUS_SM))
                 .cursor_pointer()
                 .text_color(t.text_secondary)
                 .hover(|s| s.bg(t.bg_hover).text_color(t.text_primary))
@@ -782,7 +782,7 @@ impl QuarryWindow {
             .items_center()
             .p_0p5()
             .gap_0p5()
-            .rounded(px(6.0))
+            .rounded(px(crate::ui::RADIUS_MD))
             .border_1()
             .border_color(t.border)
             .bg(t.bg_panel)

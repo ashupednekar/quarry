@@ -27,8 +27,8 @@ impl StatusBar {
             div()
                 .id(id)
                 .px_1p5()
-                .rounded(px(3.0))
-                .text_sm()
+                .rounded(px(crate::ui::RADIUS_SM))
+                .text_xs()
                 .text_color(color)
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.bg_hover))
@@ -40,20 +40,10 @@ impl StatusBar {
             .filter(|t| !matches!(t, crate::state::Tab::Query { .. }))
             .and_then(|t| {
                 let rs = t.grid().read(cx).delegate();
-                let more = if rs.source.as_ref().is_some_and(|s| s.has_more) {
-                    "+"
-                } else {
-                    ""
-                };
-                rs.result().map(|res| (res, more))
+                rs.result()
             })
-            .map(|(res, more)| {
-                (
-                    format!("{}{} rows", res.rows.len(), more),
-                    format!("{:.2} ms", res.execution_time.as_secs_f64() * 1000.0),
-                )
-            })
-            .map(|(rows, time)| format!("{} · {}", rows, time));
+            // Row count lives in the grid's footer; only the timing is shown here
+            .map(|res| format!("{:.2} ms", res.execution_time.as_secs_f64() * 1000.0));
 
         let conn_name = connection
             .map(|c| c.name.clone())
@@ -81,7 +71,7 @@ impl StatusBar {
         };
 
         h_flex()
-            .h(px(24.0))
+            .h(px(crate::ui::SMALL_H))
             .w_full()
             .px_3()
             .bg(theme.bg_panel)
@@ -97,7 +87,7 @@ impl StatusBar {
                     // Vim mode sits where Vim puts it: bottom left
                     .children(vim_mode.map(|mode| {
                         div()
-                            .text_sm()
+                            .text_xs()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(match mode {
                                 crate::state::VimMode::Normal => theme.accent,
@@ -128,7 +118,7 @@ impl StatusBar {
                     .when(in_tx, |this| {
                         this.child(
                             div()
-                                .text_sm()
+                                .text_xs()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme.warning)
                                 .child("● Transaction open"),
@@ -155,7 +145,7 @@ impl StatusBar {
                                 .gap_1p5()
                                 .items_center()
                                 .px_1p5()
-                                .rounded(px(4.0))
+                                .rounded(px(crate::ui::RADIUS_SM))
                                 .when(loud, |d| {
                                     d.bg(Theme::tint(env_color, 0.14))
                                         .font_weight(FontWeight::SEMIBOLD)
@@ -167,7 +157,7 @@ impl StatusBar {
                                 .child(div().size(px(6.0)).rounded_full().bg(env_color))
                                 .child(
                                     div()
-                                        .text_sm()
+                                        .text_xs()
                                         .text_color(if loud {
                                             env_color
                                         } else {
@@ -178,7 +168,7 @@ impl StatusBar {
                         }
                         None => h_flex().id("statusbar-conn").child(
                             div()
-                                .text_sm()
+                                .text_xs()
                                 .text_color(theme.text_muted)
                                 .child(conn_name),
                         ),
@@ -193,7 +183,7 @@ impl StatusBar {
                     .children(stats.map(|s| {
                         div()
                             .mr_3()
-                            .text_sm()
+                            .text_xs()
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_color(theme.text_muted)
                             .child(s)

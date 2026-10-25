@@ -56,7 +56,7 @@ impl Driver for PostgresDriver {
     }
 
     fn sample(&self) -> &'static str {
-        "postgres://postgres:postgres@localhost:5432/postgres"
+        "postgres://postgres@localhost:5432/postgres"
     }
 
     fn recognizes(&self, conn: &str) -> bool {
