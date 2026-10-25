@@ -1,0 +1,45 @@
+name: Warm cache
+
+# Builds the release binary on main so tag runs in release.yml can restore its dependency cache.
+# Env, RUSTFLAGS and shared-key must match release.yml or the cache key won't line up.
+on:
+  push:
+    branches: [main]
+    paths: ["crates/**", "Cargo.toml", "Cargo.lock"]
+  workflow_dispatch:
+
+concurrency:
+  group: warm-cache
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_MIN_STACK: "67108864"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux build dependencies & mold linker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang mold libasound2-dev libdbus-1-dev libfontconfig1-dev \
+            libfreetype6-dev libvulkan-dev libwayland-dev libx11-xcb-dev \
+            libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "quarry-release-${{ matrix.os }}"
+
+      - run: cargo build --release -p quarry-app
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C link-arg=-fuse-ld=mold' || '' }}
