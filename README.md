@@ -96,7 +96,15 @@ For an in-depth architectural breakdown—including memory layout, asynchronous 
 Download pre-built `.deb`, `.AppImage`, or Windows installer binaries from [GitHub Releases](https://github.com/thekodeking/quarry/releases).
 
 ### macOS
-Prebuilt binaries for macOS require self-signing or manual compilation. Building locally takes only a few minutes:
+Download `Quarry-<version>.dmg` from [GitHub Releases](https://github.com/thekodeking/quarry/releases) and drag Quarry to Applications. The app is ad-hoc signed rather than notarized by Apple, so macOS blocks the first launch. Clear the quarantine flag once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Quarry.app
+```
+
+Or open it, then click **Open Anyway** in System Settings → Privacy & Security.
+
+To build it yourself instead (no Gatekeeper warning):
 
 ```sh
 # Prerequisites: Xcode command line tools (xcode-select --install) and Rust (https://rustup.rs)
@@ -105,8 +113,6 @@ cargo install cargo-packager --locked
 cd crates/quarry-app && cargo packager --release -f app
 cp -R ../../dist/Quarry.app /Applications/
 ```
-
-Building on your own machine bypasses Apple Gatekeeper warnings.
 
 ---
 
@@ -127,8 +133,10 @@ Packages are generated using [cargo-packager](https://github.com/crabnebula-dev/
 ```sh
 cd crates/quarry-app
 cargo packager --release -f app       # macOS .app
-# or: -f dmg, -f deb, -f appimage, -f nsis
+# or: -f deb, -f appimage, -f nsis
 ```
+
+For the ad-hoc signed macOS DMG, run `scripts/package-macos.sh`.
 
 To create a new release, push a git tag matching the workspace version (e.g. `v0.1.0`).
 
