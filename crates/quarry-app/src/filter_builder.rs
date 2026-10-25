@@ -830,7 +830,9 @@ impl QuarryWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    // Named imports, not `super::*`: that would bring in `gpui::*`, whose `test` attribute macro
+    // shadows the built-in `#[test]` and recurses until rustc overflows its stack (SIGBUS)
+    use super::{parse_filter_expression, split_top_level, FilterCombineMode, FilterOperator};
 
     #[test]
     fn test_filter_operator_to_sql() {

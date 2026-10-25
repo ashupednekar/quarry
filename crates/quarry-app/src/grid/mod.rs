@@ -2987,7 +2987,7 @@ impl DataGrid {
 #[cfg(test)]
 mod tests {
     // Not `super::*`: gpui's `test` attribute would shadow the std one
-    use super::{PendingRowInsert, ResultSet, Theme};
+    use super::{CellRange, PendingRowInsert, ResultSet, Theme};
 
     #[test]
     fn date_part_reads_the_leading_date() {
