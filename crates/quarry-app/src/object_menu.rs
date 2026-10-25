@@ -23,6 +23,12 @@ pub enum DbObject {
     Query(std::path::PathBuf),
 }
 
+pub const REVEAL: &str = if cfg!(target_os = "macos") {
+    "Reveal in Finder"
+} else {
+    "Show in Folder"
+};
+
 /// One Lucide icon per action, so the same action looks the same in every menu
 fn icon_for(label: &str) -> gpui::assets::IconName {
     use gpui::assets::IconName as I;
@@ -39,7 +45,7 @@ fn icon_for(label: &str) -> gpui::assets::IconName {
         "Open Query" => I::SquareTerminal,
         "Rename…" => I::Pencil,
         "Duplicate" => I::Copy,
-        "Reveal in Finder" => I::FolderOpen,
+        REVEAL => I::FolderOpen,
         "Truncate…" => I::Eraser,
         "Export…" => I::Download,
         "Pin" => I::Pin,
@@ -233,9 +239,9 @@ impl QuarryWindow {
                         this.duplicate_query_file(p, cx)
                     }
                 }));
-                items.push(("Reveal in Finder", |_, o, _, _| {
+                items.push((REVEAL, |_, o, _, _| {
                     if let DbObject::Query(p) = o {
-                        let _ = std::process::Command::new("open").arg("-R").arg(p).spawn();
+                        crate::export_dialog::reveal(p)
                     }
                 }));
                 items.push(("Move to Trash", |this, o, _, cx| {

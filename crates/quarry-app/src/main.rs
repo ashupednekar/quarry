@@ -2445,11 +2445,7 @@ impl Render for QuarryWindow {
                                     .text_color(t.accent)
                                     .cursor_pointer()
                                     .on_click(move |_, _, _| export_dialog::reveal(&path))
-                                    .child(if cfg!(target_os = "macos") {
-                                        "Reveal in Finder"
-                                    } else {
-                                        "Show in folder"
-                                    }),
+                                    .child(object_menu::REVEAL),
                             )
                         }),
                 )

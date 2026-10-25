@@ -66,7 +66,12 @@ pub fn reveal(path: &std::path::Path) {
         .arg("-R")
         .arg(path)
         .spawn();
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer")
+        .arg(format!("/select,{}", path.display()))
+        .spawn();
+    // ponytail: opens the folder without selecting the file, no portable way to select on Linux
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let _ = std::process::Command::new("xdg-open")
         .arg(path.parent().unwrap_or(path))
         .spawn();
