@@ -393,22 +393,23 @@ impl Sidebar {
                     .child(crate::ui::format_keys("Save a query (⌘S) to see it here.")),
             );
         }
+        let rename_row = |input: &Entity<gpui::component::input::InputState>| {
+            h_flex()
+                .h(px(ROW_H))
+                .pl_2()
+                .pr_1()
+                .gap_1p5()
+                .items_center()
+                .child(icon(IconName::FileCode, theme.accent))
+                .child(
+                    div()
+                        .flex_1()
+                        .child(gpui::component::input::Input::new(input).xsmall()),
+                )
+        };
         for (ix, path) in queries.into_iter().enumerate() {
             if let Some((_, input)) = state.renaming_query.as_ref().filter(|(p, _)| *p == path) {
-                query_list = query_list.child(
-                    h_flex()
-                        .h(px(ROW_H))
-                        .pl_2()
-                        .pr_1()
-                        .gap_1p5()
-                        .items_center()
-                        .child(icon(IconName::FileCode, theme.accent))
-                        .child(
-                            div()
-                                .flex_1()
-                                .child(gpui::component::input::Input::new(input).xsmall()),
-                        ),
-                );
+                query_list = query_list.child(rename_row(input));
                 continue;
             }
             let selected = active_file.as_ref() == Some(&path);
@@ -453,6 +454,10 @@ impl Sidebar {
             );
         }
         for (ix, path) in recent.into_iter().enumerate() {
+            if let Some((_, input)) = state.renaming_query.as_ref().filter(|(p, _)| *p == path) {
+                query_list = query_list.child(rename_row(input));
+                continue;
+            }
             let selected = active_file.as_ref() == Some(&path);
             let name = path
                 .file_stem()
