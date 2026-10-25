@@ -42,6 +42,7 @@ impl AddConnModal {
             |(i, (env, label, color))| {
                 let on = state.add_conn_env == env;
                 chip(t, ("env", i), label, on)
+                    .flex_1()
                     .justify_center()
                     .when(on, |c| c.bg(Rgba { a: 0.16, ..color }))
                     .child(div().ml_1p5().size(px(6.0)).rounded_full().bg(color))
