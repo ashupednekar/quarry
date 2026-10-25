@@ -17,7 +17,7 @@ It's currently in early beta. Feedback, bug reports, and contributions are welco
 - **Review Before Commit:** Visual review dialog displaying generated `UPDATE`, `INSERT`, and `DELETE` SQL statements before applying modifications to the database.
 - **Visual Filter Builder:** Construct composite filters visually with comparison operators (`=`, `!=`, `>`, `<`, `LIKE`, `IN`, `IS NULL`) without hand-crafting `WHERE` clauses.
 - **ER Diagram & Schema Explorer:** Interactive foreign-key relationship diagrams with multi-hop neighbors, table structure inspection (columns, keys, indexes, triggers, table stats), DDL generation, and fast table peeking on hover.
-- **Import & Export:** Streaming import wizard with CSV / JSON auto-detection, schema inference, conflict resolution (`ON CONFLICT DO NOTHING / UPDATE`), and streaming export to CSV, JSON, or SQL `INSERT` statements.
+- **Import & Export:** Streaming import wizard with CSV / JSON auto-detection, schema inference, duplicate handling (`ON CONFLICT DO NOTHING`), and streaming export to CSV, JSON, or SQL `INSERT` statements.
 - **Security & Safety:** Encrypted SSH tunneling, OS keychain password storage, and environment tagging (**Local**, **Staging**, **Production**). Production environments safeguard against accidental mutations with explicit confirmation prompts.
 - **Command Bar (`⌘K` / `Ctrl+K`):** Unified keyboard-first launcher to quickly switch connections, open tables, run recent queries, and trigger commands.
 
@@ -25,7 +25,7 @@ It's currently in early beta. Feedback, bug reports, and contributions are welco
 
 ## Supported Databases
 
-Quarry abstracts database engines behind a modular driver interface in `crates/quarry-core`. Adding new engines requires implementing the driver traits without touching the UI layer (see [DRIVERS.md](DRIVERS.md)).
+Quarry abstracts database engines behind a modular driver interface in `crates/quarry-core`. Adding new engines requires implementing the driver traits without touching the UI layer (see [docs/Adding-a-Database.md](docs/Adding-a-Database.md)).
 
 | Engine | Driver Crate / Protocol | Features | Notes |
 |---|---|---|---|
@@ -61,9 +61,8 @@ quarry/
 │   │                   # parameter binding (:id, $1), and query rewrites
 │   └── quarry-app/     # GPU-accelerated desktop UI (GPUI), background Tokio runtime,
 │                       # data grids, tab/split layout, and dialog workflows
-├── docs/
-│   └── ARCHITECTURE.md # Comprehensive GitHub Wiki architectural reference
-└── DRIVERS.md          # Guide to adding and testing new database engines
+└── docs/               # The GitHub wiki: guides, architecture, and
+                        # Adding-a-Database.md for new engines
 ```
 
 For an in-depth architectural breakdown—including memory layout, asynchronous runtime isolation, and data-flow diagrams—see the [Architecture Documentation (GitHub Wiki)](docs/ARCHITECTURE.md).
@@ -145,7 +144,7 @@ To create a new release, push a git tag matching the workspace version (e.g. `v0
 ## Documentation
 
 - **[Architecture Guide & Wiki](docs/ARCHITECTURE.md):** Deep-dive into design decisions, threading models, and engine subsystems.
-- **[Driver Implementation Guide](DRIVERS.md):** Step-by-step instructions for implementing and testing new database engines.
+- **[Driver Implementation Guide](docs/Adding-a-Database.md):** Step-by-step instructions for implementing and testing new database engines.
 
 ---
 
