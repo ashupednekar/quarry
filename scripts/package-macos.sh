@@ -19,5 +19,5 @@ rm -f "$dmg"
 hdiutil create -volname Quarry -srcfolder "$stage" -format UDZO "$dmg"
 rm -rf "$stage"
 
-codesign --force -s - "$dmg"
+# DMG stays unsigned: a signed DMG gets its own Gatekeeper prompt on top of the app's
 echo "$dmg"
