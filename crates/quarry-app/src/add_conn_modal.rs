@@ -8,6 +8,7 @@ use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
 use gpui::component::input::{Input, InputContentType, InputState};
+use gpui::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui::component::{Icon, Sizable};
 use gpui::*;
 
@@ -132,25 +133,82 @@ impl AddConnModal {
                         cx.notify()
                     })),
             )];
+
             if state.add_conn_ssh {
+                let this_entity = cx.entity().downgrade();
+                let host_dropdown = if !state.ssh_discovered_hosts.is_empty() {
+                    let discovered = state.ssh_discovered_hosts.clone();
+                    Some(
+                        zbutton("btn-ssh-config-hosts")
+                            .icon(IconName::ChevronDown)
+                            .ghost()
+                            .xsmall()
+                            .tooltip("Select from ~/.ssh/config")
+                            .dropdown_menu(move |mut menu, _, _| {
+                                for entry in &discovered {
+                                    let alias = entry.alias.clone();
+                                    let label = if let Some(ref hn) = entry.hostname {
+                                        if hn != &alias {
+                                            format!("{} ({})", alias, hn)
+                                        } else {
+                                            alias.clone()
+                                        }
+                                    } else {
+                                        alias.clone()
+                                    };
+                                    let this = this_entity.clone();
+                                    let alias_for_click = alias.clone();
+                                    menu = menu.item(
+                                        PopupMenuItem::new(label).icon(IconName::Server).on_click(
+                                            move |_, window, cx| {
+                                                this.update(cx, |this, cx| {
+                                                    this.select_discovered_ssh_host(
+                                                        &alias_for_click,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                })
+                                                .ok();
+                                            },
+                                        ),
+                                    );
+                                }
+                                menu
+                            }),
+                    )
+                } else {
+                    None
+                };
+
+                let host_control = div().child(
+                    Input::new(&ssh_inputs[0])
+                        .text_sm()
+                        .px_3()
+                        .when_some(host_dropdown, |input, btn| input.suffix(btn)),
+                );
+
                 rows.push(form_row(
                     t,
                     "Host",
+                    Some(if !state.ssh_discovered_hosts.is_empty() {
+                        "Pick from ~/.ssh/config or enter host".into()
+                    } else {
+                        "Hostname or SSH config alias".into()
+                    }),
                     None,
-                    None,
-                    compact_input(&ssh_inputs[0]),
+                    host_control,
                 ));
                 rows.push(form_row(
                     t,
                     "User",
-                    None,
+                    Some("Defaults to current OS user".into()),
                     None,
                     compact_input(&ssh_inputs[1]),
                 ));
                 rows.push(form_row(
                     t,
                     "Private key",
-                    Some("Blank uses ssh-agent and ~/.ssh/config".into()),
+                    Some("Blank uses ssh-agent or ~/.ssh/config".into()),
                     None,
                     file_input(
                         &ssh_inputs[2],
@@ -161,7 +219,37 @@ impl AddConnModal {
                     ),
                 ));
             }
-            v_flex().child(settings_group(t, rows))
+
+            let agent_badge = if state.add_conn_ssh && !state.ssh_agent_keys.is_empty() {
+                Some(
+                    h_flex()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .rounded(px(crate::ui::RADIUS_MD))
+                        .bg(t.bg_surface)
+                        .border_1()
+                        .border_color(t.border)
+                        .child(Icon::new(IconName::Key).xsmall().text_color(t.success))
+                        .child(div().text_xs().text_color(t.text_secondary).child(format!(
+                            "ssh-agent active ({} key{} loaded)",
+                            state.ssh_agent_keys.len(),
+                            if state.ssh_agent_keys.len() == 1 {
+                                ""
+                            } else {
+                                "s"
+                            }
+                        ))),
+                )
+            } else {
+                None
+            };
+
+            v_flex()
+                .gap_3()
+                .child(settings_group(t, rows))
+                .children(agent_badge)
         };
 
         // Advanced: limits and guard rails

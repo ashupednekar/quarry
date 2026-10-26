@@ -6,8 +6,14 @@
 use super::*;
 
 impl QuarryWindow {
+    pub fn refresh_ssh_discovery(&mut self) {
+        self.state.ssh_discovered_hosts = crate::ssh::discover_ssh_hosts();
+        self.state.ssh_agent_keys = crate::ssh::check_ssh_agent_keys().unwrap_or_default();
+    }
+
     /// The Add Connection modal, filled in from a saved connection; saving keeps its id (and keychain password)
     pub fn open_edit_conn(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_ssh_discovery();
         let Some(p) = self
             .state
             .saved_connections
@@ -59,6 +65,7 @@ impl QuarryWindow {
     }
 
     pub(crate) fn open_add_conn(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_ssh_discovery();
         self.state.editing_conn = None;
         self.state.add_conn_feedback = None;
         self.state.add_conn_tab = 0;
@@ -225,7 +232,7 @@ impl QuarryWindow {
             host,
             port,
             user: if user.is_empty() {
-                std::env::var("USER").unwrap_or_default()
+                ssh::current_os_user()
             } else {
                 user
             },
@@ -494,5 +501,50 @@ impl QuarryWindow {
             .ok();
         })
         .detach();
+    }
+
+    /// Selects a configured SSH host from ~/.ssh/config and populates the SSH fields
+    pub fn select_discovered_ssh_host(
+        &mut self,
+        host_alias: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entry = self
+            .state
+            .ssh_discovered_hosts
+            .iter()
+            .find(|h| h.alias == host_alias)
+            .cloned();
+
+        let Some(entry) = entry else { return };
+
+        let host_val = if let Some(p) = entry.port {
+            if p != 22 {
+                format!("{}:{}", entry.alias, p)
+            } else {
+                entry.alias.clone()
+            }
+        } else {
+            entry.alias.clone()
+        };
+
+        if let Some(input) = self.ssh_inputs.get(0) {
+            input.update(cx, |i, cx| i.set_value(host_val, window, cx));
+        }
+
+        if let Some(user) = entry.user {
+            if let Some(input) = self.ssh_inputs.get(1) {
+                input.update(cx, |i, cx| i.set_value(user, window, cx));
+            }
+        }
+
+        if let Some(key) = entry.identity_file {
+            if let Some(input) = self.ssh_inputs.get(2) {
+                input.update(cx, |i, cx| i.set_value(key, window, cx));
+            }
+        }
+
+        cx.notify();
     }
 }
