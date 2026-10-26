@@ -58,7 +58,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            font_size: 14.0,
+            font_size: 15.0,
             ui_font_family: String::new(),
             mono_font_size: 0.0,
             mono_font_family: String::new(),
@@ -88,8 +88,10 @@ impl Settings {
         if self.mono_font_size > 0.0 {
             self.mono_font_size
         } else {
-            // Code is what you read closely: a step above the interface
-            self.font_size + 1.0
+            // Proportionally scaled editor font size: monospace characters have wider glyph bounds
+            // and taller line-box metrics than proportional UI sans fonts, so 13.5pt in the editor
+            // visually balances with 15pt UI chrome (matching JetBrains / Zed balance).
+            (self.font_size - 1.5).max(Self::MIN_FONT_SIZE)
         }
     }
 
@@ -314,15 +316,15 @@ mod tests {
     #[test]
     fn font_size_adjustment() {
         let mut s = Settings::default();
-        assert_eq!(s.font_size, 14.0);
-        assert_eq!(s.mono_size(), 15.0);
+        assert_eq!(s.font_size, 15.0);
+        assert_eq!(s.mono_size(), 13.5);
 
         s.increase_font_size();
-        assert_eq!(s.font_size, 15.0);
-        assert_eq!(s.mono_size(), 16.0);
+        assert_eq!(s.font_size, 16.0);
+        assert_eq!(s.mono_size(), 14.5);
 
         s.decrease_font_size();
-        assert_eq!(s.font_size, 14.0);
+        assert_eq!(s.font_size, 15.0);
 
         s.font_size = Settings::MAX_FONT_SIZE;
         s.increase_font_size();
@@ -333,15 +335,15 @@ mod tests {
         assert_eq!(s.font_size, Settings::MIN_FONT_SIZE);
 
         s.reset_font_size();
-        assert_eq!(s.font_size, 14.0);
+        assert_eq!(s.font_size, 15.0);
 
         // With explicit mono font size
         s.mono_font_size = 12.0;
         s.increase_font_size();
-        assert_eq!(s.font_size, 15.0);
+        assert_eq!(s.font_size, 16.0);
         assert_eq!(s.mono_font_size, 13.0);
         s.reset_font_size();
-        assert_eq!(s.font_size, 14.0);
+        assert_eq!(s.font_size, 15.0);
         assert_eq!(s.mono_font_size, 0.0);
     }
 
