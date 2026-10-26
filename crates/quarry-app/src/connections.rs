@@ -7,6 +7,48 @@ use crate::state::ConnectionProfile;
 use std::path::PathBuf;
 
 const KEYCHAIN_SERVICE: &str = "quarry";
+/// macOS: one keychain item holds every password (id -> secret), so the Keychain asks once per
+/// launch rather than once per connection. Windows and Linux don't prompt per item, and Windows
+/// caps a credential at 2560 bytes, so there each connection keeps its own item.
+const USE_VAULT: bool = cfg!(target_os = "macos");
+const VAULT_ACCOUNT: &str = "vault";
+
+type Vault = std::collections::HashMap<String, String>;
+
+/// The vault, read from the keychain on first use and kept for the rest of the launch
+static VAULT: std::sync::Mutex<Option<Vault>> = std::sync::Mutex::new(None);
+
+fn with_vault<R>(f: impl FnOnce(&mut Vault) -> R) -> R {
+    let mut guard = VAULT.lock().unwrap_or_else(|e| e.into_inner());
+    let vault = guard.get_or_insert_with(|| {
+        keyring::Entry::new(KEYCHAIN_SERVICE, VAULT_ACCOUNT)
+            .and_then(|e| e.get_password())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    });
+    f(vault)
+}
+
+fn store_vault(vault: &Vault) -> Result<(), String> {
+    let json = serde_json::to_string(vault).map_err(|e| e.to_string())?;
+    keyring::Entry::new(KEYCHAIN_SERVICE, VAULT_ACCOUNT)
+        .and_then(|e| e.set_password(&json))
+        .map_err(|e| format!("keychain: {e}"))
+}
+
+/// One item per connection: Windows and Linux, and macOS secrets saved before the vault
+fn legacy_secret(id: &str) -> Option<String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, id)
+        .and_then(|e| e.get_password())
+        .ok()
+}
+
+fn delete_legacy_secret(id: &str) {
+    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, id) {
+        let _ = entry.delete_credential(); // nothing stored is fine
+    }
+}
 
 /// `~/.config/quarry` (or `$XDG_CONFIG_HOME/quarry`)
 pub fn config_dir() -> Option<PathBuf> {
@@ -48,6 +90,7 @@ fn fix_default_names(profiles: &mut [ConnectionProfile]) -> bool {
 /// Writes every persistable profile. Passwords move to the keychain and never touch the file (C6).
 pub fn save(profiles: &[ConnectionProfile]) -> Result<(), String> {
     let mut stored = Vec::new();
+    let mut secrets = Vec::new();
     for p in profiles {
         let Some(driver) = p.driver() else {
             stored.push(p.clone()); // a driver this build lacks: keep the profile as it was
@@ -58,14 +101,36 @@ pub fn save(profiles: &[ConnectionProfile]) -> Result<(), String> {
         }
         let (path_or_url, secret) = driver.take_secret(&p.path_or_url);
         if let Some(secret) = secret {
-            keyring::Entry::new(KEYCHAIN_SERVICE, &p.id)
-                .and_then(|e| e.set_password(&secret))
-                .map_err(|e| format!("keychain: {e}"))?;
+            secrets.push((p.id.clone(), secret));
         }
         stored.push(ConnectionProfile {
             path_or_url,
             ..p.clone()
         });
+    }
+    if !USE_VAULT {
+        for (id, secret) in &secrets {
+            keyring::Entry::new(KEYCHAIN_SERVICE, id)
+                .and_then(|e| e.set_password(secret))
+                .map_err(|e| format!("keychain: {e}"))?;
+        }
+    }
+    // Write the keychain only when a password actually changed: each write can prompt
+    if USE_VAULT && !secrets.is_empty() {
+        with_vault(|vault| {
+            let mut changed = false;
+            for (id, secret) in secrets {
+                if vault.get(&id) != Some(&secret) {
+                    vault.insert(id, secret);
+                    changed = true;
+                }
+            }
+            if changed {
+                store_vault(vault)
+            } else {
+                Ok(())
+            }
+        })?;
     }
     let path = config_path().ok_or("no home directory")?;
     if let Some(parent) = path.parent() {
@@ -101,9 +166,15 @@ pub fn display_address(p: &ConnectionProfile) -> String {
 }
 
 pub fn forget_secret(id: &str) {
-    if let Ok(entry) = keyring::Entry::new(KEYCHAIN_SERVICE, id) {
-        let _ = entry.delete_credential(); // nothing stored is fine
+    if !USE_VAULT {
+        return delete_legacy_secret(id);
     }
+    with_vault(|vault| {
+        if vault.remove(id).is_some() {
+            let _ = store_vault(vault);
+        }
+    });
+    delete_legacy_secret(id);
 }
 
 /// Returns the connection string with its keychain password restored (if one is stored).
@@ -114,9 +185,26 @@ pub fn with_secret(profile: &ConnectionProfile) -> String {
     if driver.take_secret(&profile.path_or_url).1.is_some() {
         return profile.path_or_url.clone();
     }
-    match keyring::Entry::new(KEYCHAIN_SERVICE, &profile.id).and_then(|e| e.get_password()) {
-        Ok(secret) => driver.put_secret(&profile.path_or_url, &secret),
-        Err(_) => profile.path_or_url.clone(),
+    let secret = if !USE_VAULT {
+        legacy_secret(&profile.id)
+    } else {
+        with_vault(|vault| {
+            if let Some(s) = vault.get(&profile.id) {
+                return Some(s.clone());
+            }
+            // First use since the vault: move the old per-connection item into it
+            // (the old item goes only once the vault holds it)
+            let s = legacy_secret(&profile.id)?;
+            vault.insert(profile.id.clone(), s.clone());
+            if store_vault(vault).is_ok() {
+                delete_legacy_secret(&profile.id);
+            }
+            Some(s)
+        })
+    };
+    match secret {
+        Some(secret) => driver.put_secret(&profile.path_or_url, &secret),
+        None => profile.path_or_url.clone(),
     }
 }
 
