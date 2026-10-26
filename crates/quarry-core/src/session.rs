@@ -308,6 +308,41 @@ fn is_mutation_verb(verb: &str) -> bool {
     )
 }
 
+/// Checks whether `sql` is an optimizable query that databases support running `EXPLAIN` on.
+/// DDL (CREATE TABLE, ALTER TABLE, CREATE INDEX, etc.) cannot be planned by query optimizers.
+pub fn is_explainable(sql: &str) -> bool {
+    let mut tokens = crate::lexer::SqlLexer::new(sql)
+        .filter(|t| !t.is_comment())
+        .peekable();
+
+    let first = match tokens.peek() {
+        Some(tok) if tok.is_word() => tok.text,
+        _ => return false,
+    };
+
+    let upper = first.to_ascii_uppercase();
+    match upper.as_str() {
+        "SELECT" | "VALUES" | "TABLE" => true,
+        // DML optimizable statements
+        "INSERT" | "UPDATE" | "DELETE" | "MERGE" | "REPLACE" | "UPSERT" => true,
+        // CTEs: WITH ...
+        "WITH" => {
+            let all_tokens: Vec<crate::lexer::Token> = tokens.collect();
+            !all_tokens.iter().any(|t| match t.kind {
+                crate::lexer::TokenKind::Word(w) => {
+                    let w_up = w.to_ascii_uppercase();
+                    matches!(
+                        w_up.as_str(),
+                        "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "GRANT" | "REVOKE"
+                    )
+                }
+                _ => false,
+            })
+        }
+        _ => false,
+    }
+}
+
 fn has_outer_read_verb_tokens(tokens: &[crate::lexer::Token]) -> bool {
     let mut depth = 0;
     let mut in_cte_head = true;

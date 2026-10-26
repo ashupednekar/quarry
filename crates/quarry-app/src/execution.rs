@@ -90,6 +90,10 @@ impl QuarryWindow {
         }
         if matches!(mode, RunMode::Explain | RunMode::ExplainAnalyze) {
             let sql = statements.swap_remove(0);
+            if !quarry_core::session::is_explainable(&sql) {
+                self.toast("Only query statements (SELECT, INSERT, UPDATE, DELETE, etc.) can be explained.", true, cx);
+                return;
+            }
             if mode == RunMode::ExplainAnalyze && quarry_core::session::is_mutation(&sql) {
                 self.toast("EXPLAIN ANALYZE runs the statement, which would change data. Use Explain instead.", true, cx);
                 return;
