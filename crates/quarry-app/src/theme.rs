@@ -30,6 +30,10 @@ pub struct Theme {
     pub danger: Rgba,
     pub null_token: Rgba,
     pub pending_cell_bg: Rgba,
+    /// Painted once at the window root; differs from `bg_app` only when translucent
+    pub bg_window: Rgba,
+    /// Blur the desktop behind the window
+    pub translucent: bool,
 }
 
 impl Default for Theme {
@@ -72,6 +76,8 @@ impl Theme {
             danger: rgb(0xef6b73),
             null_token: rgb(0x7b7e86),
             pending_cell_bg: rgba(0xe5a84b38),
+            bg_window: rgb(0x111214),
+            translucent: false,
         }
     }
 
@@ -96,6 +102,8 @@ impl Theme {
             danger: rgb(0xd2414c),
             null_token: rgb(0x73757b),
             pending_cell_bg: rgba(0xa0691933),
+            bg_window: rgb(0xffffff),
+            translucent: false,
         }
     }
 
@@ -104,6 +112,7 @@ impl Theme {
         Self {
             name: "Graphite".into(),
             bg_app: rgb(0x0b0b0c),
+            bg_window: rgb(0x0b0b0c),
             bg_sidebar: rgb(0x101011),
             bg_panel: rgb(0x121213),
             bg_surface: rgb(0x1a1a1b),
@@ -124,6 +133,7 @@ impl Theme {
         Self {
             name: "Paper".into(),
             bg_app: rgb(0xfbfaf7),
+            bg_window: rgb(0xfbfaf7),
             bg_sidebar: rgb(0xf4f2ec),
             bg_panel: rgb(0xf1efe8),
             bg_surface: rgb(0xe9e6dd),
@@ -139,10 +149,29 @@ impl Theme {
         }
     }
 
+    /// Any theme over a blurred desktop (Settings → Window translucency). `opacity` is how much
+    /// of the theme colour covers the blur. Only the window root paints it: layers that repainted
+    /// `bg_app` on top would stack back up to opaque, so `bg_app` goes clear and sidebar/panels
+    /// keep a faint tint to stay distinct. Surfaces, hovers, selections and text stay solid.
+    pub fn with_translucency(mut self, opacity: f32) -> Self {
+        let alpha = |c: Rgba, a: f32| Rgba { a, ..c };
+        self.bg_window = alpha(self.bg_app, opacity);
+        self.bg_sidebar = alpha(self.bg_sidebar, 0.25);
+        self.bg_panel = alpha(self.bg_panel, 0.25);
+        self.bg_app = alpha(self.bg_app, 0.0);
+        self.translucent = true;
+        self
+    }
+
+    /// The colour with its alpha dropped: for modals, menus and text-on-fill, which must stay readable
+    pub fn solid(c: Rgba) -> Rgba {
+        Rgba { a: 1.0, ..c }
+    }
+
     /// Text on an accent/status fill: dark themes use their own background (white is unreadable on amber)
     pub fn on_accent(&self) -> Rgba {
         if self.is_dark {
-            self.bg_app
+            Self::solid(self.bg_app)
         } else {
             rgb(0xffffff)
         }
@@ -212,6 +241,7 @@ impl Theme {
             };
             *slot = color;
         }
+        t.bg_window = t.bg_app;
         Ok(t)
     }
 
@@ -232,7 +262,7 @@ impl Theme {
             c.ring = h(self.accent);
             c.caret = h(self.accent);
             c.selection = h(self.accent).opacity(0.3);
-            c.popover = h(self.bg_sidebar);
+            c.popover = h(Self::solid(self.bg_sidebar));
             c.popover_foreground = h(self.text_primary);
             c.muted = h(self.bg_surface);
             c.muted_foreground = h(self.text_muted);
@@ -343,7 +373,7 @@ pub fn available() -> Vec<String> {
 }
 
 /// Interface text
-pub const UI_FONT: &str = "Satoshi";
+pub const UI_FONT: &str = "Space Grotesk";
 /// SQL, cell values and anything that should line up; the Nerd Font build also carries icon glyphs
 pub const MONO_FONT: &str = "JetBrainsMono NF";
 

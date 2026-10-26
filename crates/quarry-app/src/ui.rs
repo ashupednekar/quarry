@@ -97,7 +97,7 @@ pub fn modal_card(id: &'static str, width: f32, t: &crate::theme::Theme) -> Stat
         .id(id)
         .w(px(width))
         .max_w_full()
-        .bg(t.bg_sidebar)
+        .bg(crate::theme::Theme::solid(t.bg_sidebar))
         .border_1()
         .border_color(t.border)
         .rounded(px(RADIUS_LG))

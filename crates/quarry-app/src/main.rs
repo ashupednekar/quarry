@@ -13,6 +13,7 @@
 //! visual ER foreign-key relationship diagrams, query execution plans, and keyboard-driven command bars.
 
 mod add_conn_modal;
+mod blur;
 mod bottom_panel;
 mod command_bar;
 mod commands;
@@ -199,6 +200,8 @@ struct QuarryWindow {
     settings: settings::Settings,
     /// Settings last pushed into editors and grids (they need a window, so this happens at render)
     applied_settings: Option<settings::Settings>,
+    /// Window background last set for the theme (blurred or opaque)
+    applied_translucent: Option<bool>,
     settings_open: bool,
     /// Theme names for the picker, read when Settings opens
     settings_themes: Vec<String>,
@@ -367,6 +370,7 @@ impl QuarryWindow {
             peek: None,
             settings: settings::Settings::default(),
             applied_settings: None,
+            applied_translucent: None,
             settings_open: false,
             settings_themes: Vec::new(),
             pending_prod_run: None,
@@ -566,11 +570,14 @@ impl QuarryWindow {
     }
 
     fn sync_theme(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let want = self
+        let mut want = self
             .theme_choice
             .clone()
             .unwrap_or_else(|| Theme::for_mode(os_is_dark(window)));
-        if want.name != self.theme.name {
+        if self.settings.window_opacity < 1.0 {
+            want = want.with_translucency(self.settings.window_opacity);
+        }
+        if want.name != self.theme.name || want.bg_window != self.theme.bg_window {
             self.theme = want;
             self.apply_theme(cx);
         }
@@ -2158,6 +2165,10 @@ impl QuarryWindow {
 
 impl Render for QuarryWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.applied_translucent != Some(self.theme.translucent) {
+            self.applied_translucent = Some(self.theme.translucent);
+            blur::set(window, self.theme.translucent);
+        }
         if !cx.has_active_drag() {
             self.active_drag_pane = None;
             self.active_drag_tab = None;
@@ -2347,7 +2358,7 @@ impl Render for QuarryWindow {
             .flex()
             .flex_col()
             .size_full()
-            .bg(t.bg_app)
+            .bg(t.bg_window)
             .text_color(t.text_primary)
             .child(titlebar)
             .child(div().flex_1().min_h_0().child(main_layout))

@@ -15,8 +15,10 @@ pub struct Settings {
     pub theme: String,
     /// Interface text size in points
     pub font_size: f32,
-    /// Font for interface text; empty keeps the bundled Satoshi
+    /// Font for interface text; empty keeps the bundled Space Grotesk
     pub ui_font_family: String,
+    /// How much of the theme covers the blurred desktop behind the window; 1 = opaque (off)
+    pub window_opacity: f32,
     /// SQL editor and data cells; 0 follows the interface size
     pub mono_font_size: f32,
     /// Font for SQL and data cells; empty keeps the bundled JetBrainsMono Nerd Font
@@ -61,6 +63,7 @@ impl Default for Settings {
             font_size: 15.0,
             ui_font_family: String::new(),
             mono_font_size: 0.0,
+            window_opacity: 1.0,
             mono_font_family: String::new(),
             tab_size: 2,
             soft_wrap: false,

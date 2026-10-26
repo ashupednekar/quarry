@@ -47,5 +47,12 @@ lsp-types = { workspace = true }
 sqlformat = { workspace = true }
 trash = { workspace = true }
 
+# Window blur: our own NSVisualEffectView behind gpui's content (src/blur.rs). Already in the
+# tree via gpui; only the AppKit bits we use are enabled.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSVisualEffectView", "NSGraphics", "NSWindow"] }
+raw-window-handle = "0.6"
+
 [lints]
 workspace = true

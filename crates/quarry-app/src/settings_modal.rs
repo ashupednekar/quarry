@@ -102,9 +102,9 @@ impl QuarryWindow {
             s.ui_font_family.clone()
         };
         let mut ui_font_options = vec![
-            ("".to_string(), "Satoshi (Default)".to_string()),
+            ("".to_string(), "Space Grotesk (Default)".to_string()),
+            ("Satoshi".to_string(), "Satoshi".to_string()),
             ("Geist".to_string(), "Geist".to_string()),
-            ("Space Grotesk".to_string(), "Space Grotesk".to_string()),
         ];
         if !current_ui_font.is_empty()
             && !ui_font_options
@@ -116,6 +116,25 @@ impl QuarryWindow {
 
         let appearance = vec![
             theme_row,
+            setting_row(
+                &t,
+                "Window translucency",
+                "Blur the desktop behind the window, with any theme",
+                choices(
+                    &t,
+                    "window-opacity",
+                    [
+                        (1.0f32, "Off".to_string()),
+                        (0.9, "Subtle".into()),
+                        (0.8, "Medium".into()),
+                        (0.65, "Strong".into()),
+                    ]
+                    .to_vec(),
+                    &s.window_opacity,
+                    |s, v| s.window_opacity = v,
+                    cx,
+                ),
+            ),
             setting_row(
                 &t,
                 "Interface font",
