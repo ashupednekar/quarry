@@ -118,7 +118,9 @@ cp -R ../../dist/Quarry.app /Applications/
 ## Development
 
 ```sh
-make run        # Run debug build of the application
+make            # List available commands
+make dev        # Run a debug build (fast compile)
+make run        # Run a release build (smooth UI)
 make test       # Run unit and integration tests across workspace
 make lint       # Check rustfmt formatting and Clippy warnings
 make fmt        # Format all code with rustfmt
@@ -135,7 +137,7 @@ cargo packager --release -f app       # macOS .app
 # or: -f deb, -f appimage, -f nsis
 ```
 
-For the ad-hoc signed macOS DMG, run `scripts/package-macos.sh`.
+Or `make package`, which packages for the current OS (`OS=macos|linux|windows` to choose). On macOS that's the ad-hoc signed DMG from `scripts/package-macos.sh`.
 
 To create a new release, push a git tag matching the workspace version (e.g. `v0.1.0`).
 
