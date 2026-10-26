@@ -545,6 +545,7 @@ impl QuarryWindow {
                 cx.notify();
             });
         }
+        window.set_rem_size(px(s.font_size));
         self.applied_settings = Some(s);
     }
 
@@ -855,26 +856,10 @@ impl QuarryWindow {
                                     this.refresh_active_tab(window, cx);
                                 },
                             ))
-                            // One bordered field, so the filter reads as an input, not floating text
                             .child(
-                                h_flex()
+                                div()
                                     .flex_1()
-                                    .h(px(ROW_H))
-                                    .px_2()
-                                    .gap_1p5()
-                                    .items_center()
-                                    .rounded(px(crate::ui::RADIUS_SM))
-                                    .border_1()
-                                    .border_color(t.border)
-                                    .bg(t.bg_panel)
-                                    .child(
-                                        Icon::new(IconName::ListFilter)
-                                            .small()
-                                            .text_color(t.text_muted),
-                                    )
-                                    .child(
-                                        div().flex_1().child(Input::new(filter).appearance(false)),
-                                    ),
+                                    .child(ui::search_input(filter, IconName::ListFilter)),
                             )
                             .child(
                                 zbutton("open-filter-builder-btn")
@@ -1790,6 +1775,8 @@ impl QuarryWindow {
             self.state.review_modal_table = table;
             self.state.review_modal_changes = changes;
             self.state.review_modal_show_sql = false;
+            self.state.review_modal_page = 0;
+            self.state.review_modal_scroll = Default::default();
             self.state.review_modal_open = true;
             cx.notify();
         }
@@ -2374,6 +2361,7 @@ impl Render for QuarryWindow {
                     }
                     _ => None,
                 },
+                !self.connecting.is_empty(),
                 &self.theme,
                 cx,
             ))

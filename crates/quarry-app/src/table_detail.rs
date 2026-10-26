@@ -123,16 +123,15 @@ impl QuarryWindow {
         ];
         h_flex()
             .items_center()
-            .gap_0p5()
+            .gap_1()
             .children(views.map(|(view, label, icon)| {
                 let on = view == current;
                 h_flex()
-                    .items_center()
                     .id(label)
-                    .gap_1()
+                    .h(px(crate::ui::SMALL_H))
+                    .gap_1p5()
                     .items_center()
-                    .px_2()
-                    .py_0p5()
+                    .px_2p5()
                     .rounded(px(crate::ui::RADIUS_SM))
                     .text_sm()
                     .cursor_pointer()

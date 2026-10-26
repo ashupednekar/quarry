@@ -17,6 +17,7 @@ use gpui::component::input::{
     TextareaState,
 };
 use gpui::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
+use gpui::component::resizable::{h_resizable, resizable_panel};
 use gpui::component::table::{Column, ColumnSort, DataTable, TableDelegate, TableState};
 use gpui::component::tooltip::Tooltip;
 use gpui::component::{ActiveTheme, Disableable, Icon, Sizable};
@@ -93,6 +94,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-n", AddRow, Some("DataTable")),
         KeyBinding::new("secondary-d", DuplicateRow, Some("DataTable")),
         KeyBinding::new("secondary-backspace", DeleteRow, Some("DataTable")),
+        KeyBinding::new("backspace", SetNull, Some("DataTable")),
+        KeyBinding::new("delete", SetNull, Some("DataTable")),
         KeyBinding::new("secondary-alt-n", SetNull, Some("DataTable")),
         // Not ⌥⌘D: macOS reserves it for showing/hiding the Dock
         KeyBinding::new("secondary-shift-d", SetDefault, Some("DataTable")),
@@ -194,9 +197,14 @@ pub struct Inspector {
     pub editor: Entity<EditorState>,
     pub initial: String,
     pub mode: InspectorMode,
-    pub parsed_json: Option<serde_json::Value>,
+    /// Shared so each frame's render doesn't deep-copy a large document
+    pub parsed_json: Option<std::rc::Rc<serde_json::Value>>,
     pub expanded_paths: std::collections::HashSet<String>,
     pub search_input: Option<Entity<InputState>>,
+    /// Tree view: the leaf being edited in place (JSONPath, its input)
+    tree_edit: Option<(String, Entity<InputState>, Subscription)>,
+    /// Text view soft wrap; off by default since long lines re-wrap on every resize step
+    pub wrap: bool,
 }
 
 /// Text edits in a textarea that grows and pops out; a number in a one-line input, which
@@ -576,6 +584,31 @@ impl ResultSet {
         String::from_utf8(buf)
             .ok()
             .map(|s| s.trim_end().to_string())
+    }
+
+    /// One row as `column<TAB>value` lines, or as a pretty JSON object in column order
+    pub fn row_pairs_text(&self, row: usize, json: bool) -> String {
+        let lines: Vec<String> = self
+            .visible()
+            .into_iter()
+            .map(|c| {
+                let name = self.column_name(c).unwrap_or("?");
+                let v = self.cell_value(row, c).0.unwrap_or(DbValue::Null);
+                if json {
+                    let key = serde_json::Value::String(name.into());
+                    format!("  {key}: {}", quarry_core::export::json_value(&v))
+                } else if v.is_null() {
+                    format!("{name}\t")
+                } else {
+                    format!("{name}\t{}", v.to_display_string())
+                }
+            })
+            .collect();
+        if json {
+            format!("{{\n{}\n}}", lines.join(",\n"))
+        } else {
+            lines.join("\n")
+        }
     }
 
     pub fn read_only_reason(&self) -> Option<&'static str> {
@@ -1045,7 +1078,7 @@ fn pager(
         zbutton(id)
             .icon(icon)
             .ghost()
-            .xsmall()
+            .small()
             .tooltip(tip)
             .disabled(!enabled || busy)
             .on_click(move |_, window, cx| {
@@ -1055,7 +1088,7 @@ fn pager(
     let range = if rows == 0 {
         "0 rows".to_string()
     } else {
-        format!("{}–{}", group(offset + 1), group(offset + rows))
+        format!("{}-{}", group(offset + 1), group(offset + rows))
     };
     let sizes = {
         let grid = grid.clone();
@@ -1361,8 +1394,7 @@ fn render_transposed_view<T: 'static>(
                                         cx.notify();
                                     });
                                 }),
-                        )
-                        .child(div().text_xs().text_color(theme.text_muted).child("↑/↓")),
+                        ),
                 )
                 // Center: Column search filter
                 .child(
@@ -1371,24 +1403,16 @@ fn render_transposed_view<T: 'static>(
                         .items_center()
                         .when_some(rs.transposed_search_input.clone(), |this, input| {
                             this.child(
-                                h_flex()
-                                    .w(px(220.0))
-                                    .items_center()
-                                    .child(Input::new(&input).xsmall()),
+                                div()
+                                    .w(px(240.0))
+                                    .child(crate::ui::search_input(&input, IconName::ListFilter)),
                             )
                         })
                         .child(
                             div()
-                                .px_1p5()
-                                .py_0p5()
-                                .rounded(px(crate::ui::RADIUS_SM))
-                                .bg(theme.bg_surface)
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_xs()
-                                .font_family(mono.clone())
+                                .text_sm()
                                 .text_color(theme.text_muted)
-                                .child(format!("{matching_count} / {total_cols} cols")),
+                                .child(format!("{matching_count} of {total_cols} columns")),
                         ),
                 )
                 // Right: Copy & Exit
@@ -1398,47 +1422,36 @@ fn render_transposed_view<T: 'static>(
                         .items_center()
                         .child(
                             zbutton("transposed-copy-json")
-                                .icon(IconName::Copy)
+                                .pad_xs()
                                 .label("Copy JSON")
                                 .ghost()
-                                .xsmall()
-                                .tooltip("Copy row as JSON")
+                                .small()
+                                .tooltip("Copy row as a JSON object")
                                 .on_click(move |_, _, cx| {
-                                    g_copy_json.update(cx, |t, cx| {
-                                        if let Some(json) = t.delegate().copy_text(
-                                            Some(row),
-                                            quarry_core::export::ExportFormat::Json,
-                                            ',',
-                                        ) {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(json));
-                                        }
-                                    });
+                                    let text =
+                                        g_copy_json.read(cx).delegate().row_pairs_text(row, true);
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }),
                         )
                         .child(
                             zbutton("transposed-copy-tsv")
-                                .label("TSV")
+                                .pad_xs()
+                                .label("Copy TSV")
                                 .ghost()
-                                .xsmall()
-                                .tooltip("Copy row as TSV")
+                                .small()
+                                .tooltip("Copy row as column/value lines")
                                 .on_click(move |_, _, cx| {
-                                    g_copy_tsv.update(cx, |t, cx| {
-                                        if let Some(tsv) = t.delegate().copy_text(
-                                            Some(row),
-                                            quarry_core::export::ExportFormat::Csv,
-                                            '\t',
-                                        ) {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(tsv));
-                                        }
-                                    });
+                                    let text =
+                                        g_copy_tsv.read(cx).delegate().row_pairs_text(row, false);
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }),
                         )
-                        .child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
+                        .child(div().w_px().h(px(16.0)).mx_1().bg(theme.border))
                         .child(
                             zbutton("transposed-close-btn")
                                 .icon(IconName::X)
                                 .ghost()
-                                .xsmall()
+                                .small()
                                 .tooltip(crate::ui::format_keys("Exit transposed view (⌥R or Esc)"))
                                 .on_click(move |_, _, cx| {
                                     g_close.update(cx, |t, cx| {
@@ -1471,7 +1484,8 @@ fn render_transposed_view<T: 'static>(
                         .rounded(px(crate::ui::RADIUS_SM))
                         .border_b_1()
                         .border_color(theme.border)
-                        .items_center()
+                        // Multi-line values grow down; name and actions stay on the first line
+                        .items_start()
                         .hover(|s| s.bg(theme.bg_hover))
                         // Left column: metadata
                         .child(
@@ -1551,10 +1565,11 @@ fn render_transposed_view<T: 'static>(
                                 .when(!item.is_null, |this| {
                                     this.child(
                                         div()
+                                            .min_w_0()
                                             .font_family(mono.clone())
                                             .text_sm()
                                             .text_color(theme.text_primary)
-                                            .truncate()
+                                            .line_clamp(8)
                                             .child(item.val_display),
                                     )
                                 })
@@ -1634,7 +1649,6 @@ struct JsonFlatItem {
     val_type: JsonValType,
     is_container: bool,
     is_expanded: bool,
-    raw_copy: String,
 }
 
 fn matches_json_search(val: &serde_json::Value, key: Option<&str>, q: &str) -> bool {
@@ -1652,6 +1666,50 @@ fn matches_json_search(val: &serde_json::Value, key: Option<&str>, q: &str) -> b
             map.iter().any(|(k, v)| matches_json_search(v, Some(k), q))
         }
         serde_json::Value::Array(arr) => arr.iter().any(|v| matches_json_search(v, None, q)),
+    }
+}
+
+/// One-line preview of a string leaf: long prompts and blobs are laid out in full on every
+/// frame otherwise, though only the first few dozen characters are visible
+fn preview(s: &str) -> String {
+    const MAX: usize = 160;
+    let mut out: String = s
+        .chars()
+        .take(MAX)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if s.chars().nth(MAX).is_some() {
+        out.push('…');
+    }
+    format!("\"{out}\"")
+}
+
+/// The value at a `$.a[0].b` path (as built by `flatten_json_tree`)
+fn json_at<'a>(
+    cur: &'a serde_json::Value,
+    target: &str,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    if target == path {
+        return Some(cur);
+    }
+    if !target.starts_with(path) {
+        return None;
+    }
+    match cur {
+        serde_json::Value::Object(map) => map.iter().find_map(|(k, v)| {
+            let next = if path == "$" {
+                format!("$.{k}")
+            } else {
+                format!("{path}.{k}")
+            };
+            json_at(v, target, &next)
+        }),
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .enumerate()
+            .find_map(|(i, v)| json_at(v, target, &format!("{path}[{i}]"))),
+        _ => None,
     }
 }
 
@@ -1694,7 +1752,6 @@ fn flatten_json_tree(
                 val_type: JsonValType::Object,
                 is_container: true,
                 is_expanded,
-                raw_copy: serde_json::to_string_pretty(val).unwrap_or_default(),
             });
             if is_expanded {
                 for (k, v) in map {
@@ -1734,7 +1791,6 @@ fn flatten_json_tree(
                 val_type: JsonValType::Array,
                 is_container: true,
                 is_expanded,
-                raw_copy: serde_json::to_string_pretty(val).unwrap_or_default(),
             });
             if is_expanded {
                 for (i, v) in arr.iter().enumerate() {
@@ -1757,11 +1813,10 @@ fn flatten_json_tree(
                 depth,
                 key,
                 summary: None,
-                val_display: Some(format!("\"{s}\"")),
+                val_display: Some(preview(s)),
                 val_type: JsonValType::String,
                 is_container: false,
                 is_expanded: false,
-                raw_copy: s.clone(),
             });
         }
         serde_json::Value::Number(n) => {
@@ -1774,7 +1829,6 @@ fn flatten_json_tree(
                 val_type: JsonValType::Number,
                 is_container: false,
                 is_expanded: false,
-                raw_copy: n.to_string(),
             });
         }
         serde_json::Value::Bool(b) => {
@@ -1787,7 +1841,6 @@ fn flatten_json_tree(
                 val_type: JsonValType::Bool(*b),
                 is_container: false,
                 is_expanded: false,
-                raw_copy: b.to_string(),
             });
         }
         serde_json::Value::Null => {
@@ -1800,7 +1853,6 @@ fn flatten_json_tree(
                 val_type: JsonValType::Null,
                 is_container: false,
                 is_expanded: false,
-                raw_copy: "null".to_string(),
             });
         }
     }
@@ -1810,9 +1862,10 @@ fn render_json_tree<T: 'static>(
     grid: &Entity<TableState<ResultSet>>,
     theme: &Theme,
     cx: &Context<T>,
-    parsed_json: &serde_json::Value,
+    parsed_json: &std::rc::Rc<serde_json::Value>,
     expanded_paths: &std::collections::HashSet<String>,
     search_input: Option<&Entity<InputState>>,
+    tree_edit: Option<(String, Entity<InputState>)>,
 ) -> impl IntoElement {
     let mono = cx.theme().mono_font_family.clone();
     let query = search_input
@@ -1834,18 +1887,23 @@ fn render_json_tree<T: 'static>(
 
     div()
         .id("json-tree-container")
-        .flex_1()
+        .size_full()
         .overflow_y_scroll()
         .p_2()
         .children(items.into_iter().enumerate().map(|(ix, item)| {
             let g = g_tree.clone();
             let path = item.path.clone();
-            let path_for_copy = item.path.clone();
-            let raw_copy = item.raw_copy.clone();
+            let (root_copy, root_edit) = (parsed_json.clone(), parsed_json.clone());
             let depth_indent = px((item.depth as f32) * 14.0);
+
+            let editing = tree_edit
+                .as_ref()
+                .filter(|(p, _)| *p == item.path)
+                .map(|(_, input)| input.clone());
 
             h_flex()
                 .id(("json-tree-row", ix))
+                .group("json-row")
                 .min_h(px(ROW_H))
                 .pl(depth_indent)
                 .pr_2()
@@ -1920,22 +1978,48 @@ fn render_json_tree<T: 'static>(
                                 JsonValType::Null => (theme.text_muted.into(), true),
                                 _ => (theme.text_primary.into(), false),
                             };
+                            if let Some(input) = editing.clone() {
+                                return this
+                                    .child(div().flex_1().child(Input::new(&input).xsmall()));
+                            }
+                            let g_edit = g.clone();
+                            let p = path.clone();
                             this.child(
                                 div()
+                                    .id(("json-val", ix))
+                                    .min_w_0()
                                     .font_family(mono.clone())
                                     .text_xs()
                                     .text_color(val_color)
                                     .when(is_italic, |d| d.italic())
                                     .truncate()
-                                    .child(val_str),
+                                    .cursor_text()
+                                    .child(val_str)
+                                    .on_click(move |e, window, cx| {
+                                        if e.click_count() >= 2 {
+                                            let Some(literal) =
+                                                json_at(&root_edit, &p, "$").map(|v| v.to_string())
+                                            else {
+                                                return;
+                                            };
+                                            g_edit.update(cx, |t, cx| {
+                                                t.delegate_mut().start_tree_edit(
+                                                    p.clone(),
+                                                    literal,
+                                                    window,
+                                                    cx,
+                                                )
+                                            });
+                                        }
+                                    }),
                             )
                         }),
                 )
                 .child(
-                    h_flex()
-                        .gap_1()
-                        .items_center()
+                    div()
                         .flex_shrink_0()
+                        .invisible()
+                        .group_hover("json-row", |s| s.visible())
                         .child(
                             zbutton(("json-copy-val", ix))
                                 .icon(IconName::Copy)
@@ -1943,21 +2027,15 @@ fn render_json_tree<T: 'static>(
                                 .xsmall()
                                 .tooltip("Copy value")
                                 .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        raw_copy.clone(),
-                                    ));
-                                }),
-                        )
-                        .child(
-                            zbutton(("json-copy-path", ix))
-                                .icon(IconName::Link)
-                                .ghost()
-                                .xsmall()
-                                .tooltip(format!("Copy JSONPath ({})", path_for_copy))
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        path_for_copy.clone(),
-                                    ));
+                                    // Strings copy bare; everything else as (pretty) JSON
+                                    let text = match json_at(&root_copy, &path, "$") {
+                                        Some(serde_json::Value::String(s)) => s.clone(),
+                                        Some(v) => {
+                                            serde_json::to_string_pretty(v).unwrap_or_default()
+                                        }
+                                        None => return,
+                                    };
+                                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                                 }),
                         ),
                 )
@@ -1997,6 +2075,8 @@ impl DataGrid {
         let total_cols = rs.visible().len();
         let selected = rs.selected_cell;
 
+        let has_inspector = rs.inspector.is_some();
+        let wrap = rs.inspector.as_ref().is_some_and(|i| i.wrap);
         let inspector = rs.inspector.as_ref().map(|i| {
             let col = rs.column_name(i.col).unwrap_or_default().to_string();
             let col_type = rs
@@ -2013,6 +2093,9 @@ impl DataGrid {
                 i.parsed_json.clone(),
                 i.expanded_paths.clone(),
                 i.search_input.clone(),
+                i.tree_edit
+                    .as_ref()
+                    .map(|(p, input, _)| (p.clone(), input.clone())),
             )
         });
 
@@ -2024,7 +2107,7 @@ impl DataGrid {
             zbutton(id)
                 .icon(icon)
                 .ghost()
-                .xsmall()
+                .small()
                 .tooltip(crate::ui::format_keys(tip))
                 .disabled(read_only.is_some())
                 .on_click(move |_, window, cx| apply_row_action(&grid, action.as_ref(), window, cx))
@@ -2032,9 +2115,9 @@ impl DataGrid {
 
         // Toolbar: Zed-quiet icon buttons with DataGrip's operations
         let toolbar = h_flex()
-            .h(px(ROW_H))
+            .h(px(BAR_H))
             .px_3()
-            .gap_0p5()
+            .gap_1()
             .items_center()
             .border_b_1()
             .border_color(theme.border)
@@ -2042,7 +2125,7 @@ impl DataGrid {
                 zbutton("grid-refresh")
                     .icon(IconName::RefreshCw)
                     .ghost()
-                    .xsmall()
+                    .small()
                     .tooltip(crate::ui::format_keys("Reload (⌘↵ outside the grid)"))
                     .on_click(cx.listener(move |this, _, window, cx| on_refresh(this, window, cx))),
             )
@@ -2072,7 +2155,7 @@ impl DataGrid {
                 zbutton("grid-value-editor")
                     .icon(IconName::PanelRight)
                     .ghost()
-                    .xsmall()
+                    .small()
                     .tooltip(crate::ui::format_keys("Value editor (⇧↵)"))
                     .on_click(move |_, window, cx| {
                         apply_row_action(&grid, &ToggleValueEditor, window, cx)
@@ -2083,7 +2166,7 @@ impl DataGrid {
                 zbutton("grid-transpose")
                     .icon(IconName::Rows2)
                     .ghost()
-                    .xsmall()
+                    .small()
                     .tooltip(crate::ui::format_keys("Transposed row view (⌥R)"))
                     .when(rs.transposed_view, |b| {
                         b.bg(theme.bg_selected).text_color(theme.accent)
@@ -2096,7 +2179,7 @@ impl DataGrid {
                 zbutton("grid-export")
                     .icon(IconName::Download)
                     .ghost()
-                    .xsmall()
+                    .small()
                     .tooltip(crate::ui::format_keys("Export (⇧⌘E)"))
                     .on_click(cx.listener(move |this, _, window, cx| on_export(this, window, cx))),
             )
@@ -2155,7 +2238,7 @@ impl DataGrid {
                     zbutton("grid-revert")
                         .icon(IconName::Undo2)
                         .ghost()
-                        .xsmall()
+                        .small()
                         .tooltip(crate::ui::format_keys("Revert all (⌥⌘Z)"))
                         .on_click(move |_, _, cx| {
                             grid.update(cx, |t, cx| {
@@ -2167,7 +2250,8 @@ impl DataGrid {
                 )
                 .child(
                     zbutton("grid-review")
-                        .pad_xs()
+                        .ml_1p5()
+                        .pad_xxs()
                         .label("Review")
                         .ghost()
                         .small()
@@ -2178,7 +2262,8 @@ impl DataGrid {
                 )
                 .child(
                     zbutton("grid-submit")
-                        .pad_xs()
+                        .ml_1p5()
+                        .pad_xxs()
                         .icon(IconName::Check)
                         .label("Submit")
                         .primary()
@@ -2484,6 +2569,10 @@ impl DataGrid {
                         return;
                     };
                     grid.update(cx, |t, cx| {
+                        // Keys typed in the value editor or a filter bubble up here too
+                        if !t.focus_handle(cx).is_focused(window) {
+                            return;
+                        }
                         let Some((row, col)) = t.selected_cell() else {
                             return;
                         };
@@ -2494,11 +2583,11 @@ impl DataGrid {
                     });
                 }
             })
+            // Same split as the sidebar and bottom panel: one drag feel across the app
             .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
+                h_resizable("grid-value-editor")
+                    .on_resize(crate::layout::remember("grid-value-editor"))
+                    .child(resizable_panel().child(
                         div()
                             .id("data-table-container")
                             .flex_1()
@@ -2539,18 +2628,23 @@ impl DataGrid {
                             .when(rs.transposed_view, |this| {
                                 this.child(render_transposed_view(grid, theme, cx))
                             }),
-                    )
-                    .when_some(inspector, |this, (editor, col_name, col_type, row, read_only, mode, parsed_json, expanded_paths, search_input)| {
+                    ))
+                    .child(
+                        resizable_panel()
+                            .size(crate::layout::size("grid-value-editor", 1, 460.0))
+                            .size_range(px(280.0)..px(1600.0))
+                            .visible(has_inspector)
+                            .child(div().size_full().when_some(inspector, |this, (editor, col_name, col_type, row, read_only, mode, parsed_json, expanded_paths, search_input, tree_edit)| {
                         let (g_close, g_apply, g_key) = (grid.clone(), grid.clone(), grid.clone());
                         let has_json = parsed_json.is_some();
+                        let mono = cx.theme().mono_font_family.clone();
                         this.child(
                             v_flex()
                                 .key_context("ValueEditor")
                                 .on_action(move |_: &ApplyValue, _, cx| {
                                     g_key.update(cx, |t, cx| t.delegate_mut().apply_inspector(cx))
                                 })
-                                .w(px(400.0))
-                                .h_full()
+                                .size_full()
                                 .border_l_1()
                                 .border_color(theme.border)
                                 .bg(theme.bg_panel)
@@ -2558,15 +2652,15 @@ impl DataGrid {
                                 .child(
                                     h_flex()
                                         .h(px(BAR_H))
-                                        .pl_3()
-                                        .pr_1()
+                                        .px_3()
                                         .items_center()
                                         .justify_between()
                                         .border_b_1()
                                         .border_color(theme.border)
+                                        .bg(theme.bg_sidebar)
                                         .child(
                                             h_flex()
-                                                .gap_1p5()
+                                                .gap_2()
                                                 .text_sm()
                                                 .items_center()
                                                 .child(
@@ -2577,67 +2671,63 @@ impl DataGrid {
                                                 )
                                                 .child(
                                                     div()
+                                                        .text_xs()
                                                         .text_color(theme.text_muted)
                                                         .child(format!("row {}", row + 1)),
                                                 )
                                                 .child(
                                                     div()
+                                                        .px_1p5()
+                                                        .py_0p5()
+                                                        .rounded(px(crate::ui::RADIUS_SM))
+                                                        .bg(theme.bg_surface)
+                                                        .border_1()
+                                                        .border_color(theme.border)
                                                         .text_xs()
+                                                        .font_family(mono.clone())
                                                         .text_color(theme.text_muted)
-                                                        .child(format!("({col_type})")),
+                                                        .child(col_type.to_lowercase()),
                                                 ),
                                         )
                                         .child(
                                             h_flex()
-                                                .gap_1()
+                                                .gap_1p5()
                                                 .items_center()
                                                 .when(has_json, |this| {
                                                     let g_tree_mode = grid.clone();
                                                     let g_text_mode = grid.clone();
-                                                    this.child(
+                                                    // Plain text toggle: the active view is just brighter
+                                                    let mode_tab = |id: &'static str, label: &'static str, m: InspectorMode, g: Entity<TableState<ResultSet>>| {
+                                                        let on = mode == m;
                                                         div()
-                                                            .flex()
-                                                            .p(px(1.5))
-                                                            .rounded(px(crate::ui::RADIUS_SM))
-                                                            .bg(theme.bg_hover)
-                                                            .gap(px(2.0))
-                                                            .child(
-                                                                zbutton("val-mode-tree")
-                                                                    .label("Tree")
-                                                                    .ghost()
-                                                                    .xsmall()
-                                                                    .when(mode == InspectorMode::Tree, |b| {
-                                                                        b.bg(theme.bg_selected).text_color(theme.accent)
-                                                                    })
-                                                                    .on_click(move |_, window, cx| {
-                                                                        g_tree_mode.update(cx, |t, cx| {
-                                                                            t.delegate_mut().set_inspector_mode(InspectorMode::Tree, window, cx);
-                                                                            cx.notify();
-                                                                        });
-                                                                    }),
-                                                            )
-                                                            .child(
-                                                                zbutton("val-mode-text")
-                                                                    .label("Text")
-                                                                    .ghost()
-                                                                    .xsmall()
-                                                                    .when(mode == InspectorMode::Text, |b| {
-                                                                        b.bg(theme.bg_selected).text_color(theme.accent)
-                                                                    })
-                                                                    .on_click(move |_, window, cx| {
-                                                                        g_text_mode.update(cx, |t, cx| {
-                                                                            t.delegate_mut().set_inspector_mode(InspectorMode::Text, window, cx);
-                                                                            cx.notify();
-                                                                        });
-                                                                    }),
-                                                            ),
+                                                            .id(id)
+                                                            .text_xs()
+                                                            .cursor_pointer()
+                                                            .when(on, |d| d.text_color(theme.text_primary).font_weight(FontWeight::SEMIBOLD))
+                                                            .when(!on, |d| d.text_color(theme.text_muted).hover(|s| s.text_color(theme.text_secondary)))
+                                                            .on_click(move |_, window, cx| {
+                                                                g.update(cx, |t, cx| {
+                                                                    t.delegate_mut().set_inspector_mode(m, window, cx);
+                                                                    cx.notify();
+                                                                });
+                                                            })
+                                                            .child(label)
+                                                    };
+                                                    this.child(
+                                                        h_flex()
+                                                            .gap_3()
+                                                            .mr_1()
+                                                            .child(mode_tab("val-mode-tree", "Tree", InspectorMode::Tree, g_tree_mode))
+                                                            .child(mode_tab("val-mode-text", "Text", InspectorMode::Text, g_text_mode)),
                                                     )
                                                 })
+                                                .child(div().w_px().h(px(14.0)).mx_0p5().bg(theme.border))
                                                 .child(
                                                     zbutton("value-editor-close")
                                                         .icon(IconName::X)
                                                         .ghost()
                                                         .xsmall()
+                                                        .tooltip("Close Value Editor (Esc)")
                                                         .on_click(move |_, _, cx| {
                                                             g_close.update(cx, |t, cx| {
                                                                 t.delegate_mut().close_inspector();
@@ -2651,31 +2741,29 @@ impl DataGrid {
                                 .when(mode == InspectorMode::Tree && has_json, |this| {
                                     let g_exp = grid.clone();
                                     let g_col = grid.clone();
-                                    let g_cp = grid.clone();
                                     this.child(
                                         h_flex()
-                                            .h(px(crate::ui::CONTROL_H))
-                                            .px_2()
+                                            .h(px(BAR_H))
+                                            .px_3()
                                             .items_center()
                                             .justify_between()
                                             .border_b_1()
                                             .border_color(theme.border)
-                                            .bg(theme.bg_sidebar)
-                                            .child(
-                                                h_flex()
-                                                    .flex_1()
-                                                    .max_w(px(200.0))
-                                                    .items_center()
-                                                    .when_some(search_input.clone(), |this, input| {
-                                                        this.child(Input::new(&input).xsmall())
-                                                    }),
-                                            )
+                                            .bg(theme.bg_surface)
+                                            .when_some(search_input.clone(), |this, input| {
+                                                this.child(
+                                                    div().w(px(200.0)).child(
+                                                        crate::ui::search_input(&input, IconName::Search),
+                                                    ),
+                                                )
+                                            })
                                             .child(
                                                 h_flex()
                                                     .gap_1()
                                                     .items_center()
                                                     .child(
                                                         zbutton("val-expand-all")
+                                                            .pad_xxs()
                                                             .label("Expand")
                                                             .ghost()
                                                             .xsmall()
@@ -2689,6 +2777,7 @@ impl DataGrid {
                                                     )
                                                     .child(
                                                         zbutton("val-collapse-all")
+                                                            .pad_xxs()
                                                             .label("Collapse")
                                                             .ghost()
                                                             .xsmall()
@@ -2700,44 +2789,46 @@ impl DataGrid {
                                                                 });
                                                             }),
                                                     )
-                                                    .child(
-                                                        zbutton("val-copy-json")
-                                                            .icon(IconName::Copy)
-                                                            .ghost()
-                                                            .xsmall()
-                                                            .tooltip("Copy formatted JSON")
-                                                            .on_click(move |_, _, cx| {
-                                                                g_cp.update(cx, |t, cx| {
-                                                                    if let Some(ins) = t.delegate().inspector.as_ref() {
-                                                                        if let Some(val) = &ins.parsed_json {
-                                                                            if let Ok(pretty) = serde_json::to_string_pretty(val) {
-                                                                                cx.write_to_clipboard(ClipboardItem::new_string(pretty));
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                });
-                                                            }),
                                                     ),
-                                            ),
                                     )
                                 })
                                 // Secondary Toolbar for Text Mode when JSON
-                                .when(mode == InspectorMode::Text && has_json, |this| {
+                                .when(mode == InspectorMode::Text || !has_json, |this| {
                                     let g_fmt = grid.clone();
                                     let g_min = grid.clone();
                                     let g_cp = grid.clone();
                                     this.child(
                                         h_flex()
-                                            .h(px(crate::ui::CONTROL_H))
-                                            .px_2()
+                                            .h(px(BAR_H))
+                                            .px_3()
                                             .items_center()
                                             .justify_end()
                                             .gap_1()
                                             .border_b_1()
                                             .border_color(theme.border)
-                                            .bg(theme.bg_sidebar)
+                                            .bg(theme.bg_surface)
+                                            .child({
+                                                let g_wrap = grid.clone();
+                                                zbutton("val-wrap")
+                                                    .pad_xxs()
+                                                    .label("Wrap")
+                                                    .ghost()
+                                                    .xsmall()
+                                                    .when(wrap, |b| b.bg(theme.bg_selected).text_color(theme.accent))
+                                                    .tooltip("Wrap long lines (slower to resize with very long values)")
+                                                    .on_click(move |_, window, cx| {
+                                                        g_wrap.update(cx, |t, cx| {
+                                                            t.delegate_mut().toggle_inspector_wrap(window, cx);
+                                                            cx.notify();
+                                                        });
+                                                    })
+                                            })
+                                            // Format / Minify only make sense for JSON
+                                            .when(has_json, |d| d
+                                            .child(div().w_px().h(px(14.0)).mx_0p5().bg(theme.border))
                                             .child(
                                                 zbutton("val-format-json")
+                                                    .pad_xxs()
                                                     .label("Format")
                                                     .ghost()
                                                     .xsmall()
@@ -2751,6 +2842,7 @@ impl DataGrid {
                                             )
                                             .child(
                                                 zbutton("val-minify-json")
+                                                    .pad_xxs()
                                                     .label("Minify")
                                                     .ghost()
                                                     .xsmall()
@@ -2761,10 +2853,13 @@ impl DataGrid {
                                                             cx.notify();
                                                         });
                                                     }),
-                                            )
+                                            ))
+                                            .child(div().w_px().h(px(14.0)).mx_0p5().bg(theme.border))
                                             .child(
                                                 zbutton("val-copy-text")
+                                                    .pad_xxs()
                                                     .icon(IconName::Copy)
+                                                    .label("Copy")
                                                     .ghost()
                                                     .xsmall()
                                                     .tooltip("Copy text")
@@ -2786,7 +2881,7 @@ impl DataGrid {
                                         .min_h_0()
                                         .when(mode == InspectorMode::Tree && has_json, |this| {
                                             if let Some(val) = parsed_json.as_ref() {
-                                                this.child(render_json_tree(grid, theme, cx, val, &expanded_paths, search_input.as_ref()))
+                                                this.child(render_json_tree(grid, theme, cx, val, &expanded_paths, search_input.as_ref(), tree_edit.clone()))
                                             } else {
                                                 this.child(Editor::new(&editor).h_full().bordered(false))
                                             }
@@ -2798,16 +2893,30 @@ impl DataGrid {
                                 .when(!read_only, |this| {
                                     this.child(
                                         h_flex()
-                                            .p_2()
-                                            .justify_end()
+                                            .h(px(BAR_H))
+                                            .px_3()
+                                            .items_center()
+                                            .justify_between()
                                             .border_t_1()
                                             .border_color(theme.border)
+                                            .bg(theme.bg_sidebar)
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .text_color(theme.text_muted)
+                                                    .child(if mode == InspectorMode::Tree {
+                                                        "Double-click a value to edit it"
+                                                    } else {
+                                                        "⌘↵ to apply"
+                                                    }),
+                                            )
                                             .child(
                                                 zbutton("value-editor-apply")
-                                                    .pad_xs()
-                                                    .label("Apply")
+                                                    .pad_xxs()
+                                                    .icon(IconName::Check)
+                                                    .label("Apply Changes")
                                                     .primary()
-                                                    .small()
+                                                    .xsmall()
                                                     .tooltip(crate::ui::format_keys(
                                                         "Write to the cell (⌘↵)",
                                                     ))
@@ -2820,7 +2929,7 @@ impl DataGrid {
                                     )
                                 }),
                         )
-                    }),
+                    }))),
             )
             .child({
                 let (range_info, active_col_info, stat_chips) = if let Some(range) = rs.selected_range.as_ref().filter(|r| !r.is_single_cell()) {
@@ -2836,7 +2945,7 @@ impl DataGrid {
                             .unwrap_or_else(|| "ANY".into());
                         (
                             format!(
-                                "{} rows ({}–{}) in {}",
+                                "{} rows ({}-{}) in {}",
                                 range.row_count(),
                                 range.min_row() + 1,
                                 range.max_row() + 1,
@@ -3039,6 +3148,18 @@ mod tests {
     }
 
     #[test]
+    fn json_tree_lookup_and_preview() {
+        use super::{json_at, preview};
+        let v = serde_json::json!({"a": [1, {"b": "x"}], "ab": 2});
+        assert_eq!(json_at(&v, "$.a[1].b", "$"), Some(&serde_json::json!("x")));
+        assert_eq!(json_at(&v, "$.ab", "$"), Some(&serde_json::json!(2)));
+        assert_eq!(json_at(&v, "$.zz", "$"), None);
+        let long = "line one\r\n".repeat(50);
+        let p = preview(&long);
+        assert!(p.ends_with("…\"") && !p.contains('\n'));
+    }
+
+    #[test]
     fn paging_helpers() {
         assert_eq!(super::group(1234567), "1,234,567");
         assert_eq!(super::group(999), "999");
@@ -3108,8 +3229,8 @@ mod tests {
         let name_stats = rs.compute_column_stats(1).expect("column 1 stats");
         assert_eq!(name_stats.column_name, "name");
         assert_eq!(name_stats.distinct_count, 2);
-        assert_eq!(name_stats.min_str.as_deref(), Some("Alice"));
-        assert_eq!(name_stats.max_str.as_deref(), Some("Bob"));
+        assert_eq!(name_stats.min_str, None);
+        assert_eq!(name_stats.max_str, None);
     }
 
     #[test]

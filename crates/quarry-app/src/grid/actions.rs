@@ -40,14 +40,65 @@ pub fn grid_menu(menu: PopupMenu, rs: &ResultSet) -> PopupMenu {
     if rs.read_only_reason().is_some() {
         return menu;
     }
+    // A multi-cell selection: the edits apply to every selected cell / row
+    let (cells, rows) = rs.selected_range.filter(|r| !r.is_single_cell()).map_or(
+        (String::new(), String::new()),
+        |r| {
+            (
+                format!(" ({} cells)", r.cell_count()),
+                format!(" ({} rows)", r.row_count()),
+            )
+        },
+    );
     menu.separator()
         .menu("Edit Cell", Box::new(EditCell))
-        .menu("Set NULL", Box::new(SetNull))
-        .menu("Set DEFAULT", Box::new(SetDefault))
+        .menu(format!("Set NULL{cells}"), Box::new(SetNull))
+        .menu(format!("Set DEFAULT{cells}"), Box::new(SetDefault))
         .separator()
         .menu("Add Row", Box::new(AddRow))
         .menu("Duplicate Row", Box::new(DuplicateRow))
-        .menu("Delete Row", Box::new(DeleteRow))
+        .menu(format!("Delete Row{rows}"), Box::new(DeleteRow))
+}
+
+/// Set NULL / Set DEFAULT / Delete Row over a multi-cell selection, as one undo step.
+/// Returns false when there's no such selection or the action isn't one of these.
+fn apply_to_range(rs: &mut ResultSet, any: &dyn std::any::Any) -> bool {
+    let Some(r) = rs.selected_range.filter(|r| !r.is_single_cell()) else {
+        return false;
+    };
+    let (null, default, delete) = (
+        any.is::<SetNull>(),
+        any.is::<SetDefault>(),
+        any.is::<DeleteRow>(),
+    );
+    if !(null || default || delete) {
+        return false;
+    }
+    let total = rs.total_row_count();
+    let cols = rs.visible().len();
+    if total == 0 || cols == 0 {
+        return true;
+    }
+    let row_range = r.min_row()..=r.max_row().min(total - 1);
+    let undo_len = rs.undo.len();
+    if delete {
+        // Bottom-up: removing a pending insert shifts the rows after it
+        for row in row_range.rev() {
+            rs.delete_row(row);
+        }
+    } else {
+        for row in row_range {
+            for col in r.min_col()..=r.max_col().min(cols - 1) {
+                if null {
+                    rs.set_null(row, col);
+                } else {
+                    rs.set_default(row, col);
+                }
+            }
+        }
+    }
+    rs.undo.truncate(undo_len + 1);
+    true
 }
 
 /// Row/cell operations shared by keyboard actions, the context menu and the toolbar.
@@ -80,6 +131,12 @@ pub fn apply_row_action(
             || any.is::<CopyAllCsv>()
             || any.is::<CopyAllJson>()
             || any.is::<CopyAllInsert>();
+        if apply_to_range(rs, any) {
+            rs.finish_edit(false, cx);
+            table.refresh(cx);
+            cx.notify();
+            return;
+        }
         let mut clipboard = None;
         let new_row = match target {
             _ if any.is::<AddRow>() => rs.add_row(),

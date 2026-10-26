@@ -18,6 +18,7 @@ impl StatusBar {
         session: Option<&Arc<dyn DatabaseSession>>,
         connection: Option<&ConnectionProfile>,
         vim_mode: Option<crate::state::VimMode>,
+        connecting: bool,
         theme: &Theme,
         cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
@@ -70,7 +71,40 @@ impl StatusBar {
             Environment::Prod => theme.danger,
         };
 
+        let connecting_bar = connecting.then(|| {
+            div()
+                .absolute()
+                .top(px(-1.0))
+                .left_0()
+                .right_0()
+                .h(px(2.0))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .h_full()
+                        .w(relative(0.35))
+                        .rounded_full()
+                        .bg(theme.accent)
+                        .with_animation(
+                            "statusbar-connecting-line",
+                            Animation::new(std::time::Duration::from_millis(1400))
+                                .repeat()
+                                .with_easing(ease_in_out),
+                            |d, delta| {
+                                // Sweeps left (-35%) to right (100%), slowing at both ends so the restart doesn't jump
+                                let start = -0.35;
+                                let travel = 1.35;
+                                let pos = start + travel * delta;
+                                d.left(relative(pos))
+                            },
+                        ),
+                )
+        });
+
         h_flex()
+            .relative()
             .h(px(crate::ui::SMALL_H))
             .w_full()
             .px_3()
@@ -79,6 +113,7 @@ impl StatusBar {
             .border_color(theme.border)
             .justify_between()
             .items_center()
+            .children(connecting_bar)
             .child(
                 // Left items
                 h_flex()

@@ -231,7 +231,7 @@ fn csv_field(s: &str, delimiter: char) -> String {
     }
 }
 
-fn json_value(v: &DbValue) -> String {
+pub fn json_value(v: &DbValue) -> String {
     match v {
         DbValue::Null => "null".into(),
         DbValue::Boolean(b) => b.to_string(),

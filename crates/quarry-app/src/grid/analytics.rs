@@ -120,6 +120,8 @@ impl ColumnStats {
         let mut null_count = 0;
         let mut seen_values = HashSet::new();
         let mut is_numeric = true;
+        // Min/Max only for numbers and dates; for text, JSON, blobs or booleans it says nothing useful
+        let mut orderable = true;
         let mut sum_val = 0.0;
         let mut num_numeric = 0;
         let mut min_num = f64::MAX;
@@ -181,8 +183,12 @@ impl ColumnStats {
                                 is_numeric = false;
                             }
                         }
+                        DbValue::Timestamp(_) => {
+                            is_numeric = false;
+                        }
                         _ => {
                             is_numeric = false;
+                            orderable = false;
                         }
                     }
 
@@ -204,7 +210,8 @@ impl ColumnStats {
             let max_s = format_grouped_num(max_num);
             (Some(sum_val), Some(avg), Some(min_s), Some(max_s))
         } else {
-            (None, None, min_str, max_str)
+            let keep = |m: Option<String>| m.filter(|_| orderable);
+            (None, None, keep(min_str), keep(max_str))
         };
 
         Self {
@@ -364,6 +371,8 @@ impl SelectionStats {
         let mut null_count = 0;
         let mut seen_values = HashSet::new();
         let mut is_numeric = true;
+        // Min/Max only for numbers and dates; for text, JSON, blobs or booleans it says nothing useful
+        let mut orderable = true;
         let mut sum_val = 0.0;
         let mut num_numeric = 0;
         let mut min_num = f64::MAX;
@@ -424,8 +433,12 @@ impl SelectionStats {
                                 is_numeric = false;
                             }
                         }
+                        DbValue::Timestamp(_) => {
+                            is_numeric = false;
+                        }
                         _ => {
                             is_numeric = false;
+                            orderable = false;
                         }
                     }
 
@@ -446,7 +459,8 @@ impl SelectionStats {
             let max_s = format_grouped_num(max_num);
             (Some(sum_val), Some(avg), Some(min_s), Some(max_s))
         } else {
-            (None, None, min_str, max_str)
+            let keep = |m: Option<String>| m.filter(|_| orderable);
+            (None, None, keep(min_str), keep(max_str))
         };
 
         Self {
@@ -701,13 +715,31 @@ mod tests {
         assert_eq!(stats.non_null_count, 3);
         assert_eq!(stats.distinct_count, 2);
         assert!(!stats.is_numeric);
-        assert_eq!(stats.min_str.as_deref(), Some("apple"));
-        assert_eq!(stats.max_str.as_deref(), Some("banana"));
+        assert_eq!(stats.min_str, None);
+        assert_eq!(stats.max_str, None);
 
         let chips = stats.chips();
         assert_eq!(chips[0].label, "Count");
         assert_eq!(chips[1].label, "Nulls");
         assert_eq!(chips[2].label, "Distinct");
         assert_eq!(chips[2].display_value, "2");
+    }
+
+    #[test]
+    fn json_columns_skip_min_max() {
+        let vals = [
+            DbValue::Json(serde_json::json!({"a": 1})),
+            DbValue::Json(serde_json::json!({"b": 2})),
+        ];
+        let stats = ColumnStats::compute("doc".into(), "JSON".into(), vals.iter().map(Some));
+        assert!(stats
+            .chips()
+            .iter()
+            .all(|c| c.label != "Min" && c.label != "Max"));
+        let sel = SelectionStats::compute(vals.iter().map(Some));
+        assert!(sel
+            .chips()
+            .iter()
+            .all(|c| c.label != "Min" && c.label != "Max"));
     }
 }

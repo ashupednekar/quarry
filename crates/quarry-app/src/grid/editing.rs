@@ -348,16 +348,26 @@ impl ResultSet {
             self.read_only_reason().is_some() || self.row_state(row) == RowState::Deleted;
         let editor = cx.new(|cx| {
             let e = EditorState::new(window, cx)
-                .soft_wrap(true)
+                .soft_wrap(false)
                 .default_value(text.clone());
             if is_json {
                 e.language("json")
+                    .line_number(true)
+                    .folding(true)
+                    .smart_indent(true)
+                    .auto_close(true)
+                    .tab_size(gpui::base::input::TabSize {
+                        tab_size: 2,
+                        hard_tabs: false,
+                    })
             } else {
                 e
             }
         });
         editor.update(cx, |e, cx| e.set_readonly(read_only, cx));
-        let parsed_json = serde_json::from_str::<serde_json::Value>(&text).ok();
+        let parsed_json = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .map(std::rc::Rc::new);
         let is_valid_json = parsed_json.is_some();
         let search_input = if is_valid_json {
             Some(cx.new(|cx| InputState::new(window, cx).placeholder("Filter JSON…")))
@@ -366,11 +376,11 @@ impl ResultSet {
         };
         let mut expanded_paths = std::collections::HashSet::new();
         expanded_paths.insert("$".to_string());
-        if let Some(serde_json::Value::Object(map)) = &parsed_json {
+        if let Some(serde_json::Value::Object(map)) = parsed_json.as_deref() {
             for k in map.keys() {
                 expanded_paths.insert(format!("$.{k}"));
             }
-        } else if let Some(serde_json::Value::Array(arr)) = &parsed_json {
+        } else if let Some(serde_json::Value::Array(arr)) = parsed_json.as_deref() {
             for i in 0..arr.len().min(10) {
                 expanded_paths.insert(format!("$[{i}]"));
             }
@@ -389,20 +399,71 @@ impl ResultSet {
             parsed_json,
             expanded_paths,
             search_input,
+            tree_edit: None,
+            wrap: false,
         });
+    }
+
+    pub fn toggle_inspector_wrap(&mut self, window: &mut Window, cx: &mut App) {
+        if let Some(ins) = self.inspector.as_mut() {
+            ins.wrap = !ins.wrap;
+            let wrap = ins.wrap;
+            ins.editor
+                .update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
+        }
+    }
+
+    /// Tree view: edits one leaf in place, seeded with its JSON literal (`"text"`, `42`, `null`)
+    pub fn start_tree_edit(
+        &mut self,
+        path: String,
+        literal: String,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let Some(row) = self.inspector.as_ref().map(|i| i.row) else {
+            return;
+        };
+        if self.read_only_reason().is_some() || self.row_state(row) == RowState::Deleted {
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(literal));
+        input.update(cx, |i, cx| {
+            i.select_all(window, cx);
+            i.focus(window, cx);
+        });
+        let sub = cx.subscribe_in(&input, window, |table, _, ev: &InputEvent, window, cx| {
+            if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                table.delegate_mut().finish_tree_edit(window, cx);
+            }
+        });
+        if let Some(ins) = self.inspector.as_mut() {
+            ins.tree_edit = Some((path, input, sub));
+        }
+        cx.notify();
+    }
+
+    fn finish_tree_edit(&mut self, window: &mut Window, cx: &mut Context<TableState<Self>>) {
+        let Some((path, input, _)) = self.inspector.as_mut().and_then(|i| i.tree_edit.take())
+        else {
+            return;
+        };
+        let text = input.read(cx).value().to_string();
+        // Valid JSON keeps its type (42, true, {"a":1}); anything else becomes a string
+        let val = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+        self.set_json_tree_value(&path, val, window, cx);
+        cx.notify();
     }
 
     pub fn set_inspector_mode(&mut self, mode: InspectorMode, _window: &mut Window, cx: &mut App) {
         if let Some(ins) = self.inspector.as_mut() {
-            if mode == InspectorMode::Tree {
-                let text = ins.editor.read(cx).value().to_string();
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-                    ins.parsed_json = Some(val);
-                    ins.mode = InspectorMode::Tree;
-                    self.notice = None;
-                } else {
-                    self.notice = Some("Cannot switch to Tree view: JSON syntax error".to_string());
-                }
+            let text = ins.editor.read(cx).value().to_string();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                ins.parsed_json = Some(std::rc::Rc::new(val));
+                ins.mode = mode;
+                self.notice = None;
+            } else if mode == InspectorMode::Tree {
+                self.notice = Some("Cannot switch to Tree view: JSON syntax error".to_string());
             } else {
                 ins.mode = InspectorMode::Text;
             }
@@ -416,7 +477,7 @@ impl ResultSet {
                 if let Ok(pretty) = serde_json::to_string_pretty(&val) {
                     ins.editor
                         .update(cx, |e, cx| e.set_value(pretty, window, cx));
-                    ins.parsed_json = Some(val);
+                    ins.parsed_json = Some(std::rc::Rc::new(val));
                 }
             }
         }
@@ -429,7 +490,7 @@ impl ResultSet {
                 if let Ok(compact) = serde_json::to_string(&val) {
                     ins.editor
                         .update(cx, |e, cx| e.set_value(compact, window, cx));
-                    ins.parsed_json = Some(val);
+                    ins.parsed_json = Some(std::rc::Rc::new(val));
                 }
             }
         }
@@ -477,6 +538,61 @@ impl ResultSet {
         if let Some(ins) = self.inspector.as_mut() {
             ins.expanded_paths.clear();
             ins.expanded_paths.insert("$".to_string());
+        }
+    }
+
+    pub fn set_json_tree_value(
+        &mut self,
+        path: &str,
+        new_val: serde_json::Value,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(ins) = self.inspector.as_mut() {
+            if let Some(root) = ins.parsed_json.as_mut().map(std::rc::Rc::make_mut) {
+                // Mutate root at path
+                fn set_at_path(
+                    cur: &mut serde_json::Value,
+                    target: &str,
+                    curr_path: &str,
+                    new_val: &serde_json::Value,
+                ) -> bool {
+                    if target == curr_path {
+                        *cur = new_val.clone();
+                        return true;
+                    }
+                    match cur {
+                        serde_json::Value::Object(map) => {
+                            for (k, child) in map.iter_mut() {
+                                let next_path = if curr_path == "$" {
+                                    format!("$.{k}")
+                                } else {
+                                    format!("{curr_path}.{k}")
+                                };
+                                if set_at_path(child, target, &next_path, new_val) {
+                                    return true;
+                                }
+                            }
+                        }
+                        serde_json::Value::Array(arr) => {
+                            for (i, child) in arr.iter_mut().enumerate() {
+                                let next_path = format!("{curr_path}[{i}]");
+                                if set_at_path(child, target, &next_path, new_val) {
+                                    return true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    false
+                }
+
+                set_at_path(root, path, "$", &new_val);
+                if let Ok(pretty) = serde_json::to_string_pretty(root) {
+                    ins.editor
+                        .update(cx, |e, cx| e.set_value(pretty, window, cx));
+                }
+            }
         }
     }
 

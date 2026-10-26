@@ -352,6 +352,7 @@ impl TableDelegate for ResultSet {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |table, _, _, cx| {
+                                cx.stop_propagation();
                                 table.delegate_mut().editing = None;
                                 table.delegate_mut().set_null(row_ix, display_col);
                                 table.refresh(cx);
@@ -376,6 +377,7 @@ impl TableDelegate for ResultSet {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |table, _, window, cx| {
+                        cx.stop_propagation();
                         table.delegate_mut().finish_edit(true, cx);
                         table
                             .delegate_mut()
@@ -754,7 +756,12 @@ impl TableDelegate for ResultSet {
                     table.refresh(cx);
                 }),
             )
-            .on_mouse_move(cx.listener(move |table, _, _, cx| {
+            .on_mouse_move(cx.listener(move |table, e: &MouseMoveEvent, _, cx| {
+                // The button came up outside the grid (e.g. over the value editor): drag is over
+                if table.delegate().is_dragging && e.pressed_button != Some(MouseButton::Left) {
+                    table.delegate_mut().end_drag();
+                    return;
+                }
                 if table.delegate().is_dragging {
                     table
                         .delegate_mut()

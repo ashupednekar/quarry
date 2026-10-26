@@ -385,6 +385,10 @@ pub trait ButtonPadding: Styled + Sized {
     fn pad_xs(self) -> Self {
         self.h(px(ROW_H)).px_3()
     }
+    /// 24px tall, 8px sides: inside 28px bars and narrow side panels
+    fn pad_xxs(self) -> Self {
+        self.h(px(SMALL_H)).px_2()
+    }
 }
 
 impl ButtonPadding for gpui::component::button::Button {}
@@ -398,6 +402,19 @@ pub fn form_input(state: &Entity<gpui::component::input::InputState>) -> Div {
             .text_sm()
             .px_3p5(),
     )
+}
+
+/// Filter / search box for toolbars: one height (32px) and look across the app
+pub fn search_input(
+    state: &Entity<gpui::component::input::InputState>,
+    icon: gpui::assets::IconName,
+) -> gpui::component::input::Input {
+    gpui::component::input::Input::new(state)
+        .text_sm()
+        .cleanable(true)
+        .prefix(gpui::component::Sizable::small(gpui::component::Icon::new(
+            icon,
+        )))
 }
 
 /// Translates keyboard shortcut symbols based on the operating system.

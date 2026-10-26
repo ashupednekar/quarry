@@ -11,7 +11,8 @@ use crate::theme::Theme;
 use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::component::button::ButtonVariants;
-use gpui::component::{ActiveTheme, Sizable};
+use gpui::component::scroll::ScrollableElement;
+use gpui::component::{ActiveTheme, Disableable, Sizable};
 use gpui::*;
 use quarry_core::edits::{PendingChanges, RowKey};
 
@@ -87,6 +88,55 @@ fn row_diffs(p: &PendingChanges) -> Vec<RowDiff> {
     rows
 }
 
+/// Rows (Changes tab) or statements (SQL tab) per page
+const PAGE: usize = 25;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Diff {
+    Same,
+    Removed,
+    Added,
+}
+
+/// Line diff of two values (LCS), so a JSON edit shows the lines that changed, not two whole blobs.
+/// ponytail: O(n·m) table; past 400×400 lines it shows all-removed/all-added instead
+fn line_diff(before: &str, after: &str) -> Vec<(Diff, String)> {
+    let a: Vec<&str> = before.lines().collect();
+    let b: Vec<&str> = after.lines().collect();
+    if a.len() > 400 || b.len() > 400 {
+        return a
+            .iter()
+            .map(|l| (Diff::Removed, l.to_string()))
+            .chain(b.iter().map(|l| (Diff::Added, l.to_string())))
+            .collect();
+    }
+    // lcs[i][j]: common lines of a[i..] and b[j..]
+    let mut lcs = vec![vec![0u16; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            out.push((Diff::Same, a[i].to_string()));
+            (i, j) = (i + 1, j + 1);
+        } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
+            out.push((Diff::Removed, a[i].to_string()));
+            i += 1;
+        } else {
+            out.push((Diff::Added, b[j].to_string()));
+            j += 1;
+        }
+    }
+    out
+}
+
 /// "2 rows updated · 1 inserted · 1 deleted"
 fn summary(rows: &[RowDiff]) -> String {
     let n = |k: &str| rows.iter().filter(|r| r.kind == k).count();
@@ -134,6 +184,8 @@ impl ReviewModal {
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.state.review_modal_show_sql = sql;
+                    this.state.review_modal_page = 0;
+                    this.state.review_modal_scroll = Default::default();
                     cx.notify();
                 }))
                 .child(label)
@@ -163,7 +215,7 @@ impl ReviewModal {
         let cell = || div().flex_1().min_w_0().px_2().py_1().overflow_hidden();
         let table_head = || {
             h_flex()
-                .px_1()
+                .px_2()
                 .border_b_1()
                 .border_color(t.border)
                 .text_color(t.text_muted)
@@ -194,6 +246,7 @@ impl ReviewModal {
                         c.id(ElementId::from(id_str))
                             .max_h(px(140.0))
                             .overflow_scroll()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation()) // inner boxes scroll alone, not the modal
                             .child(val)
                             .into_any_element()
                     } else {
@@ -201,9 +254,11 @@ impl ReviewModal {
                     }
                 };
 
-                h_flex()
+                // Inset so the tinted After cell doesn't touch the card's edge
+                let row = h_flex()
                     .items_start()
-                    .px_1()
+                    .px_2()
+                    .py_1()
                     .border_b_1()
                     .border_color(t.border)
                     .child(
@@ -213,12 +268,59 @@ impl ReviewModal {
                             .truncate()
                             .text_color(t.text_secondary)
                             .child(col),
-                    )
-                    .child(match before {
-                        Some(v) => format_cell(v, true, false),
-                        None => format_cell(String::new(), true, true),
-                    })
-                    .child(format_cell(after, false, false))
+                    );
+                if let Some(b) = before
+                    .as_ref()
+                    .filter(|b| b.contains('\n') || after.contains('\n'))
+                {
+                    // − / + per line, unchanged lines plain: reads like a code review
+                    let lines = line_diff(b, &after);
+                    let id = SharedString::from(format!("diff-lines-{row_ix}-{line_ix}"));
+                    return row.child(
+                        v_flex()
+                            .id(ElementId::from(id))
+                            .flex_1()
+                            .min_w_0()
+                            .py_1()
+                            .max_h(px(260.0))
+                            .overflow_scroll()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation()) // inner boxes scroll alone, not the modal
+                            .children(lines.into_iter().map(|(kind, text)| {
+                                let (mark, bg, fg) = match kind {
+                                    Diff::Same => (" ", None, t.text_secondary),
+                                    Diff::Removed => (
+                                        "−",
+                                        Some(crate::Theme::tint(t.danger, 0.12)),
+                                        t.text_primary,
+                                    ),
+                                    Diff::Added => (
+                                        "+",
+                                        Some(crate::Theme::tint(t.success, 0.12)),
+                                        t.text_primary,
+                                    ),
+                                };
+                                h_flex()
+                                    .px_2()
+                                    .gap_2()
+                                    .whitespace_nowrap()
+                                    .when_some(bg, |d, bg| d.bg(bg))
+                                    .text_color(fg)
+                                    .child(
+                                        div()
+                                            .w(px(10.0))
+                                            .flex_shrink_0()
+                                            .text_color(t.text_muted)
+                                            .child(mark),
+                                    )
+                                    .child(text)
+                            })),
+                    );
+                }
+                row.child(match before {
+                    Some(v) => format_cell(v, true, false),
+                    None => format_cell(String::new(), true, true),
+                })
+                .child(format_cell(after, false, false))
             };
         let badge = |kind: &'static str| {
             let color = match kind {
@@ -235,99 +337,121 @@ impl ReviewModal {
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(kind)
         };
-        let changes = rows.iter().enumerate().map(|(row_ix, r)| {
-            v_flex()
-                .rounded(px(crate::ui::RADIUS_MD))
-                .border_1()
-                .border_color(t.border)
-                .overflow_hidden()
-                .child(
-                    h_flex()
-                        .items_center()
-                        .gap_2()
-                        .px_3()
-                        .py_1p5()
-                        .bg(t.bg_panel)
-                        .border_b_1()
-                        .border_color(t.border)
-                        .child(badge(r.kind))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_family(mono.clone())
-                                .text_color(t.text_secondary)
-                                .truncate()
-                                .child(r.key.clone()),
-                        ),
-                )
-                .child(
-                    v_flex()
-                        .text_sm()
-                        .font_family(mono.clone())
-                        .when(r.lines.iter().any(|l| matches!(l, Line::Change(..))), |d| {
-                            d.child(table_head())
-                        })
-                        .children(r.lines.iter().enumerate().map(|(line_ix, l)| {
-                            match l {
-                                Line::Change(c, before, after) => table_row(
-                                    row_ix,
-                                    line_ix,
-                                    c.clone(),
-                                    before.clone(),
-                                    after.clone(),
-                                ),
-                                Line::Note(n) => h_flex()
-                                    .px_3()
-                                    .py_1p5()
-                                    .text_color(t.text_muted)
-                                    .child(n.clone()),
-                            }
-                        })),
-                )
-        });
-        let sql = sql_statements.iter().enumerate().map(|(idx, sql)| {
-            let is_large = sql.lines().count() > 6 || sql.len() > 200;
-            h_flex()
-                .p_3()
-                .gap_3()
-                .items_start()
-                .rounded(px(crate::ui::RADIUS_MD))
-                .bg(t.bg_panel)
-                .border_1()
-                .border_color(t.border)
-                .child(
-                    div()
-                        .w(px(20.0))
-                        .flex_shrink_0()
-                        .text_sm()
-                        .text_color(t.text_muted)
-                        .child(format!("{}", idx + 1)),
-                )
-                .child(if is_large {
-                    let id_str = SharedString::from(format!("review-sql-stmt-{idx}"));
-                    div()
-                        .id(ElementId::from(id_str))
-                        .flex_1()
-                        .min_w_0()
-                        .max_h(px(180.0))
-                        .overflow_scroll()
-                        .text_sm()
-                        .font_family(mono.clone())
-                        .text_color(t.text_primary)
-                        .child(sql.clone())
-                        .into_any_element()
-                } else {
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .text_sm()
-                        .font_family(mono.clone())
-                        .text_color(t.text_primary)
-                        .child(sql.clone())
-                        .into_any_element()
-                })
-        });
+        let page = state.review_modal_page;
+        let total = if show_sql {
+            sql_statements.len()
+        } else {
+            rows.len()
+        };
+        let pages = total.div_ceil(PAGE).max(1);
+        let page = page.min(pages - 1);
+        let changes = rows
+            .iter()
+            .enumerate()
+            .skip(page * PAGE)
+            .take(PAGE)
+            .map(|(row_ix, r)| {
+                v_flex()
+                    // Keep natural height; the modal body scrolls instead of squashing the cards
+                    .flex_shrink_0()
+                    .rounded(px(crate::ui::RADIUS_MD))
+                    .border_1()
+                    .border_color(t.border)
+                    .overflow_hidden()
+                    .child(
+                        h_flex()
+                            .items_center()
+                            .gap_2()
+                            .px_3()
+                            .py_1p5()
+                            .bg(t.bg_panel)
+                            .border_b_1()
+                            .border_color(t.border)
+                            .child(badge(r.kind))
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_family(mono.clone())
+                                    .text_color(t.text_secondary)
+                                    .truncate()
+                                    .child(r.key.clone()),
+                            ),
+                    )
+                    .child(
+                        v_flex()
+                            .text_sm()
+                            .font_family(mono.clone())
+                            .when(r.lines.iter().any(|l| matches!(l, Line::Change(..))), |d| {
+                                d.child(table_head())
+                            })
+                            .children(r.lines.iter().enumerate().map(|(line_ix, l)| {
+                                match l {
+                                    Line::Change(c, before, after) => table_row(
+                                        row_ix,
+                                        line_ix,
+                                        c.clone(),
+                                        before.clone(),
+                                        after.clone(),
+                                    ),
+                                    Line::Note(n) => h_flex()
+                                        .px_3()
+                                        .py_1p5()
+                                        .text_color(t.text_muted)
+                                        .child(n.clone()),
+                                }
+                            })),
+                    )
+            });
+        let sql = sql_statements
+            .iter()
+            .enumerate()
+            .skip(page * PAGE)
+            .take(PAGE)
+            .map(|(idx, sql)| {
+                let is_large = sql.lines().count() > 6 || sql.len() > 200;
+                h_flex()
+                    .flex_shrink_0()
+                    .p_3()
+                    .gap_3()
+                    .items_start()
+                    .rounded(px(crate::ui::RADIUS_MD))
+                    .bg(t.bg_panel)
+                    .border_1()
+                    .border_color(t.border)
+                    .child(
+                        div()
+                            .w(px(20.0))
+                            .flex_shrink_0()
+                            .text_sm()
+                            .text_color(t.text_muted)
+                            .child(format!("{}", idx + 1)),
+                    )
+                    .child(if is_large {
+                        let id_str = SharedString::from(format!("review-sql-stmt-{idx}"));
+                        div()
+                            .id(ElementId::from(id_str))
+                            .flex_1()
+                            .min_w_0()
+                            .max_h(px(180.0))
+                            .overflow_scroll()
+                            .on_scroll_wheel(|_, _, cx| cx.stop_propagation()) // inner boxes scroll alone, not the modal
+                            .text_sm()
+                            .font_family(mono.clone())
+                            .text_color(t.text_primary)
+                            .child(sql.clone())
+                            .into_any_element()
+                    } else {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_sm()
+                            .font_family(mono.clone())
+                            .text_color(t.text_primary)
+                            .child(sql.clone())
+                            .into_any_element()
+                    })
+            });
 
         let close = cx.listener(move |this, _, _, cx| this.close_review_modal(cx));
         crate::ui::fade_in(
@@ -355,16 +479,77 @@ impl ReviewModal {
                         close,
                     ))
                     .child(tabs)
+                    // Plain scroll area plus an overlaid scrollbar; the Scrollable wrapper needs a
+                    // definite parent height, which this content-sized modal doesn't have
                     .child(
-                        modal_body("review-sql-scroll")
+                        div()
+                            .relative()
                             .flex_1()
-                            .gap_2()
-                            .max_h(px(460.0))
-                            .when(!show_sql, |d| d.children(changes))
-                            .when(show_sql, |d| d.children(sql)),
+                            .min_h_0()
+                            .child(
+                                modal_body("review-sql-scroll")
+                                    .track_scroll(&state.review_modal_scroll)
+                                    .pt_4()
+                                    .gap_3()
+                                    .max_h(px(460.0))
+                                    .when(!show_sql, |d| d.children(changes))
+                                    .when(show_sql, |d| d.children(sql)),
+                            )
+                            .vertical_scrollbar(&state.review_modal_scroll),
                     )
                     .child(
                         modal_footer(theme)
+                            .when(show_sql, |d| {
+                                let all = sql_statements.join("\n");
+                                d.child(
+                                    zbutton("review-copy-sql")
+                                        .pad_sm()
+                                        .icon(gpui::assets::IconName::Copy)
+                                        .label("Copy SQL")
+                                        .ghost()
+                                        .small()
+                                        .on_click(move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                all.clone(),
+                                            ))
+                                        }),
+                                )
+                            })
+                            .when(pages > 1, |d| {
+                                let first = page * PAGE + 1;
+                                let last = (first + PAGE - 1).min(total);
+                                d.child(
+                                    zbutton("review-prev")
+                                        .icon(gpui::assets::IconName::ChevronLeft)
+                                        .ghost()
+                                        .small()
+                                        .disabled(page == 0)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.state.review_modal_page = page.saturating_sub(1);
+                                            this.state.review_modal_scroll = Default::default();
+                                            cx.notify();
+                                        })),
+                                )
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(t.text_muted)
+                                        .child(format!("{first}-{last} of {total}")),
+                                )
+                                .child(
+                                    zbutton("review-next")
+                                        .icon(gpui::assets::IconName::ChevronRight)
+                                        .ghost()
+                                        .small()
+                                        .disabled(page + 1 >= pages)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.state.review_modal_page = page + 1;
+                                            this.state.review_modal_scroll = Default::default();
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(div().flex_1())
                             .child(
                                 zbutton("review-cancel-btn")
                                     .pad_sm()
@@ -401,7 +586,26 @@ impl QuarryWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{row_diffs, summary};
+    use super::{line_diff, row_diffs, summary, Diff};
+
+    #[test]
+    fn line_diff_marks_only_changed_lines() {
+        let d = line_diff(
+            "{\n  \"a\": 1,\n  \"b\": 2\n}",
+            "{\n  \"a\": 1,\n  \"b\": 3\n}",
+        );
+        let kinds: Vec<Diff> = d.iter().map(|(k, _)| *k).collect();
+        assert_eq!(
+            kinds,
+            [
+                Diff::Same,
+                Diff::Same,
+                Diff::Removed,
+                Diff::Added,
+                Diff::Same
+            ]
+        );
+    }
     use quarry_core::edits::{PendingCellEdit, PendingChanges, PendingRowDelete};
     use quarry_core::DbValue;
 

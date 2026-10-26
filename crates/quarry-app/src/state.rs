@@ -263,6 +263,9 @@ pub struct AppState {
     /// What the statements do, shown as a per-row diff; `review_modal_show_sql` flips to the SQL
     pub review_modal_changes: quarry_core::edits::PendingChanges,
     pub review_modal_show_sql: bool,
+    /// Page of rows (Changes) or statements (SQL) shown in the review modal
+    pub review_modal_page: usize,
+    pub review_modal_scroll: gpui::ScrollHandle,
 
     pub add_conn_modal_open: bool,
     /// Driver id picked in the add-connection form
@@ -270,6 +273,10 @@ pub struct AppState {
     pub add_conn_env: Environment,
     pub add_conn_read_only: bool,
     pub add_conn_ssh: bool,
+    /// Discovered SSH host entries from ~/.ssh/config
+    pub ssh_discovered_hosts: Vec<crate::ssh::DiscoveredSshHost>,
+    /// Loaded keys from ssh-agent (comments/labels)
+    pub ssh_agent_keys: Vec<String>,
     pub add_conn_feedback: Option<(String, bool)>, // (msg, is_error)
     /// Set while the modal edits a saved connection rather than adding one
     pub editing_conn: Option<String>,
@@ -349,12 +356,16 @@ impl AppState {
             review_modal_table: String::new(),
             review_modal_changes: Default::default(),
             review_modal_show_sql: false,
+            review_modal_page: 0,
+            review_modal_scroll: Default::default(),
 
             add_conn_modal_open: false,
             add_conn_driver: "postgres",
             add_conn_env: Environment::Local,
             add_conn_read_only: false,
             add_conn_ssh: false,
+            ssh_discovered_hosts: Vec::new(),
+            ssh_agent_keys: Vec::new(),
             maximized: None,
             add_conn_tab: 0,
             editing_conn: None,

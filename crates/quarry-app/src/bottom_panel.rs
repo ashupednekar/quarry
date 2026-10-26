@@ -11,7 +11,7 @@ use crate::ui::*;
 use crate::QuarryWindow;
 use gpui::assets::IconName;
 use gpui::component::button::ButtonVariants;
-use gpui::component::input::{Input, InputEvent, InputState};
+use gpui::component::input::{InputEvent, InputState};
 use gpui::component::table::TableState;
 use gpui::component::{Disableable, Sizable};
 use gpui::*;
@@ -660,7 +660,7 @@ impl QuarryWindow {
                             .child(
                                 div()
                                     .w(px(240.0))
-                                    .child(Input::new(&p.history_search).small().cleanable(true)),
+                                    .child(search_input(&p.history_search, IconName::Search)),
                             )
                             .child(
                                 toggle("hist-errors", "Errors only", p.history_errors_only)
@@ -735,7 +735,7 @@ impl QuarryWindow {
                             .child(
                                 div()
                                     .w(px(240.0))
-                                    .child(Input::new(&p.log_filter).small().cleanable(true)),
+                                    .child(search_input(&p.log_filter, IconName::ListFilter)),
                             )
                             .child(div().flex_1())
                             .child(
@@ -813,9 +813,10 @@ impl QuarryWindow {
                             )
                             .when(has_monitor, |d| {
                                 d.child(div().w_px().h(px(14.0)).mx_1().bg(theme.border))
-                                    .child(div().w(px(180.0)).child(
-                                        Input::new(&p.server_filter).small().cleanable(true),
-                                    ))
+                                    .child(div().w(px(180.0)).child(search_input(
+                                        &p.server_filter,
+                                        IconName::ListFilter,
+                                    )))
                             })
                             .child(div().flex_1())
                             .when(has_monitor, |d| {
