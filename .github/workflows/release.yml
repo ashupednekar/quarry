@@ -56,8 +56,11 @@ jobs:
         with:
           tool: cargo-packager
 
+      # With the signing key set, cargo-packager also writes a .sig per bundle for the updater
       - name: Build & package application
         env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD }}
           RUSTFLAGS: ${{ runner.os == 'Linux' && '-C link-arg=-fuse-ld=mold' || '' }}
         run: cargo packager --release -f ${{ matrix.formats }}
         working-directory: crates/quarry-app
@@ -69,6 +72,7 @@ jobs:
             dist/*.deb
             dist/*.AppImage
             dist/*.exe
+            dist/*.sig
           if-no-files-found: error
 
   macos:
@@ -87,11 +91,17 @@ jobs:
           tool: cargo-packager
 
       - run: scripts/package-macos.sh
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD }}
 
       - uses: actions/upload-artifact@v4
         with:
           name: quarry-macOS
-          path: dist/*.dmg
+          path: |
+            dist/*.dmg
+            dist/*.app.tar.gz
+            dist/*.sig
           if-no-files-found: error
 
   publish:
@@ -102,13 +112,30 @@ jobs:
         with:
           path: out
           merge-multiple: true
+      # Update manifest the app reads from releases/latest/download/latest.json
+      - name: Write latest.json
+        run: |
+          cd out
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          platform() { # key, bundle file, format
+            jq -n --arg url "$base/$2" --arg sig "$(cat "$2.sig")" --arg format "$3" \
+              '{($ARGS.positional[0]): {url: $url, signature: $sig, format: $format}}' --args "$1"
+          }
+          {
+            platform macos-aarch64 Quarry.app.tar.gz app
+            platform linux-x86_64 "$(ls *.AppImage)" appimage
+            platform windows-x86_64 "$(ls *.exe)" nsis
+          } | jq -s --arg v "${GITHUB_REF_NAME#v}" \
+            '{version: $v, pub_date: (now | todate), platforms: add}' > latest.json
+          cat latest.json
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        # 0.x and suffixed tags (v1.2.0-beta.1) are published as pre-releases
+        # Suffixed tags (v1.2.0-beta.1) are pre-releases, which releases/latest (and so the updater) skips
         run: |
           pre=""
-          case "$GITHUB_REF_NAME" in v0.*|*-*) pre="--prerelease" ;; esac
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" out/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Quarry $GITHUB_REF_NAME" \

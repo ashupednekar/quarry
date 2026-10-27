@@ -11,6 +11,12 @@ dmg="dist/Quarry-$version.dmg"
 codesign --force --deep -s - dist/Quarry.app
 codesign --verify --deep --strict dist/Quarry.app
 
+# Updater bundle, re-made from the signed app (CI sets CARGO_PACKAGER_SIGN_PRIVATE_KEY[_PASSWORD])
+if [ -n "${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-}" ]; then
+  tar -czf dist/Quarry.app.tar.gz -C dist Quarry.app
+  cargo packager signer sign dist/Quarry.app.tar.gz
+fi
+
 # Drag-to-install layout: the app next to an Applications shortcut
 stage=$(mktemp -d)
 cp -R dist/Quarry.app "$stage/"

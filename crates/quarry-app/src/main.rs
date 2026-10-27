@@ -54,6 +54,7 @@ mod tabs;
 mod theme;
 mod toolbar_menus;
 mod ui;
+mod updater;
 mod usages;
 mod vim;
 mod window_chrome;
@@ -272,6 +273,9 @@ struct QuarryWindow {
     pub active_drag_tab: Option<usize>,
     pub active_drag_split_pane: Option<usize>,
     pub pending_crash_report: Option<crash_reporter::CrashReport>,
+    /// A newer release found at launch, and whether it's being installed
+    available_update: Option<Arc<cargo_packager_updater::Update>>,
+    installing_update: bool,
 }
 
 impl QuarryWindow {
@@ -414,6 +418,8 @@ impl QuarryWindow {
             active_drag_tab: None,
             active_drag_split_pane: None,
             pending_crash_report: crash_reporter::check_last_crash(),
+            available_update: None,
+            installing_update: false,
         };
         this.reload_settings(cx);
         let keymap_errors = settings::apply_keymap(cx);
@@ -426,6 +432,20 @@ impl QuarryWindow {
             this.save_session(cx);
             async {}
         }));
+        cx.spawn(async move |this, cx| {
+            let update = cx
+                .background_executor()
+                .spawn(async { updater::check() })
+                .await;
+            if let Some(update) = update {
+                this.update(cx, |this, cx| {
+                    this.available_update = Some(Arc::new(update));
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
         this.config_watch_task = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(std::time::Duration::from_millis(1000))
@@ -1301,6 +1321,32 @@ impl QuarryWindow {
                     ),
             )
             .into_any_element()
+    }
+
+    pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        let Some(update) = self.available_update.clone() else {
+            return;
+        };
+        if self.installing_update {
+            return;
+        }
+        self.installing_update = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { updater::install(&update) })
+                .await;
+            this.update(cx, |this, cx| match res {
+                Ok(()) => cx.quit(),
+                Err(e) => {
+                    this.installing_update = false;
+                    this.toast(format!("Update failed: {e}"), true, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Short-lived confirmation in the corner; also kept in Output
@@ -2373,6 +2419,9 @@ impl Render for QuarryWindow {
                     _ => None,
                 },
                 !self.connecting.is_empty(),
+                self.available_update
+                    .as_ref()
+                    .map(|u| (u.version.as_str(), self.installing_update)),
                 &self.theme,
                 cx,
             ))

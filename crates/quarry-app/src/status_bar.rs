@@ -19,6 +19,8 @@ impl StatusBar {
         connection: Option<&ConnectionProfile>,
         vim_mode: Option<crate::state::VimMode>,
         connecting: bool,
+        // (version, installing)
+        update: Option<(&str, bool)>,
         theme: &Theme,
         cx: &Context<QuarryWindow>,
     ) -> impl IntoElement {
@@ -214,6 +216,17 @@ impl StatusBar {
                 h_flex()
                     .gap_1()
                     .items_center()
+                    .children(update.map(|(version, installing)| {
+                        let label = if installing {
+                            "Updating…".to_string()
+                        } else {
+                            format!("Update to {version}")
+                        };
+                        link("statusbar-update", &label, theme.accent)
+                            .mr_3()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .on_click(cx.listener(|this, _, _, cx| this.install_update(cx)))
+                    }))
                     // Mono digits: the timing changes every run and mustn't jiggle
                     .children(stats.map(|s| {
                         div()

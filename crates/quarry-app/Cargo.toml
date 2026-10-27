@@ -49,6 +49,7 @@ keyring = { workspace = true }
 lsp-types = { workspace = true }
 sqlformat = { workspace = true }
 trash = { workspace = true }
+cargo-packager-updater = "0.2.3"
 
 # Window blur: our own NSVisualEffectView behind gpui's content (src/blur.rs). Already in the
 # tree via gpui; only the AppKit bits we use are enabled.
