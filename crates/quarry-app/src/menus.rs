@@ -112,15 +112,27 @@ pub fn set_app_menus(cx: &mut App) {
     cx.set_menus([
         Menu {
             name: "Quarry".into(),
-            items: vec![
-                MenuItem::action("Settings…", OpenSettings),
-                MenuItem::separator(),
-                MenuItem::action("Hide Quarry", Hide),
-                MenuItem::action("Hide Others", HideOthers),
-                MenuItem::action("Show All", ShowAll),
-                MenuItem::separator(),
-                MenuItem::action("Quit Quarry", Quit),
-            ],
+            items: [
+                vec![
+                    MenuItem::action("Settings…", OpenSettings),
+                    MenuItem::separator(),
+                ],
+                // Hiding apps is a macOS idea
+                if cfg!(target_os = "macos") {
+                    vec![
+                        MenuItem::action("Hide Quarry", Hide),
+                        MenuItem::action("Hide Others", HideOthers),
+                        MenuItem::action("Show All", ShowAll),
+                        MenuItem::separator(),
+                    ]
+                } else {
+                    vec![]
+                },
+                vec![MenuItem::action("Quit Quarry", Quit)],
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             disabled: false,
         },
         Menu {
@@ -226,4 +238,9 @@ pub fn set_app_menus(cx: &mut App) {
             disabled: false,
         },
     ]);
+    // No global menu bar off macOS: hand the same menus to gpui-kit's in-window AppMenuBar
+    if !cfg!(target_os = "macos") {
+        let menus = cx.get_menus().unwrap_or_default();
+        gpui::component::GlobalState::global_mut(cx).set_app_menus(menus);
+    }
 }

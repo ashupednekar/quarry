@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,7 +52,7 @@ impl Tunnel {
             .and_then(|l| l.local_addr())
             .map_err(|e| e.to_string())?
             .port();
-        let mut cmd = Command::new("ssh");
+        let mut cmd = quarry_core::command("ssh");
         cmd.args([
             "-N",
             "-L",
@@ -113,7 +113,7 @@ impl Tunnel {
 #[cfg(unix)]
 fn watch(app_pid: u32, ssh_pid: u32) {
     let script = format!("while kill -0 {app_pid} 2>/dev/null && kill -0 {ssh_pid} 2>/dev/null; do sleep 2; done; kill {ssh_pid} 2>/dev/null");
-    let _ = Command::new("sh")
+    let _ = quarry_core::command("sh")
         .args(["-c", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -121,7 +121,18 @@ fn watch(app_pid: u32, ssh_pid: u32) {
         .spawn();
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn watch(app_pid: u32, ssh_pid: u32) {
+    let script = format!("while ((Get-Process -Id {app_pid} -EA 0) -and (Get-Process -Id {ssh_pid} -EA 0)) {{ Start-Sleep 2 }}; Stop-Process -Id {ssh_pid} -EA 0");
+    let _ = quarry_core::command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+#[cfg(not(any(unix, windows)))]
 fn watch(_app_pid: u32, _ssh_pid: u32) {}
 
 pub fn current_os_user() -> String {
@@ -315,7 +326,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 
 /// Checks if ssh-agent has any keys loaded (`ssh-add -l`), returning key comments / identifiers if available
 pub fn check_ssh_agent_keys() -> Option<Vec<String>> {
-    let output = Command::new("ssh-add")
+    let output = quarry_core::command("ssh-add")
         .arg("-l")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

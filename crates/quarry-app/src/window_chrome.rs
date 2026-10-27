@@ -69,13 +69,22 @@ impl QuarryWindow {
             .items_center()
             // Equal zero-basis sides keep the omnibox centred on the window, whatever the breadcrumb says
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .flex_basis(px(0.0))
                     .min_w_0()
+                    .h_full()
                     .pr_3()
-                    .window_control_area(WindowControlArea::Drag)
-                    .children(self.render_breadcrumb()),
+                    // Outside the drag area: Windows would take clicks on it as title bar drags
+                    .children(self.menu_bar.clone().map(|m| div().flex_shrink_0().mr_2().child(m)))
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .window_control_area(WindowControlArea::Drag)
+                            .children(self.render_breadcrumb()),
+                    ),
             )
             .child(
                 h_flex()

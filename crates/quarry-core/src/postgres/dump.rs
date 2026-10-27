@@ -14,7 +14,7 @@ impl Dumper for PostgresSession {
     /// The password goes through PGPASSWORD so it never shows in the process list
     async fn dump(&self, out: &Path) -> Result<String, String> {
         let (bare, password) = split_password(&self.url);
-        let mut cmd = std::process::Command::new("pg_dump");
+        let mut cmd = crate::command("pg_dump");
         cmd.args(["--no-owner", "--dbname", &bare, "--file"])
             .arg(out);
         if let Some(pw) = password {

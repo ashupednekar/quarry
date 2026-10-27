@@ -203,6 +203,8 @@ struct QuarryWindow {
     applied_settings: Option<settings::Settings>,
     /// Window background last set for the theme (blurred or opaque)
     applied_translucent: Option<bool>,
+    /// Windows/Linux: the app menus, drawn in the title bar (macOS has the global menu bar)
+    menu_bar: Option<Entity<gpui::component::menu::AppMenuBar>>,
     settings_open: bool,
     /// Theme names for the picker, read when Settings opens
     settings_themes: Vec<String>,
@@ -375,6 +377,8 @@ impl QuarryWindow {
             settings: settings::Settings::default(),
             applied_settings: None,
             applied_translucent: None,
+            menu_bar: (!cfg!(target_os = "macos"))
+                .then(|| gpui::component::menu::AppMenuBar::new(cx)),
             settings_open: false,
             settings_themes: Vec::new(),
             pending_prod_run: None,

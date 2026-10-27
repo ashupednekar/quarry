@@ -529,7 +529,7 @@ impl crate::dump::Dumper for MysqlSession {
         if db.is_empty() {
             return Err("Pick a database in the connection's URL to dump it".into());
         }
-        let mut cmd = std::process::Command::new("mysqldump");
+        let mut cmd = crate::command("mysqldump");
         cmd.args([
             "--single-transaction",
             "--routines",

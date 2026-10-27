@@ -227,3 +227,17 @@ mod tests {
         assert_eq!(chunks[0].columns, vec!["id", "v"]);
     }
 }
+
+/// `Command::new` for background tools (ssh, pg_dump, curl…): on Windows a GUI app's child
+/// otherwise opens its own console window
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}

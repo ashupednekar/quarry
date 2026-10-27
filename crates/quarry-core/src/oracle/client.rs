@@ -97,7 +97,7 @@ pub fn install() -> Result<PathBuf, String> {
     let result = (|| {
         let archive = work.join(pkg.url.rsplit('/').next().unwrap_or("client"));
         run(
-            Command::new("curl")
+            crate::command("curl")
                 .args(["-fsSL", "--retry", "2", "-o"])
                 .arg(&archive)
                 .arg(pkg.url),
@@ -166,7 +166,7 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
         }
         // bsdtar ships with Windows 10+ and reads zips
         "windows" => run(
-            Command::new("tar")
+            crate::command("tar")
                 .arg("-xf")
                 .arg(archive)
                 .arg("-C")
@@ -174,7 +174,7 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
             "unzip the client",
         ),
         _ => run(
-            Command::new("unzip")
+            crate::command("unzip")
                 .arg("-q")
                 .arg(archive)
                 .arg("-d")
