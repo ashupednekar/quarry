@@ -267,6 +267,13 @@ impl StatusBar {
                                 this.toggle_bottom_panel(&ToggleBottomPanel, window, cx)
                             },
                         )),
+                    )
+                    .child(
+                        div()
+                            .ml_2()
+                            .text_xs()
+                            .text_color(theme.text_muted)
+                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
                     ),
             )
     }

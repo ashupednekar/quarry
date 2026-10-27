@@ -15,8 +15,10 @@ pub fn check() -> Option<Update> {
     {
         return None;
     }
+    // Point at a local latest.json to try the flow (see scripts/test-update.sh)
+    let endpoint = std::env::var("QUARRY_UPDATE_URL").unwrap_or_else(|_| ENDPOINT.into());
     let config = Config {
-        endpoints: vec![ENDPOINT.parse().ok()?],
+        endpoints: vec![endpoint.parse().ok()?],
         pubkey: PUBKEY.into(),
         ..Default::default()
     };

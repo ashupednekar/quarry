@@ -13,7 +13,8 @@ codesign --verify --deep --strict dist/Quarry.app
 
 # Updater bundle, re-made from the signed app (CI sets CARGO_PACKAGER_SIGN_PRIVATE_KEY[_PASSWORD])
 if [ -n "${CARGO_PACKAGER_SIGN_PRIVATE_KEY:-}" ]; then
-  tar -czf dist/Quarry.app.tar.gz -C dist Quarry.app
+  # COPYFILE_DISABLE: no ._ AppleDouble entries, which the updater fails to unpack
+  COPYFILE_DISABLE=1 tar -czf dist/Quarry.app.tar.gz -C dist Quarry.app
   cargo packager signer sign dist/Quarry.app.tar.gz
 fi
 
