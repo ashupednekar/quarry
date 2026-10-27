@@ -28,6 +28,9 @@ icons = [
   "../../assets/icon/quarry-512.png",
 ]
 
+[package.metadata.packager.nsis]
+installer-icon = "../../assets/icon/quarry.ico"
+
 [dependencies]
 quarry-core = { workspace = true }
 quarry-sql = { workspace = true }
@@ -53,6 +56,9 @@ trash = { workspace = true }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSView", "NSVisualEffectView", "NSGraphics", "NSWindow"] }
 raw-window-handle = "0.6"
+
+[build-dependencies]
+winresource = "0.1"
 
 [lints]
 workspace = true

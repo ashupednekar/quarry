@@ -1199,7 +1199,7 @@ footer {
       <img class="dl-icon" src="app-icon.svg" alt="" width="72" height="72">
       <div class="section-label">Download</div>
       <h2 id="download-title">Get Quarry</h2>
-      <p class="section-desc">Linux and Windows builds come from GitHub Releases. macOS isn't signed yet, so you build it yourself; it takes a few minutes.</p>
+      <p class="section-desc">Builds come from GitHub Releases. Prefer building from source? That works too.</p>
       <p class="dl-status" id="release-status" role="status">Checking GitHub for the latest release…</p>
     </div>
 
@@ -1239,16 +1239,22 @@ footer {
       <li class="dl-row" data-os="mac">
         <div class="dl-os">
           <h3>macOS <span class="dl-yours" hidden>Your system</span></h3>
-          <p>Apple silicon and Intel. Needs Xcode command line tools and <a href="https://rustup.rs" target="_blank" rel="noopener noreferrer">Rust</a>.</p>
+          <p>Apple silicon and Intel</p>
         </div>
         <div class="dl-files">
+          <div class="dl-file" data-asset-ext=".dmg">
+            <a class="btn" href="https://github.com/thekodeking/quarry/releases" target="_blank" rel="noopener noreferrer"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Download .dmg</a>
+            <span class="dl-meta">Drag to Applications <span class="dl-size"></span></span>
+          </div>
+          <p class="dl-note">The app isn't notarized yet, so macOS blocks the first launch. Open System Settings → Privacy &amp; Security, scroll to Security and click Open Anyway.</p>
+          <p class="dl-pending" hidden>Not released yet.</p>
+          <p class="dl-note dl-build">Or build it yourself (needs Xcode command line tools and <a href="https://rustup.rs" target="_blank" rel="noopener noreferrer">Rust</a>):</p>
           <div class="dl-code">
 <pre id="build-instructions"><code>git clone https://github.com/thekodeking/quarry.git
 cd quarry
 cargo install cargo-packager --locked
-cd crates/quarry-app
-cargo packager --release -f app
-cp -R ../../dist/Quarry.app /Applications/</code></pre>
+scripts/package-macos.sh
+open dist/Quarry-*.dmg</code></pre>
             <button class="btn btn-sm" id="copy-build-btn" type="button" aria-live="polite">Copy commands</button>
           </div>
         </div>
@@ -1327,7 +1333,7 @@ cp -R ../../dist/Quarry.app /Applications/</code></pre>
   const myRow = os && document.querySelector(`.dl-row[data-os="${os}"]`);
   if (myRow) {
     myRow.querySelector('.dl-yours').hidden = false;
-    if (os !== 'mac') myRow.querySelector('.btn').classList.add('btn-primary');
+    myRow.querySelector('.btn').classList.add('btn-primary');
   }
 
   async function fetchLatestRelease() {
@@ -1340,7 +1346,7 @@ cp -R ../../dist/Quarry.app /Applications/</code></pre>
         status.replaceChildren('No release published yet. ',
           Object.assign(document.createElement('a'), { href: 'https://github.com/thekodeking/quarry/releases', target: '_blank', rel: 'noopener noreferrer', textContent: 'Watch releases on GitHub' }),
           ' to hear when it\'s out.');
-        document.querySelectorAll('.dl-file, .dl-note').forEach(el => { el.hidden = true; });
+        document.querySelectorAll('.dl-file, .dl-note:not(.dl-build)').forEach(el => { el.hidden = true; });
         document.querySelectorAll('.dl-pending').forEach(el => { el.hidden = false; });
         return;
       }
