@@ -40,10 +40,13 @@ live-test: ## Tests against a live Postgres on :55432
 ifeq ($(OS),Windows_NT)
 override OS := windows
 endif
-OS ?= $(if $(filter Darwin,$(shell uname -s)),macos,$(if $(filter Linux,$(shell uname -s)),linux,windows))
+HOST_OS := $(if $(filter Windows_NT,$(OS)),windows,$(if $(filter Darwin,$(shell uname -s)),macos,$(if $(filter Linux,$(shell uname -s)),linux,windows)))
+OS ?= $(HOST_OS)
 
 package: ## Package the app: OS=macos (dmg) | linux (deb, AppImage) | windows (nsis); default: this OS
-ifeq ($(OS),macos)
+ifneq ($(OS),$(HOST_OS))
+	$(error Can't package for $(OS) on $(HOST_OS): no cross-compiling. Build it on $(OS), or push a tag and let the release workflow do it)
+else ifeq ($(OS),macos)
 	./scripts/package-macos.sh
 else ifeq ($(OS),linux)
 	cd crates/quarry-app && cargo packager --release -f deb -f appimage
