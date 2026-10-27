@@ -541,8 +541,7 @@ impl QuarryWindow {
 
     fn export_log(&mut self, cx: &mut Context<Self>) {
         let csv = self.panel.log_csv.clone();
-        let dir = std::env::var_os("HOME")
-            .map(|h| std::path::PathBuf::from(h).join("Downloads"))
+        let dir = std::env::home_dir().map(|h| h.join("Downloads"))
             .unwrap_or_default();
         let name = format!(
             "quarry-activity-{}.csv",

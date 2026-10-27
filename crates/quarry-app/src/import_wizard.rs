@@ -415,8 +415,7 @@ impl QuarryWindow {
         for (row, err) in &report.failures {
             csv += &format!("{},\"{}\"\n", row, err.replace('"', "\"\""));
         }
-        let dir = std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Downloads"))
+        let dir = std::env::home_dir().map(|h| h.join("Downloads"))
             .unwrap_or_default();
         let rx = cx.prompt_for_new_path(&dir, Some("import-errors.csv"));
         cx.spawn(async move |this, cx| {

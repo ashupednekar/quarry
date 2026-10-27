@@ -84,8 +84,9 @@ impl Driver for SqliteDriver {
 }
 
 fn expand_home(path: &str) -> String {
-    match (path.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
+    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
+    match (rest, std::env::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest).to_string_lossy().into_owned(),
         _ => path.to_string(),
     }
 }

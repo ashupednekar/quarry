@@ -2242,7 +2242,7 @@ impl Render for QuarryWindow {
         let (current_session, current_conn) = self.current_connection(cx);
         let t = self.theme.clone();
 
-        let titlebar = self.render_titlebar(cx);
+        let titlebar = self.render_titlebar(window, cx);
         let tab_strip = self.render_tab_strip(cx);
         let center = self.render_center(active_tab.as_ref(), cx);
 

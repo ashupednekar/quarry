@@ -62,7 +62,7 @@ pub fn package() -> Option<&'static Package> {
 
 /// Where Quarry keeps its own copy: the platform's per-user data folder
 fn data_dir() -> Option<PathBuf> {
-    let home = || std::env::var_os("HOME").map(PathBuf::from);
+    let home = std::env::home_dir;
     let base = match std::env::consts::OS {
         "macos" => home()?.join("Library/Application Support"),
         "windows" => std::env::var_os("LOCALAPPDATA").map(PathBuf::from)?,

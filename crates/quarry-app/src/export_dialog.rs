@@ -12,7 +12,6 @@ use gpui::component::{Disableable, Sizable};
 use gpui::*;
 use quarry_core::export::{ExportFormat, ExportOptions, Exporter};
 use quarry_core::DatabaseSession;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -146,8 +145,7 @@ impl QuarryWindow {
             table,
         };
 
-        let dir = std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Downloads"))
+        let dir = std::env::home_dir().map(|h| h.join("Downloads"))
             .unwrap_or_default();
         let path_rx = cx.prompt_for_new_path(
             &dir,
@@ -217,8 +215,7 @@ impl QuarryWindow {
         if session.dumper().is_none() {
             return self.toast("This database can't be dumped yet", true, cx);
         }
-        let dir = std::env::var_os("HOME")
-            .map(|h| PathBuf::from(h).join("Downloads"))
+        let dir = std::env::home_dir().map(|h| h.join("Downloads"))
             .unwrap_or_default();
         let stem = profile.name.replace(['/', ':', ' '], "_");
         let path_rx = cx.prompt_for_new_path(&dir, Some(&format!("{stem}.sql")));

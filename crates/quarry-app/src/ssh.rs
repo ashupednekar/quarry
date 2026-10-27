@@ -124,19 +124,6 @@ fn watch(app_pid: u32, ssh_pid: u32) {
 #[cfg(not(unix))]
 fn watch(_app_pid: u32, _ssh_pid: u32) {}
 
-pub fn user_home_dir() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            let drive = std::env::var_os("HOMEDRIVE")?;
-            let path = std::env::var_os("HOMEPATH")?;
-            let mut buf = std::path::PathBuf::from(drive);
-            buf.push(path);
-            Some(buf)
-        })
-}
-
 pub fn current_os_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
@@ -147,7 +134,7 @@ pub fn expand_home(path: &str) -> String {
     let stripped = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
     match stripped {
         Some(rest) => {
-            if let Some(mut home) = user_home_dir() {
+            if let Some(mut home) = std::env::home_dir() {
                 home.push(rest.replace('\\', "/"));
                 home.to_string_lossy().to_string()
             } else {

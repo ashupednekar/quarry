@@ -51,7 +51,7 @@ impl QuarryWindow {
     }
 
     /// Where you are, and the one box that does everything (⌘K)
-    pub(crate) fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn render_titlebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = &self.theme;
         // macOS: clear the traffic lights; elsewhere a normal gutter
         #[cfg(target_os = "macos")]
@@ -62,7 +62,7 @@ impl QuarryWindow {
             .h(px(crate::ui::BAR_H))
             .w_full()
             .pl(titlebar_left_pad)
-            .pr_3()
+            .when(!cfg!(target_os = "windows"), |d| d.pr_3())
             .bg(t.bg_sidebar)
             .border_b_1()
             .border_color(t.border)
@@ -74,6 +74,7 @@ impl QuarryWindow {
                     .flex_basis(px(0.0))
                     .min_w_0()
                     .pr_3()
+                    .window_control_area(WindowControlArea::Drag)
                     .children(self.render_breadcrumb()),
             )
             .child(
@@ -120,12 +121,58 @@ impl QuarryWindow {
             )
             // Mirrors the traffic-light gutter on the left
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .flex_basis(px(0.0))
                     .min_w_0()
-                    .ml(titlebar_left_pad - px(12.0)),
+                    .h_full()
+                    .ml(titlebar_left_pad - px(12.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .h_full()
+                            .window_control_area(WindowControlArea::Drag),
+                    )
+                    .when(cfg!(target_os = "windows"), |d| {
+                        d.children(self.render_caption_buttons(window))
+                    }),
             )
+    }
+
+    /// Windows draws no frame around our title bar: min / max / close, clicked through to the OS
+    /// by their control area (close still goes through the unsaved-changes check)
+    fn render_caption_buttons(&self, window: &Window) -> [impl IntoElement; 3] {
+        let t = &self.theme;
+        let max_icon = if window.is_maximized() {
+            IconName::WindowRestore
+        } else {
+            IconName::WindowMaximize
+        };
+        [
+            ("caption-min", IconName::WindowMinimize, WindowControlArea::Min),
+            ("caption-max", max_icon, WindowControlArea::Max),
+            ("caption-close", IconName::WindowClose, WindowControlArea::Close),
+        ]
+        .map(|(id, icon, area)| {
+            let close = matches!(area, WindowControlArea::Close);
+            div()
+                .id(id)
+                .w(px(46.0))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(t.text_muted)
+                .hover(|s| {
+                    if close {
+                        s.bg(gpui::rgb(0xc42b1c)).text_color(gpui::white())
+                    } else {
+                        s.bg(t.bg_hover)
+                    }
+                })
+                .window_control_area(area)
+                .child(Icon::new(icon).small())
+        })
     }
 
     /// Where the active tab points: `● connection › schema › ▦ table`.

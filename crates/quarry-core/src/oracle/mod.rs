@@ -167,7 +167,7 @@ fn init_client() -> Result<(), DbError> {
             found.reverse(); // newest version first
             found
         };
-        if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        if let Some(home) = std::env::home_dir() {
             candidates.extend(globbed(home.join("Downloads"), "instantclient_"));
         }
         candidates.extend(globbed("/opt/oracle".into(), "instantclient"));

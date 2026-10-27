@@ -154,7 +154,7 @@ impl QuarryWindow {
             None => {
                 let dir = queries_dir()
                     .filter(|d| std::fs::create_dir_all(d).is_ok())
-                    .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                    .or_else(std::env::home_dir)
                     .unwrap_or_default();
                 let rx = cx.prompt_for_new_path(&dir, Some(&name));
                 cx.spawn_in(window, async move |this, cx| {
