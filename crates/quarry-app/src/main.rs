@@ -3098,7 +3098,15 @@ fn main() {
             ui::init_modal_focus(cx);
             // gpui renders animations at their end state when this is set; it doesn't read the OS itself
             // ponytail: read once at launch, toggling Reduce Motion needs a restart
-            cx.set_reduce_motion(ui::os_reduce_motion());
+            // Off the main thread: on Windows it's a PowerShell call, too slow to hold up launch
+            cx.spawn(async |cx| {
+                let reduce = cx
+                    .background_executor()
+                    .spawn(async { ui::os_reduce_motion() })
+                    .await;
+                cx.update(|cx| cx.set_reduce_motion(reduce));
+            })
+            .detach();
             grid::bind_keys(cx);
             menus::set_app_menus(cx);
             let options = WindowOptions {

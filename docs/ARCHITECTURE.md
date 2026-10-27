@@ -261,7 +261,7 @@ rest when you expand them.
 
 ## The edges: secrets, tunnels, and prod
 
-**Connections** are plain JSON in `~/.config/quarry/connections.json`. Before saving, the driver's
+**Connections** are plain JSON in `~/.config/quarry/connections.json` (`%APPDATA%\quarry\connections.json` on Windows). Before saving, the driver's
 `take_secret` pulls the password out of the connection string, and it goes to the OS keychain via the
 `keyring` crate (`quarry-app/src/connections.rs`). The file is safe to read, diff and back up.
 

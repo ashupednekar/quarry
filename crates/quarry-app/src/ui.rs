@@ -509,11 +509,24 @@ mod tests {
 
 /// macOS System Settings › Accessibility › Display › Reduce motion
 pub fn os_reduce_motion() -> bool {
-    cfg!(target_os = "macos")
-        && std::process::Command::new("defaults")
+    if cfg!(target_os = "macos") {
+        return std::process::Command::new("defaults")
             .args(["read", "com.apple.universalaccess", "reduceMotion"])
             .output()
-            .is_ok_and(|o| o.stdout.starts_with(b"1"))
+            .is_ok_and(|o| o.stdout.starts_with(b"1"));
+    }
+    // Settings → Accessibility → Animation effects (SPI_GETCLIENTAREAANIMATION); PowerShell
+    // because the API call itself needs `unsafe`
+    cfg!(windows)
+        && quarry_core::command("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Add-Type -AssemblyName PresentationFramework; [System.Windows.SystemParameters]::ClientAreaAnimation",
+            ])
+            .output()
+            .is_ok_and(|o| o.stdout.trim_ascii().eq_ignore_ascii_case(b"false"))
 }
 
 /// Modals ease in (fade plus a small rise) the first frames they're shown; closing is instant

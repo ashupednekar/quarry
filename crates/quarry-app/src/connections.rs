@@ -50,12 +50,29 @@ fn delete_legacy_secret(id: &str) {
     }
 }
 
-/// `~/.config/quarry` (or `$XDG_CONFIG_HOME/quarry`)
+/// `~/.config/quarry` (or `$XDG_CONFIG_HOME/quarry`); `%APPDATA%\quarry` on Windows
 pub fn config_dir() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("quarry"))
+    static DIR: std::sync::LazyLock<Option<PathBuf>> = std::sync::LazyLock::new(|| {
+        let unix_style = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
+            .map(|b| b.join("quarry"));
+        if !cfg!(windows) {
+            return unix_style;
+        }
+        let dir = std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("quarry"));
+        // Early Windows builds wrote to %USERPROFILE%\.config\quarry: move it over once
+        if let (Some(old), Some(new)) = (&unix_style, &dir) {
+            if old.is_dir() && !new.exists() {
+                if let Err(e) = std::fs::rename(old, new) {
+                    tracing::warn!("couldn't move config from {}: {e}", old.display());
+                    return unix_style;
+                }
+            }
+        }
+        dir.or(unix_style)
+    });
+    DIR.clone()
 }
 
 fn config_path() -> Option<PathBuf> {

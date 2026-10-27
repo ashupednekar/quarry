@@ -17,7 +17,7 @@ It's a speed bump, not a wall. The point is that the dangerous thing takes one m
 
 ## Passwords live in the keychain
 
-Connection details are stored as plain JSON in `~/.config/quarry/connections.json`. You can read it,
+Connection details are stored as plain JSON in `~/.config/quarry/connections.json` (`%APPDATA%\quarry\connections.json` on Windows). You can read it,
 diff it, copy it to a new laptop. What you won't find in it is a password: those go to the macOS
 Keychain, Secret Service on Linux, or Windows Credential Manager.
 
