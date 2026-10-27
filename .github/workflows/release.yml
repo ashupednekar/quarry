@@ -108,6 +108,10 @@ jobs:
     needs: [package, macos]
     runs-on: ubuntu-latest
     steps:
+      # Full history: the notes are the commits since the previous tag
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           path: out
@@ -129,6 +133,27 @@ jobs:
             '{version: $v, pub_date: (now | todate), platforms: add}' > latest.json
           cat latest.json
 
+      # Release notes from conventional commits: feat → Features, fix/perf → Fixes; chore, docs, ci, build and site left out
+      - name: Write release notes
+        run: |
+          prev=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          range="${prev:+$prev..}$GITHUB_REF_NAME"
+          section() { # title, types regex
+            lines=$(git log --no-merges --reverse --format='%s' "$range" \
+              | grep -E "^($2)(\([^)]*\))?!?: " | grep -vE '^[a-z]+\(site\)' \
+              | sed -E 's/^[a-z]+(\(([^)]*)\))?!?: (.*)/\3 (\2)/; s/ \(\)$//' \
+              | awk '{ print "- " toupper(substr($0, 1, 1)) substr($0, 2) }')
+            [ -n "$lines" ] && printf '## %s\n\n%s\n\n' "$1" "$lines"
+            true
+          }
+          {
+            section Features feat
+            section Fixes 'fix|perf'
+            [ -n "$prev" ] && echo "**Full changelog:** https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME"
+            true
+          } > notes.md
+          cat notes.md
+
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -139,4 +164,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" out/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Quarry $GITHUB_REF_NAME" \
-            --generate-notes $pre
+            --notes-file notes.md $pre
