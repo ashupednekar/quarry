@@ -117,11 +117,41 @@ cp -R ../../dist/Quarry.app /Applications/
 
 ## Development
 
-On Fedora, install the native build prerequisites before compiling:
+Install the native prerequisites for your platform before compiling. Rust is also required; install it with [rustup](https://rustup.rs).
+
+### Debian / Ubuntu
 
 ```sh
-sudo dnf install gcc-c++ fontconfig-devel pkgconf-pkg-config
+sudo apt install build-essential pkg-config clang mold \
+  libasound2-dev libdbus-1-dev libfontconfig1-dev libfreetype6-dev \
+  libvulkan-dev libwayland-dev libx11-xcb-dev libxcb1-dev \
+  libxkbcommon-dev libxkbcommon-x11-dev libfuse2
 ```
+
+### Arch Linux
+
+```sh
+sudo pacman -S --needed base-devel pkgconf clang mold \
+  alsa-lib dbus fontconfig freetype2 vulkan-headers vulkan-icd-loader \
+  wayland libx11 libxcb libxkbcommon libxkbcommon-x11 fuse2
+```
+
+### Fedora
+
+```sh
+sudo dnf install gcc-c++ pkgconf-pkg-config clang mold \
+  alsa-lib-devel dbus-devel fontconfig-devel freetype-devel \
+  vulkan-headers vulkan-loader-devel wayland-devel libX11-devel \
+  libxcb-devel libxkbcommon-devel libxkbcommon-x11-devel fuse-libs
+```
+
+### macOS
+
+```sh
+xcode-select --install
+```
+
+The FUSE package is only needed for AppImage packaging; it is not required to compile Quarry.
 
 ```sh
 make            # List available commands
