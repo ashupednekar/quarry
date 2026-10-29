@@ -176,6 +176,16 @@ cargo packager --release -f app       # macOS .app
 
 `cargo-packager` creates the DEB and AppImage packages; RPMs are assembled with [nfpm](https://github.com/goreleaser/nfpm) in the release workflow. Linux packages are built in parallel for x86_64 and ARM64 and published together. `make package` packages for the current OS (`OS=macos|linux|windows` to choose). On macOS that's the ad-hoc signed DMG from `scripts/package-macos.sh`.
 
+To build an RPM locally from the repository root after compiling, install nfpm with `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`, then run:
+
+```sh
+version=$(cargo pkgid -p quarry-app | sed 's/.*[#@]//')
+mkdir -p dist
+VERSION="$version" GOARCH="$(go env GOARCH)" nfpm package \
+  --packager rpm --config nfpm.yaml \
+  --target "dist/quarry-${version}-$(uname -m).rpm"
+```
+
 To create a new release, push a git tag matching the workspace version (e.g. `v0.1.0`).
 
 ---

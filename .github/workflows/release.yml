@@ -159,8 +159,11 @@ jobs:
       - name: Package RPM
         if: matrix.format == 'rpm'
         run: |
-          VERSION="${GITHUB_REF_NAME#v}" GOARCH="${{ matrix.nfpm_arch }}" \
-            nfpm package --packager rpm --config nfpm.yaml --target dist/
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          VERSION="$version" GOARCH="${{ matrix.nfpm_arch }}" \
+            nfpm package --packager rpm --config nfpm.yaml \
+              --target "dist/quarry-${version}-${{ matrix.arch }}.rpm"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -226,8 +229,11 @@ jobs:
       - name: Package RPM
         if: matrix.format == 'rpm'
         run: |
-          VERSION="${GITHUB_REF_NAME#v}" GOARCH="${{ matrix.nfpm_arch }}" \
-            nfpm package --packager rpm --config nfpm.yaml --target dist/
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          VERSION="$version" GOARCH="${{ matrix.nfpm_arch }}" \
+            nfpm package --packager rpm --config nfpm.yaml \
+              --target "dist/quarry-${version}-${{ matrix.arch }}.rpm"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
