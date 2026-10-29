@@ -84,8 +84,6 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           export VERSION="${VERSION#v}"
-          mkdir -p dist
-          cp target/release/quarry dist/quarry
           nfpm package --packager rpm --config nfpm.yaml --target dist/
 
       - uses: actions/upload-artifact@v4

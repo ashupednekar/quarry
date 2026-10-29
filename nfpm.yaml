@@ -23,7 +23,7 @@ depends:
   - libxkbcommon-x11
   - vulkan-loader
 contents:
-  - src: dist/quarry
+  - src: target/release/quarry
     dst: /usr/bin/quarry
     file_info:
       mode: 0755
