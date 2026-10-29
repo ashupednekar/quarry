@@ -118,6 +118,7 @@ jobs:
             artifact_glob: "*.AppImage"
           - format: rpm
             nfpm_arch: amd64
+            rpm_filename_arch: x86_64
             artifact_glob: "*.rpm"
     steps:
       - uses: actions/checkout@v4
@@ -163,7 +164,7 @@ jobs:
           mkdir -p dist
           VERSION="$version" GOARCH="${{ matrix.nfpm_arch }}" \
             nfpm package --packager rpm --config nfpm.yaml \
-              --target "dist/quarry-${version}-${{ matrix.arch }}.rpm"
+              --target "dist/quarry-${version}-${{ matrix.rpm_filename_arch }}.rpm"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -188,6 +189,7 @@ jobs:
             artifact_glob: "*.AppImage"
           - format: rpm
             nfpm_arch: arm64
+            rpm_filename_arch: aarch64
             artifact_glob: "*.rpm"
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +235,7 @@ jobs:
           mkdir -p dist
           VERSION="$version" GOARCH="${{ matrix.nfpm_arch }}" \
             nfpm package --packager rpm --config nfpm.yaml \
-              --target "dist/quarry-${version}-${{ matrix.arch }}.rpm"
+              --target "dist/quarry-${version}-${{ matrix.rpm_filename_arch }}.rpm"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -306,6 +308,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: always()
     needs:
       - package-linux-x86_64
       - package-linux-aarch64
@@ -331,17 +334,23 @@ jobs:
           asset() { find "out/$1" -type f -name "$2" -print -quit; }
           platform() { # key, artifact directory, file pattern, format
             file=$(asset "$2" "$3")
+            [ -n "$file" ] && [ -f "$file.sig" ] || return 0
             jq -n --arg url "$base/${file##*/}" --arg sig "$(cat "$file.sig")" --arg format "$4" \
-              '{($ARGS.positional[0]): {url: $url, signature: $sig, format: $format}}' --args "$1"
+              --arg key "$1" '{($key): {url: $url, signature: $sig, format: $format}}'
           }
-          {
+          platforms=$( {
             platform macos-aarch64 quarry-macos-aarch64 'Quarry.app.tar.gz' app
             platform linux-x86_64 quarry-linux-x86_64-appimage '*.AppImage' appimage
             platform linux-aarch64 quarry-linux-aarch64-appimage '*.AppImage' appimage
             platform windows-x86_64 quarry-windows-x86_64-nsis '*.exe' nsis
-          } | jq -s --arg v "${GITHUB_REF_NAME#v}" \
-            '{version: $v, pub_date: (now | todate), platforms: add}' > out/latest.json
-          cat out/latest.json
+          } | jq -s 'add // {}' )
+          if [ "$platforms" != "{}" ]; then
+            jq -n --arg v "${GITHUB_REF_NAME#v}" --argjson platforms "$platforms" \
+              '{version: $v, pub_date: (now | todate), platforms: $platforms}' > out/latest.json
+            cat out/latest.json
+          else
+            echo "No signed updater packages are available; publishing package assets without latest.json."
+          fi
 
       - name: Write release notes
         run: |
@@ -368,8 +377,15 @@ jobs:
         run: |
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          assets=(out/*/*)
+          mapfile -d '' -t assets < <(find out -type f \( \
+            -name '*.deb' -o -name '*.AppImage' -o -name '*.rpm' -o \
+            -name '*.exe' -o -name '*.dmg' -o -name '*.app.tar.gz' -o \
+            -name '*.sig' \) -print0 | sort -z)
           [ ! -f out/latest.json ] || assets+=(out/latest.json)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No package assets were produced."
+            exit 1
+          fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
