@@ -1,5 +1,5 @@
 name: quarry
-arch: amd64
+arch: ${GOARCH}
 platform: linux
 version: ${VERSION}
 release: 1

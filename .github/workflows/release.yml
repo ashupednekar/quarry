@@ -82,6 +82,7 @@ jobs:
         if: runner.os == 'Linux'
         env:
           VERSION: ${{ github.ref_name }}
+          GOARCH: amd64
         run: |
           export VERSION="${VERSION#v}"
           nfpm package --packager rpm --config nfpm.yaml --target dist/
