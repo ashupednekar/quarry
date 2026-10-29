@@ -92,7 +92,7 @@ For an in-depth architectural breakdown—including memory layout, asynchronous 
 ## Installation
 
 ### Linux & Windows
-Download pre-built `.deb`, `.AppImage`, or Windows installer binaries from [GitHub Releases](https://github.com/thekodeking/quarry/releases).
+Download a pre-built `.deb`, `.AppImage`, or `.rpm` for Linux, or the Windows installer, from [GitHub Releases](https://github.com/thekodeking/quarry/releases). Fedora users can install the RPM with `sudo dnf install ./quarry-*.rpm`.
 
 ### macOS
 Download `Quarry-<version>.dmg` from [GitHub Releases](https://github.com/thekodeking/quarry/releases) and drag Quarry to Applications. The app is ad-hoc signed rather than notarized by Apple, so macOS blocks the first launch. Clear the quarantine flag once:
@@ -137,7 +137,7 @@ cargo packager --release -f app       # macOS .app
 # or: -f deb, -f appimage, -f nsis
 ```
 
-Or `make package`, which packages for the current OS (`OS=macos|linux|windows` to choose). On macOS that's the ad-hoc signed DMG from `scripts/package-macos.sh`.
+`cargo-packager` creates the DEB and AppImage packages; RPMs are assembled with [nfpm](https://github.com/goreleaser/nfpm) in the release workflow. RPMs are published alongside the other Linux packages. `make package` packages for the current OS (`OS=macos|linux|windows` to choose). On macOS that's the ad-hoc signed DMG from `scripts/package-macos.sh`.
 
 To create a new release, push a git tag matching the workspace version (e.g. `v0.1.0`).
 

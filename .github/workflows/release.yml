@@ -65,12 +65,36 @@ jobs:
         run: cargo packager --release -f ${{ matrix.formats }}
         working-directory: crates/quarry-app
 
+      # cargo-packager does not produce RPM packages; nfpm packages the same Linux binary.
+      - name: Install nfpm
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install nfpm CLI
+        if: runner.os == 'Linux'
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build RPM
+        if: runner.os == 'Linux'
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          export VERSION="${VERSION#v}"
+          mkdir -p dist
+          cp target/release/quarry dist/quarry
+          nfpm package --packager rpm --config nfpm.yaml --target dist/
+
       - uses: actions/upload-artifact@v4
         with:
           name: quarry-${{ runner.os }}
           path: |
             dist/*.deb
             dist/*.AppImage
+            dist/*.rpm
             dist/*.exe
             dist/*.sig
           if-no-files-found: error
