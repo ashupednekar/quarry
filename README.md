@@ -169,6 +169,7 @@ Packages are generated using [cargo-packager](https://github.com/crabnebula-dev/
 
 ```sh
 cd crates/quarry-app
+cargo build --release -p quarry-app
 cargo packager --release -f app       # macOS .app
 # or: -f deb, -f appimage, -f nsis
 ```
