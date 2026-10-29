@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag like v0.1.0 to build Linux, Windows and macOS packages and publish them as a GitHub release.
+# Push a tag like v0.1.0 to build x86_64 and ARM64 Linux packages, plus Windows and macOS packages.
 # macOS ships an ad-hoc signed DMG (not notarized), so users clear quarantine once (see README).
 on:
   push:
@@ -16,16 +16,23 @@ env:
 
 jobs:
   package:
-    name: Package (${{ matrix.os }})
+    name: Package (${{ matrix.os }}, ${{ matrix.arch }})
     # Waits for a required reviewer on the "release" environment (repo Settings → Environments)
     environment: release
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
+            arch: x86_64
+            nfpm_arch: amd64
+            formats: deb,appimage
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            nfpm_arch: arm64
             formats: deb,appimage
           - os: windows-latest
+            arch: x86_64
             formats: nsis
     runs-on: ${{ matrix.os }}
     steps:
@@ -47,7 +54,7 @@ jobs:
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "quarry-release-${{ matrix.os }}"
+          shared-key: "quarry-release-${{ matrix.os }}-${{ matrix.arch }}"
           save-if: false
 
       # Install pre-compiled cargo-packager binary instead of compiling from source (saves 2-4 mins)
@@ -80,16 +87,13 @@ jobs:
 
       - name: Build RPM
         if: runner.os == 'Linux'
-        env:
-          VERSION: ${{ github.ref_name }}
-          GOARCH: amd64
         run: |
-          export VERSION="${VERSION#v}"
-          nfpm package --packager rpm --config nfpm.yaml --target dist/
+          VERSION="${GITHUB_REF_NAME#v}" GOARCH="${{ matrix.nfpm_arch }}" \
+            nfpm package --packager rpm --config nfpm.yaml --target dist/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: quarry-${{ runner.os }}
+          name: quarry-${{ runner.os }}-${{ matrix.arch }}
           path: |
             dist/*.deb
             dist/*.AppImage
@@ -138,23 +142,30 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: out
-          merge-multiple: true
       # Update manifest the app reads from releases/latest/download/latest.json
       - name: Write latest.json
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.CARGO_PACKAGER_SIGN_PRIVATE_KEY }}
         run: |
-          cd out
+          if [ -z "$CARGO_PACKAGER_SIGN_PRIVATE_KEY" ]; then
+            echo "Skipping updater manifest because no signing key is configured."
+            exit 0
+          fi
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
-          platform() { # key, bundle file, format
-            jq -n --arg url "$base/$2" --arg sig "$(cat "$2.sig")" --arg format "$3" \
+          asset() { find "out/$1" -type f -name "$2" -print -quit; }
+          platform() { # key, artifact directory, file pattern, format
+            file=$(asset "$2" "$3")
+            jq -n --arg url "$base/${file##*/}" --arg sig "$(cat "$file.sig")" --arg format "$4" \
               '{($ARGS.positional[0]): {url: $url, signature: $sig, format: $format}}' --args "$1"
           }
           {
-            platform macos-aarch64 Quarry.app.tar.gz app
-            platform linux-x86_64 "$(ls *.AppImage)" appimage
-            platform windows-x86_64 "$(ls *.exe)" nsis
+            platform macos-aarch64 quarry-macOS 'Quarry.app.tar.gz' app
+            platform linux-x86_64 quarry-Linux-x86_64 '*.AppImage' appimage
+            platform linux-aarch64 quarry-Linux-aarch64 '*.AppImage' appimage
+            platform windows-x86_64 quarry-Windows-x86_64 '*.exe' nsis
           } | jq -s --arg v "${GITHUB_REF_NAME#v}" \
-            '{version: $v, pub_date: (now | todate), platforms: add}' > latest.json
-          cat latest.json
+            '{version: $v, pub_date: (now | todate), platforms: add}' > out/latest.json
+          cat out/latest.json
 
       # Release notes from conventional commits: feat → Features, fix/perf → Fixes; chore, docs, ci, build and site left out
       - name: Write release notes
@@ -184,7 +195,16 @@ jobs:
         run: |
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" out/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Quarry $GITHUB_REF_NAME" \
-            --notes-file notes.md $pre
+          assets=(out/*/*)
+          [ ! -f out/latest.json ] || assets+=(out/latest.json)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Quarry $GITHUB_REF_NAME" --notes-file notes.md $pre
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Quarry $GITHUB_REF_NAME" \
+              --notes-file notes.md $pre
+          fi

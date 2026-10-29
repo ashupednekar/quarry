@@ -5,7 +5,7 @@ Let's get from zero to a query result. We'll use SQLite, because it needs nothin
 ## Install
 
 Grab a build from [Releases](https://github.com/thekodeking/quarry/releases): a `.dmg` for macOS,
-`.deb`, `.AppImage`, or `.rpm` for Linux, or an installer for Windows. On Fedora, install the RPM with:
+`.deb`, `.AppImage`, or `.rpm` for Linux (x86_64 or ARM64), or an installer for Windows. On Fedora, install the matching RPM with:
 
 ```sh
 sudo dnf install ./quarry-*.rpm
