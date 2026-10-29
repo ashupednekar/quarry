@@ -117,6 +117,12 @@ cp -R ../../dist/Quarry.app /Applications/
 
 ## Development
 
+On Fedora, install the native build prerequisites before compiling:
+
+```sh
+sudo dnf install gcc-c++ fontconfig-devel pkgconf-pkg-config
+```
+
 ```sh
 make            # List available commands
 make dev        # Run a debug build (fast compile)
